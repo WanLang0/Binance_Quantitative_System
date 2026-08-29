@@ -58,6 +58,10 @@ def _require_login():
     if request.endpoint in ('login', 'static') or request.path == '/health':
         return None
     if session.get('user'):
+        # 登录态一致性校验：数据库被重建/删除时，旧 cookie 对应的用户已不存在，强制重新登录
+        if not _auth.user_exists(session['user']):
+            session.clear()
+            return redirect(url_for('login'))
         return None
     # AJAX 接口未登录返回 401 JSON（避免前端拿到登录页 HTML 解析报错刷屏）
     if request.path.startswith('/futures/api/') or request.path.startswith('/demo/api/') \
@@ -672,6 +676,7 @@ def futures():
                               message=None, running=False, status=None, symbols=FUTURES_SYMBOLS,
                               timeframe_options=TIMEFRAME_OPTIONS, strategies=STRATEGIES,
                               leverage=leverage, api_key=api_key, api_secret=api_secret, network=network,
+                              alert_email=(_auth.get_email_config(session.get('user', '')) or {}).get('email'),
                               mark_price=None, positions=None, open_orders=None, account_balance=None)
 
     global _auto_futures
@@ -773,6 +778,13 @@ def futures():
         # 删除量化任务记录（仅删历史记录，不影响运行中的引擎）
         ok, msg = _auto_futures.delete_task(form.get("task_id"))
         return redirect(url_for('futures', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "save_email":
+        # 旧入口转发到设置页（邮箱配置已迁移至 /settings）
+        return redirect(url_for('settings'))
+
+    elif request.method == "POST" and form.get("action") == "test_email":
+        return redirect(url_for('settings'))
 
     elif request.method == "POST" and form.get("action") == "stop":
         _auto_futures.stop()
@@ -1021,6 +1033,40 @@ RESEARCH_LOG = [
      'result': '无稳定达标解；确立 ETH 4h KDJ 8/5 仅多（四年+40%）与 NEAR 4h EMA 2/2 仅多（+29%）',
      'conclusion': '日1%复利=年化3678%不现实；可持续目标应为月均1~3%且回撤可控'},
 ]
+
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings():
+    """个人设置：邮件告警配置 + 修改密码（需登录，before_request 已拦截未登录）"""
+    error, message = None, None
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "save_email":
+            ok, msg = _auth.save_email_config(session.get('user', ''),
+                                              request.form.get("alert_email", ""),
+                                              request.form.get("email_auth_code", "").strip() or None)
+            error, message = (None, msg) if ok else (msg, None)
+        elif action == "test_email":
+            import mailer as _mailer
+            ok, msg = _mailer.send_email("✅ 币安量化系统：邮件告警测试",
+                                         "这是一封测试邮件。\n收到即说明邮件告警配置正确：\n"
+                                         "当引擎无法访问币安时，将每10分钟提醒一次、共3封。")
+            error, message = (None, msg) if ok else (msg, None)
+        elif action == "change_pwd":
+            old_pwd = request.form.get("old_password", "")
+            new_pwd = request.form.get("new_password", "")
+            confirm = request.form.get("confirm_password", "")
+            if new_pwd != confirm:
+                error = '两次输入的新密码不一致'
+            else:
+                ok, msg = _auth.change_password(session.get('user', ''), old_pwd, new_pwd)
+                error, message = (None, msg) if ok else (msg, None)
+        return redirect(url_for('settings', _error=error, _message=message))
+
+    error = request.args.get('_error') or None
+    message = request.args.get('_message') or None
+    alert_email = (_auth.get_email_config(session.get('user', '')) or {}).get('email')
+    return render_template("settings.html", error=error, message=message, alert_email=alert_email)
 
 
 @app.route("/strategies")

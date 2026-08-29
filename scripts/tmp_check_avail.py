@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import os, sys
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-os.environ["HTTP_PROXY"] = "http://127.0.0.1:7892"
-os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7892"
+os.environ["HTTP_PROXY"] = "http://192.168.11.188:7892"
+os.environ["HTTPS_PROXY"] = "http://192.168.11.188:7892"
 from data_fetcher import BinanceDataFetcher
 
 syms = ["XRP/USDT", "BNB/USDT", "SPCXB/USDT", "SNDKB/USDT", "NVDA/USDT", "NVDAB/USDT"]

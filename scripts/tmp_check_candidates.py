@@ -2,8 +2,8 @@
 """检查候选品种在 2026H1 的 15m/5m 数据可用性"""
 import os, sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7892")
-os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7892")
+os.environ.setdefault("HTTP_PROXY", "http://192.168.11.188:7892")
+os.environ.setdefault("HTTPS_PROXY", "http://192.168.11.188:7892")
 from data_fetcher import BinanceDataFetcher
 
 candidates = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUUB/USDT",

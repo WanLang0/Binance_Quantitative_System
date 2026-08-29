@@ -1,0 +1,67 @@
+{% set active_page = 'settings' %}
+{% extends "base.html" %}
+
+{% block title %}个人设置{% endblock %}
+
+{% block body %}
+<div class="wrap">
+    <h1 class="page-title">⚙️ 个人设置</h1>
+
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+
+    <!-- 邮件告警配置 -->
+    <div class="card">
+        <h2>📧 邮件告警（QQ 邮箱）</h2>
+        <form method="POST" action="/settings">
+            <input type="hidden" name="action" value="save_email">
+            <div class="form-grid">
+                <div class="field">
+                    <label>QQ 邮箱（接收告警）</label>
+                    <input type="text" name="alert_email" value="{{ alert_email or '' }}" placeholder="例如 123456@qq.com" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label>SMTP 授权码（加密存储，留空=不修改）</label>
+                    <input type="password" name="email_auth_code" placeholder="QQ邮箱设置→账户→开启SMTP获取" autocomplete="new-password">
+                </div>
+                <button type="submit" class="btn btn-primary">保存邮箱配置</button>
+            </div>
+        </form>
+        <form method="POST" action="/settings" style="margin-top:8px">
+            <input type="hidden" name="action" value="test_email">
+            <button type="submit" class="btn">发送测试邮件</button>
+        </form>
+        <p class="info-note">引擎<b>无法访问币安</b>时（网络中断/代理失效），系统将通过 QQ 邮箱 SMTP 提醒：<b>每 10 分钟一封、共 3 封</b>，网络恢复后自动重置。授权码使用 Fernet 加密存入数据库，不留明文。授权码获取：QQ 邮箱网页版 → 设置 → 账户 → 开启 SMTP 服务。</p>
+    </div>
+
+    <!-- 修改密码 -->
+    <div class="card">
+        <h2>🔒 修改登录密码</h2>
+        <form method="POST" action="/settings">
+            <input type="hidden" name="action" value="change_pwd">
+            <div class="form-grid">
+                <div class="field">
+                    <label>当前密码</label>
+                    <input type="password" name="old_password" required autocomplete="current-password">
+                </div>
+                <div class="field">
+                    <label>新密码（至少 8 位）</label>
+                    <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+                </div>
+                <div class="field">
+                    <label>确认新密码</label>
+                    <input type="password" name="confirm_password" required minlength="8" autocomplete="new-password">
+                </div>
+                <button type="submit" class="btn btn-primary">修改密码</button>
+            </div>
+        </form>
+        <p class="info-note">修改成功后当前登录保持有效；其他设备/浏览器的登录态将在会话过期（7天）后失效。</p>
+    </div>
+
+    <div class="card">
+        <div class="alert alert-warn" style="margin-bottom:0">
+            当前登录账号：<b>{{ session.get('user') }}</b>。服务器公网部署前建议：启用 HTTPS、交易所 API 密钥绑定服务器 IP 白名单并关闭提币权限。
+        </div>
+    </div>
+</div>
+{% endblock %}

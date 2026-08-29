@@ -13,8 +13,8 @@ import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7892")
-os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7892")
+os.environ.setdefault("HTTP_PROXY", "http://192.168.11.188:7892")
+os.environ.setdefault("HTTPS_PROXY", "http://192.168.11.188:7892")
 
 import pandas as pd
 from datetime import datetime

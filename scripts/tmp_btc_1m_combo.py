@@ -7,8 +7,8 @@ BTC/USDT 现货 1m 2026H1 策略组合批量对比
 import os, sys, io, itertools, warnings
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 warnings.filterwarnings('ignore')
-os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7892")
-os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7892")
+os.environ.setdefault("HTTP_PROXY", "http://192.168.11.188:7892")
+os.environ.setdefault("HTTPS_PROXY", "http://192.168.11.188:7892")
 
 from datetime import datetime
 import pandas as pd

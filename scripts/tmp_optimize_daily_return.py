@@ -7,8 +7,8 @@ import os, sys, io, warnings, time
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 warnings.filterwarnings('ignore')
-os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7892")
-os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7892")
+os.environ.setdefault("HTTP_PROXY", "http://192.168.11.188:7892")
+os.environ.setdefault("HTTPS_PROXY", "http://192.168.11.188:7892")
 
 from datetime import datetime
 import pandas as pd

@@ -16,6 +16,7 @@ import pandas as pd
 from indicators import TechnicalIndicators
 from backtest_engine import BacktestEngine
 from futures_trader import FuturesTrader
+import mailer
 
 
 # 状态持久化文件
@@ -572,6 +573,26 @@ class AutoFutures:
         # 设置杠杆
         self.trader.set_leverage(self.leverage, symbol)
         alerted = False  # 本轮故障周期是否已发过告警（恢复后重置）
+        # 邮件告警序列：无法访问币安时每10分钟一封、共3封，恢复后重置
+        MAIL_INTERVAL, MAIL_MAX = 600, 3
+        mail_count, last_mail_ts = 0, 0.0
+
+        def _send_alert_mail(reason, errors):
+            nonlocal mail_count, last_mail_ts
+            if not mailer.is_configured() or mail_count >= MAIL_MAX:
+                return
+            if mail_count > 0 and time.time() - last_mail_ts < MAIL_INTERVAL:
+                return
+            body = (f"告警时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"品种: {symbol}  周期: {timeframe}\n"
+                    f"故障: {reason}\n连续失败: {errors} 次\n\n"
+                    f"引擎仍在自动重连，持仓已由交易所端 STOP_MARKET 保护单托底。\n"
+                    f"本故障期内邮件提醒每10分钟一封、最多{MAIL_MAX}封（第 {mail_count + 1} 封）。")
+            mailer.send_async(f"⚠ 币安量化告警({mail_count + 1}/{MAIL_MAX}): 无法访问币安", body)
+            self._log(f"已触发邮件告警({mail_count + 1}/{MAIL_MAX})")
+            mail_count += 1
+            last_mail_ts = time.time()
+
         while not self._stop_event.is_set():
             try:
                 sig, df, err = self._compute_signal(symbol, timeframe, indicator_params)
@@ -583,12 +604,14 @@ class AutoFutures:
                         if not alerted:
                             self._alert(f"轮询连续失败{self.status['consecutive_errors']}次({symbol})，正在自动重连；若长时间未恢复请检查网络/代理")
                             alerted = True
+                        _send_alert_mail(err, self.status['consecutive_errors'])
                         self._reconnect()
                 else:
                     self.status['consecutive_errors'] = 0
                     if alerted:
                         alerted = False
-                        self._log("轮询已恢复正常")
+                        mail_count = 0  # 故障恢复，邮件序列重置
+                        self._log("轮询已恢复正常（邮件告警序列已重置）")
                     self.status['last_loop_time'] = datetime.now().isoformat()  # 心跳
                     price = self._refresh_last_price(symbol)
                     if sig == 1:

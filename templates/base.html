@@ -17,6 +17,7 @@
             <a href="/auto" class="{{ 'active' if active_page == 'auto' }}">自动现货</a>
             <a href="/futures" class="{{ 'active' if active_page == 'futures' }}">自动合约</a>
             <a href="/strategies" class="{{ 'active' if active_page == 'strategies' }}">最优策略</a>
+            <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">设置</a>
             {% if session.get('user') %}
             <span style="margin-left:14px;color:#7a8394;font-size:.85rem">👤 {{ session['user'] }}</span>
             <a href="/logout" style="margin-left:10px;color:#f6465d" title="退出登录">退出</a>
