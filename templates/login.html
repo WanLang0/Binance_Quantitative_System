@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 币安量化系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            background: radial-gradient(ellipse at top, #131722 0%, #0b0e14 100%);
+            font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #e6e9ef;
+        }
+        .login-box {
+            width: 360px; padding: 36px 32px; border-radius: 14px;
+            background: rgba(22, 26, 34, .92); border: 1px solid #2a3040;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+        }
+        .brand { text-align: center; margin-bottom: 26px; }
+        .brand .dot { color: #f0b90b; }
+        .brand h1 { font-size: 1.25rem; margin-top: 8px; font-weight: 600; }
+        .brand p { font-size: .78rem; color: #7a8394; margin-top: 6px; }
+        label { display: block; font-size: .8rem; color: #9aa4b5; margin: 14px 0 6px; }
+        input {
+            width: 100%; padding: 11px 12px; border-radius: 8px; font-size: .95rem;
+            border: 1px solid #2a3040; background: #0f1319; color: #e6e9ef; outline: none;
+            transition: border-color .15s;
+        }
+        input:focus { border-color: #f0b90b; }
+        button {
+            width: 100%; margin-top: 22px; padding: 12px; border: none; border-radius: 8px;
+            background: #f0b90b; color: #1c1c1c; font-size: .95rem; font-weight: 600;
+            cursor: pointer; transition: filter .15s;
+        }
+        button:hover { filter: brightness(1.08); }
+        button:disabled { filter: grayscale(.6); cursor: not-allowed; }
+        .err {
+            margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: .82rem;
+            background: rgba(246, 70, 93, .12); border: 1px solid rgba(246, 70, 93, .4); color: #f6465d;
+        }
+        .ok {
+            margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: .82rem;
+            background: rgba(48, 186, 120, .1); border: 1px solid rgba(48, 186, 120, .4); color: #30ba78;
+        }
+        .tip { margin-top: 18px; font-size: .72rem; color: #5b6473; line-height: 1.7; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <div class="brand">
+            <span class="dot">●</span>
+            <h1>{% if is_setup %}初始化管理员账号{% else %}币安量化系统{% endif %}</h1>
+            <p>{% if is_setup %}首次使用，请设置登录账号（密码至少 8 位）{% else %}请登录后继续操作{% endif %}</p>
+        </div>
+        <form method="post" autocomplete="off">
+            <label for="username">用户名</label>
+            <input id="username" name="username" type="text" required maxlength="20"
+                   placeholder="{% if is_setup %}4~20 个字符{% else %}请输入用户名{% endif %}" autofocus>
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" required
+                   placeholder="{% if is_setup %}至少 8 位，字母+数字更安全{% else %}请输入密码{% endif %}">
+            <button type="submit">{{ '创建账号并登录' if is_setup else '登 录' }}</button>
+        </form>
+        {% if error %}<div class="err">{{ error }}</div>{% endif %}
+        {% if message %}<div class="ok">{{ message }}</div>{% endif %}
+        <div class="tip">
+            密码使用 scrypt 加盐哈希存储，数据库不保存明文<br>
+            连续失败 5 次将锁定 10 分钟
+        </div>
+    </div>
+</body>
+</html>

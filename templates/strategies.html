@@ -1,0 +1,120 @@
+{% set active_page = 'strategies' %}
+{% extends "base.html" %}
+
+{% block title %}最优策略汇总{% endblock %}
+
+{% block body %}
+<div class="wrap">
+    <h1 class="page-title">🏆 最优策略汇总</h1>
+
+    <div class="card">
+        <p class="info-note">
+            汇总历次多品种寻优回测（约 <b>13700+</b> 组参数组合）筛选出的最优策略。
+            窗口：<b>2025 全年</b>（365天交叉验证）、<b>2026-01-01 ~ 08-26</b> 及 <b>2023~2026 四年矩阵</b>；
+            初始资金 1 万 USDT；手续费 0.1%；双向 = 买入信号开多、卖出信号平多并开空。风险分档：
+            <span class="tag tag-stable">稳健</span> <span class="tag tag-balanced">均衡</span> <span class="tag tag-aggressive">激进</span>
+        </p>
+        <div class="alert alert-warn" style="margin:10px 0 0">
+            <b>分品种一句话结论：</b>主流蓝筹（ETH/BTC）用<b>超卖回归</b>——KDJ 仅做多 + 小止盈止损快进快出；
+            高波动山寨币用<b>趋势跟随</b>——EMA/双均线 + 双向顺势 + 止盈止损放宽或取消。两类逻辑相反，不可混用。
+        </div>
+    </div>
+
+    {% for g in groups %}
+    <div class="card">
+        <h2>
+            {% if g.get('tag') == 'stable' %}<span class="tag tag-stable">稳健</span>
+            {% elif g.get('tag') == 'aggressive' %}<span class="tag tag-aggressive">激进</span>
+            {% else %}<span class="tag tag-balanced">均衡</span>{% endif %}
+            {{ g['name'] }}
+            <span style="font-size:.78rem;color:var(--muted);font-weight:400">［{{ g.get('window','') }}］</span>
+        </h2>
+        <div class="info-note" style="margin:0 0 8px">{{ g['desc'] }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>品种</th><th>周期</th><th>策略</th><th>模式</th><th>止盈/止损</th>
+                <th>总收益</th><th>日均</th><th>月均</th><th>交易次数</th><th>胜率</th><th>最大回撤</th><th>稳定性</th>
+                <th>市场</th><th>备注</th>
+            </tr>
+            {% for r in g['rows'] %}
+            <tr>
+                <td><b>{{ r['品种'] }}</b></td>
+                <td>{{ r['周期'] }}</td>
+                <td>{{ r['策略'] }}</td>
+                <td>{{ r['模式'] }}</td>
+                <td>{{ r['止盈止损'] }}</td>
+                <td class="pos">{{ r['收益'] }}</td>
+                <td class="pos">{{ r.get('日均', '-') }}</td>
+                <td class="pos">{{ r.get('月均', '-') }}</td>
+                <td>{{ r.get('交易次数', '-') }}</td>
+                <td class="pos">{{ r.get('胜率', '-') }}</td>
+                <td class="neg">{{ r['最大回撤'] }}</td>
+                <td>{{ r['稳定性'] }}</td>
+                <td>{{ r['市场'] }}</td>
+                <td style="white-space:normal;color:var(--muted)">{{ r['备注'] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+    </div>
+    {% endfor %}
+
+    {% if year_matrix %}
+    <div class="card">
+        <h2><span class="tag tag-balanced">对比</span> 历年收益矩阵（2023 ~ 2026）</h2>
+        <div class="desc">同一配置在四个年度窗口的总收益率对比（2026为1~8月；"爆仓"=权益归零；"—"=当年无该品种合约）。用于识别真正跨年有效的策略，而非单年幸存者。</div>
+        <table>
+            <tr>
+                <th>配置</th><th>2023</th><th>2024</th><th>2025</th><th>2026至今</th><th>跨年评价</th>
+            </tr>
+            {% for r in year_matrix %}
+            <tr>
+                <td style="white-space:nowrap"><b>{{ r['配置'] }}</b></td>
+                {% for y in ['y2023', 'y2024', 'y2025', 'y2026'] %}
+                <td class="{% if r[y] and r[y][0] == '+' %}pos{% elif r[y] == '爆仓' %}neg{% elif r[y] and r[y][0] == '-' %}neg{% else %}{% endif %}">{{ r[y] }}</td>
+                {% endfor %}
+                <td style="white-space:normal;color:#aaa">{{ r['评价'] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        <p class="info-note" style="font-size:0.78rem;color:#888;margin-top:8px;line-height:1.7">
+            <b>结论：</b>没有任何策略四年全盈。<b>ETH 4h KDJ 8/5（累计+40%）与 NEAR 4h EMA 2/2（+29%）</b>是仅有的"4年3盈且最差年亏损个位数"的配置——共同点是<b>仅做多+小止损</b>。<br>
+            <b>山寨币结论（2026-08轮）：</b>趋势跟随（EMA/双均线）是市值10-20币上唯一系统性有效方向（EMA仅多不设 6/10币为正）；
+            <b>XLM EMA双向 5/5（累计+239%）</b>为山寨首选——4年3盈、2025/2026熊市靠空头盈利；而 KDJ 移植山寨 0/10 全亏、反转类双向爆仓38币·年，均已在矩阵中标 ❌。
+        </p>
+    </div>
+    {% endif %}
+
+    {% if research_log %}
+    <div class="card">
+        <h2><span class="tag tag-balanced">记录</span> 研究结论时间线（历轮验证沉淀）</h2>
+        <div class="desc">按时间倒序记录每轮策略研究的方法与结论，已证伪方向不重复验证。</div>
+        <table>
+            <tr><th style="width:90px">日期</th><th style="width:34%">研究</th><th style="width:30%">结果</th><th>结论</th></tr>
+            {% for r in research_log %}
+            <tr>
+                <td style="white-space:nowrap">{{ r['date'] }}</td>
+                <td style="white-space:normal"><b>{{ r['title'] }}</b></td>
+                <td style="white-space:normal;color:var(--muted)">{{ r['result'] }}</td>
+                <td style="white-space:normal">{{ r['conclusion'] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <div class="alert alert-warn" style="margin-bottom:0">
+            <b>风险提示：</b><br>
+            1. 以上全部为<b>历史回测</b>结果，样本内寻优存在过拟合，实盘收益通常打 5~7 折，不构成投资建议。<br>
+            2. <b>年度冠军会轮换</b>：2023/2024 无一冠军策略存活到 2025 之后——BCH(2025冠军,+337%)在2023爆仓、2026亏57%；TON(2026冠军)前两年连亏。
+            四年数据验证真正跨年稳的蓝筹配置只有 <b>ETH 4h KDJ 8/5 与 NEAR 4h EMA 2/2</b>（仅做多+小止损），山寨配置首选 <b>XLM EMA 双向 5/5</b>（回撤约为ETH的3倍，仓位务必≤主策略1/3），详见上方历年矩阵。<br>
+            3. 标注「仅主网」的品种（TQQQ/MUB/MUUB/QQQ）在测试网无对应合约，需主网真实资金。<br>
+            4. bStocks（美股代币）为虚拟股票映射，<b>存在随时下架风险</b>，加密主流币长期存续性更好。<br>
+            5. 「双向」模式在合约页面选「标准多策略(OR)」即自动生效；叠加杠杆会同时放大收益与回撤。
+        </div>
+        <a class="btn btn-accent" style="margin-top:10px" href="/futures">去合约页面实测 →</a>
+    </div>
+</div>
+{% endblock %}

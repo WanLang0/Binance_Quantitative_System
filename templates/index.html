@@ -1,0 +1,283 @@
+{% set active_page = 'index' %}
+{% extends "base.html" %}
+
+{% block title %}币安量化回测策略系统{% endblock %}
+
+{% block head %}
+<!-- Plotly.js -->
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js" charset="utf-8"></script>
+{% endblock %}
+
+{% block body %}
+<div class="app">
+    <!-- 左侧：配置区 -->
+    <aside class="sidebar">
+        <h2 class="brand">📊 回测配置</h2>
+
+        <form method="post" id="btform">
+            <!-- 市场类型 -->
+            <div class="form-group">
+                <label class="group-label">市场类型</label>
+                <div class="radio-row">
+                    <label class="radio"><input type="radio" name="market_type" value="现货" {% if market_label == '现货' %}checked{% endif %}> 现货</label>
+                    <label class="radio"><input type="radio" name="market_type" value="合约" {% if market_label == '合约' %}checked{% endif %}> 合约</label>
+                </div>
+            </div>
+
+            <!-- 回测参数 -->
+            <div class="form-group">
+                <label class="group-label">回测配置</label>
+                <div class="field">
+                    <label for="initial_capital">初始资金 (USDT)</label>
+                    <input type="number" id="initial_capital" name="initial_capital" value="{{ form.initial_capital or 10000 }}" min="100" max="1000000" step="any">
+                </div>
+                <div class="field">
+                    <label for="commission">手续费率 (%)</label>
+                    <input type="number" id="commission" name="commission" value="{{ form.commission or 0.1 }}" min="0" max="1" step="0.01">
+                </div>
+                <div class="field">
+                    <label class="chk"><input type="checkbox" name="use_take_profit" {% if form.use_take_profit %}checked{% endif %}> 启用止盈</label>
+                    <input type="number" name="take_profit_pct" value="{{ form.take_profit_pct or 3 }}" min="1" max="50" step="0.5" {% if not form.use_take_profit %}disabled{% endif %} placeholder="止盈 %">
+                </div>
+                <div class="field">
+                    <label class="chk"><input type="checkbox" name="use_stop_loss" {% if form.use_stop_loss %}checked{% endif %}> 启用止损</label>
+                    <input type="number" name="stop_loss_pct" value="{{ form.stop_loss_pct or 3 }}" min="1" max="20" step="0.5" {% if not form.use_stop_loss %}disabled{% endif %} placeholder="止损 %">
+                </div>
+            </div>
+
+            <!-- 交易对 -->
+            <div class="form-group">
+                <label class="group-label">交易对</label>
+                <select name="symbol">
+                    {% for sym, label in symbols %}
+                    <option value="{{ sym }}" {% if sym == selected_symbol %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- 时间周期 + 时间范围 -->
+            <div class="form-group">
+                <label class="group-label">时间周期</label>
+                <select name="timeframe">
+                    {% for t in timeframe_keys %}
+                    <option value="{{ t }}" {% if t == selected_timeframe %}selected{% endif %}>{{ t }}</option>
+                    {% endfor %}
+                </select>
+
+                <label class="group-label">时间范围</label>
+                <div class="field-inline">
+                    <input type="date" name="start_date" value="{{ form.start_date }}" required>
+                </div>
+                <div class="field-inline">
+                    <input type="date" name="end_date" value="{{ form.end_date }}" required>
+                </div>
+            </div>
+
+            <!-- 策略指标（多选） -->
+            <div class="form-group">
+                <label class="group-label">选择交易策略（可多选）</label>
+                <div class="strategy-checkboxes">
+                    <label class="chk"><input type="checkbox" name="strategy_rsi" id="chk-rsi" {% if form.strategy_rsi %}checked{% endif %} onchange="toggleParams()"> RSI</label>
+                    <label class="chk"><input type="checkbox" name="strategy_kdj" id="chk-kdj" {% if form.strategy_kdj %}checked{% endif %} onchange="toggleParams()"> KDJ</label>
+                    <label class="chk"><input type="checkbox" name="strategy_boll" id="chk-boll" {% if form.strategy_boll %}checked{% endif %} onchange="toggleParams()"> 布林带</label>
+                    <label class="chk"><input type="checkbox" name="strategy_ema" id="chk-ema" {% if form.strategy_ema %}checked{% endif %} onchange="toggleParams()"> EMA</label>
+                    <label class="chk"><input type="checkbox" name="strategy_macd" id="chk-macd" {% if form.strategy_macd %}checked{% endif %} onchange="toggleParams()"> MACD</label>
+                    <label class="chk"><input type="checkbox" name="strategy_ma_cross" id="chk-ma_cross" {% if form.strategy_ma_cross %}checked{% endif %} onchange="toggleParams()"> 双均线交叉</label>
+                </div>
+                <input type="hidden" name="run_backtest" id="run_backtest" value="0">
+
+                <div id="strategy-params" class="strategy-params">
+                    {{ strategy_params_html | safe }}
+                </div>
+            </div>
+
+            <!-- 展示指标（默认折叠） -->
+            <details class="form-group">
+                <summary class="group-label">展示指标（不参与交易）</summary>
+                <label class="chk"><input type="checkbox" name="sma_show" {% if form.sma_show %}checked{% endif %}> SMA</label>
+                <div class="field-inline"><input type="number" name="sma_short" value="{{ form.sma_short or 20 }}" min="10" max="30" placeholder="短期"></div>
+                <div class="field-inline"><input type="number" name="sma_long" value="{{ form.sma_long or 50 }}" min="30" max="100" placeholder="长期"></div>
+
+                <label class="chk"><input type="checkbox" name="stoch_show" {% if form.stoch_show %}checked{% endif %}> 随机指标</label>
+                <div class="field-inline"><input type="number" name="stoch_k_period" value="{{ form.stoch_k_period or 14 }}" min="5" max="20" placeholder="%K"></div>
+                <div class="field-inline"><input type="number" name="stoch_d_period" value="{{ form.stoch_d_period or 3 }}" min="2" max="10" placeholder="%D"></div>
+
+                <label class="chk"><input type="checkbox" name="atr_show" {% if form.atr_show %}checked{% endif %}> ATR</label>
+                <div class="field-inline"><input type="number" name="atr_period" value="{{ form.atr_period or 14 }}" min="5" max="30" placeholder="周期"></div>
+            </details>
+
+            <button type="submit" class="btn btn-primary btn-block" id="btn-submit" onclick="document.getElementById('run_backtest').value='1'">🚀 运行回测</button>
+            <div id="loading" class="loading-overlay" style="display:none;">⏳ 正在拉取数据并运行回测，请稍候…</div>
+            <p class="muted tiny">💡 仅供学习和研究使用</p>
+        </form>
+    </aside>
+
+    <!-- 右侧：结果区 -->
+    <main class="content">
+        <h1>🚀 币安量化回测策略系统</h1>
+
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        {% if metrics %}
+            <div class="panel">
+                <h2>📊 回测结果</h2>
+                {% if selected_strategies %}<p class="muted">📋 策略：{{ selected_strategies | join(' + ') }}</p>{% endif %}
+                {% if data_count %}<p class="muted">📋 共拉取 {{ data_count }} 条K线数据</p>{% endif %}
+                <div class="metric-grid">
+                    {% for label, value in metrics %}
+                    <div class="metric">
+                        <div class="metric-label">{{ label }}</div>
+                        <div class="metric-value">{{ value }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% if saved_file %}
+                <p class="muted">✅ 已保存到本地：{{ save_dir }}</p>
+                {% endif %}
+            </div>
+
+            <div class="panel">
+                <h2>📈 图表分析</h2>
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="tab-tech">技术分析</button>
+                    <button class="tab-btn" data-tab="tab-equity">权益曲线</button>
+                    <button class="tab-btn" data-tab="tab-drawdown">回撤分析</button>
+                    <button class="tab-btn" data-tab="tab-trade">交易点位</button>
+                    <button class="tab-btn" data-tab="tab-trades">交易记录</button>
+                </div>
+
+                <div id="tab-tech" class="tab-content active">
+                    <div class="chart" id="chart-technical"></div>
+                </div>
+                <div id="tab-equity" class="tab-content">
+                    <div class="chart" id="chart-equity"></div>
+                </div>
+                <div id="tab-drawdown" class="tab-content">
+                    <div class="chart" id="chart-drawdown"></div>
+                </div>
+                <div id="tab-trade" class="tab-content">
+                    <div class="chart" id="chart-trade"></div>
+                </div>
+                <div id="tab-trades" class="tab-content">
+                    {% if has_trades %}
+                    <a class="btn-download" href="/download" download>📥 下载交易记录 ({{ trades_count }})</a>
+                    <div class="table-wrap"><table class="trades-table" id="trades-table"></table></div>
+                    {% else %}
+                    <p class="muted">暂无交易记录</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>⚙️ 策略参数</h2>
+                <pre class="json">{{ indicator_params | tojson(indent=2) }}</pre>
+            </div>
+        {% else %}
+            <div class="panel welcome">
+                <h2>🎯 使用说明</h2>
+                <ol>
+                    <li>在左侧回测配置中设置<strong>初始资金</strong>、<strong>手续费率</strong>、<strong>止盈止损</strong>、<strong>市场类型</strong></li>
+                    <li>选择<strong>交易对</strong>、<strong>时间周期</strong>与<strong>时间范围</strong></li>
+                    <li>勾选<strong>策略指标</strong>（可多选叠加），下方立即显示对应<strong>策略参数</strong></li>
+                    <li>点击 <strong>运行回测</strong> 查看结果</li>
+                </ol>
+                <p><strong>策略指标</strong>：RSI、KDJ、布林带、EMA、MACD、双均线交叉（多策略叠加时，满足任一策略条件即买入/卖出，OR 逻辑）</p>
+                <p><strong>展示指标</strong>（仅图表）：SMA、随机指标、ATR</p>
+                <p class="muted">⚠️ 本系统仅供学习研究，历史表现不代表未来收益。</p>
+            </div>
+
+            {% if market_overview %}
+            <div class="panel">
+                <h2>📈 市场概览</h2>
+                <table class="overview-table">
+                    <tr><th>币种</th><th>当前价格</th></tr>
+                    {% for row in market_overview %}
+                    <tr><td>{{ row.coin }}</td><td>{{ row.price }}</td></tr>
+                    {% endfor %}
+                </table>
+            </div>
+            {% else %}
+            <div class="panel"><p class="muted">无法获取当前价格信息</p></div>
+            {% endif %}
+        {% endif %}
+    </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 图表数据（to_json 返回字符串，需 JSON.parse 还原为 Plotly figure 对象）
+const chartsRaw = {{ charts_json | safe if charts_json else '{}' }};
+const charts = {};
+for (const k in chartsRaw) { try { charts[k] = JSON.parse(chartsRaw[k]); } catch(e) { console.error('parse chart', k, e); } }
+const trades = {{ trades_json | safe if trades_json else '[]' }};
+
+// 渲染图表
+const chartConfig = {displayModeBar: false, responsive: true};
+function drawChart(id, fig) { if (fig) Plotly.newPlot(id, fig, {}, chartConfig); }
+function drawAll() {
+    drawChart('chart-technical', charts.technical);
+    drawChart('chart-equity', charts.equity);
+    drawChart('chart-drawdown', charts.drawdown);
+    drawChart('chart-trade', charts.trade);
+}
+drawAll();
+
+// 标签页切换
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(btn.dataset.tab).classList.add('active');
+        // 切回时重新渲染，保证尺寸正确
+        if (btn.dataset.tab === 'tab-tech') drawChart('chart-technical', charts.technical);
+        if (btn.dataset.tab === 'tab-equity') drawChart('chart-equity', charts.equity);
+        if (btn.dataset.tab === 'tab-drawdown') drawChart('chart-drawdown', charts.drawdown);
+        if (btn.dataset.tab === 'tab-trade') drawChart('chart-trade', charts.trade);
+    });
+});
+
+// 交易记录表格
+if (trades.length > 0) {
+    const cols = Object.keys(trades[0]);
+    const table = document.getElementById('trades-table');
+    const thead = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>';
+    const tbody = trades.map(r => '<tr>' + cols.map(c => `<td>${r[c] ?? ''}</td>`).join('') + '</tr>').join('');
+    table.innerHTML = thead + tbody;
+}
+
+// 策略复选框切换参数面板显示/隐藏（纯前端，不提交表单）
+function toggleParams() {
+    const map = {'chk-rsi':'params-rsi','chk-kdj':'params-kdj','chk-boll':'params-boll','chk-ema':'params-ema','chk-macd':'params-macd','chk-ma_cross':'params-ma_cross'};
+    for (const chk in map) {
+        const el = document.getElementById(map[chk]);
+        if (el) el.style.display = document.getElementById(chk).checked ? 'block' : 'none';
+    }
+}
+
+// 表单提交时显示加载提示（仅在点击运行回测按钮时，策略切换不显示）
+document.getElementById('btform').addEventListener('submit', function(e) {
+    if (e.submitter && e.submitter.id === 'btn-submit') {
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('btn-submit').disabled = true;
+    }
+});
+
+// 停用checkbox联动禁用输入
+document.querySelectorAll('input[name="use_take_profit"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+        const input = document.querySelector('input[name="take_profit_pct"]');
+        input.disabled = !cb.checked;
+    });
+});
+document.querySelectorAll('input[name="use_stop_loss"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+        const input = document.querySelector('input[name="stop_loss_pct"]');
+        input.disabled = !cb.checked;
+    });
+});
+</script>
+{% endblock %}

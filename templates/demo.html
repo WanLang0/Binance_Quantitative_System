@@ -1,0 +1,312 @@
+{% set active_page = 'demo' %}
+{% extends "base.html" %}
+
+{% block title %}模拟现货交易 - Binance Demo Mode{% endblock %}
+
+{% block body %}
+<div class="wrap">
+    <h1 class="page-title">💱 模拟现货交易 <span class="page-subtitle">币安 Demo Mode，与真实交易完全隔离</span></h1>
+
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+
+    <!-- API 密钥配置 -->
+    <div class="card">
+        <h2>🔑 API 密钥配置（币安 Demo Mode）</h2>
+        <p class="info-note">
+            请在 <a href="https://demo.binance.com/en/my/settings/api-management" target="_blank">币安 Demo API 管理页</a> 创建密钥。
+            Demo Mode 使用 <code>demo-api.binance.com</code> 域名，余额可随时重置。
+        </p>
+        <form method="POST" action="/demo">
+            <div class="form-grid">
+                <div class="field">
+                    <label>API Key</label>
+                    <input type="text" name="api_key" value="{{ api_key or '' }}" placeholder="输入 API Key">
+                </div>
+                <div class="field">
+                    <label>API Secret</label>
+                    <input type="password" name="api_secret" value="{{ api_secret or '' }}" placeholder="输入 API Secret">
+                </div>
+                <button type="submit" name="save_keys" value="1" class="btn btn-primary">保存密钥</button>
+            </div>
+        </form>
+    </div>
+
+    {% if balances is not none %}
+    <!-- 账户余额 -->
+    <div class="card">
+        <h2>💰 账户余额{% if portfolio_value %} — 总估值 <span id="portfolio-value" class="pos">{{ '%.2f' | format(portfolio_value) }}</span> USDT{% endif %}</h2>
+        <div class="field-inline" style="margin-bottom:8px">
+            <label>刷新间隔</label>
+            <select id="refresh_sec" onchange="startRefresh(parseInt(this.value))" style="width:auto">
+                <option value="0">关闭</option>
+                <option value="1">1秒</option>
+                <option value="2">2秒</option>
+                <option value="3">3秒</option>
+                <option value="5">5秒</option>
+                <option value="10">10秒</option>
+                <option value="30">30秒</option>
+            </select>
+            <span id="refresh-status" class="muted" style="font-size:.85rem"></span>
+        </div>
+        {% if balances %}
+        <table class="table">
+            <thead>
+                <tr><th>资产</th><th>总量</th><th>可用</th><th>冻结</th><th>当前价格</th><th>USDT 估值</th></tr>
+            </thead>
+            <tbody>
+                {% for b in balances %}
+                <tr data-asset="{{ b.asset }}">
+                    <td><b>{{ b.asset }}</b></td>
+                    <td class="total-cell" data-value="{{ b.total }}">{{ '%.8f' | format(b.total) }}</td>
+                    <td>{{ '%.8f' | format(b.free) }}</td>
+                    <td>{{ '%.8f' | format(b.used) }}</td>
+                    <td class="price-cell">{{ '%.4f' | format(b.price) if b.price else '—' }}</td>
+                    <td class="value-cell">{{ '%.2f' | format(b.value_usdt) if b.value_usdt else '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty">无余额数据（可能是 Demo Mode 账户余额确实为 0，或 API 权限未包含账户读取）</p>
+        {% endif %}
+    </div>
+
+    <!-- 下单 -->
+    <div class="card">
+        <h2>📝 下单</h2>
+        <form method="POST" action="/demo">
+            <input type="hidden" name="action" value="place_order">
+            <input type="hidden" name="api_key" value="{{ api_key }}">
+            <input type="hidden" name="api_secret" value="{{ api_secret }}">
+            <div class="form-grid">
+                <div class="field">
+                    <label>交易对</label>
+                    <select name="order_symbol" id="order_symbol">
+                        {% for s in symbols %}
+                        <option value="{{ s }}">{{ s }} ({{ '%.2f' | format(prices[s]) if prices.get(s) else '—' }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label>方向</label>
+                    <select name="side" id="side_select">
+                        <option value="buy">买入</option>
+                        <option value="sell">卖出</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>订单类型</label>
+                    <select name="order_type" id="order_type" onchange="togglePrice()">
+                        <option value="market">市价</option>
+                        <option value="limit">限价</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>下单方式</label>
+                    <select name="qty_mode" id="qty_mode" onchange="toggleQtyLabel()">
+                        <option value="amount">按数量</option>
+                        <option value="usdt">按金额(USDT)</option>
+                        <option value="percent">按百分比(%)</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label id="qty_label">数量</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                        <input type="number" name="quantity" step="any" min="0" placeholder="0.001" id="qty_input" style="flex:1">
+                        <div class="price-tag" id="qty_hint"></div>
+                    </div>
+                </div>
+                <div class="field" id="price_field" style="display:none">
+                    <label>价格 (USDT)</label>
+                    <input type="number" name="price" step="any" min="0" placeholder="0.00">
+                </div>
+                <button type="submit" class="btn btn-primary">提交订单</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- 当前挂单 -->
+    <div class="card">
+        <h2>📋 当前挂单</h2>
+        {% if open_orders %}
+        <table class="table">
+            <thead>
+                <tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>已成交</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+                {% for o in open_orders %}
+                <tr>
+                    <td>{{ o.get('datetime', '—')[:19] }}</td>
+                    <td>{{ o.get('symbol', '—') }}</td>
+                    <td>
+                        {% if o.get('side') == 'buy' %}<span class="badge badge-buy">买入</span>{% else %}<span class="badge badge-sell">卖出</span>{% endif %}
+                    </td>
+                    <td>{{ o.get('type', '—') }}</td>
+                    <td>{{ o.get('price', '—') }}</td>
+                    <td>{{ o.get('amount', '—') }}</td>
+                    <td>{{ o.get('filled', 0) }}</td>
+                    <td>
+                        {% if o.get('status') == 'open' %}
+                        <form method="POST" action="/demo" style="display:inline">
+                            <input type="hidden" name="action" value="cancel_order">
+                            <input type="hidden" name="api_key" value="{{ api_key }}">
+                            <input type="hidden" name="api_secret" value="{{ api_secret }}">
+                            <input type="hidden" name="order_id" value="{{ o.get('id', '') }}">
+                            <input type="hidden" name="cancel_symbol" value="{{ o.get('symbol', '') }}">
+                            <button type="submit" class="btn btn-danger btn-sm">撤单</button>
+                        </form>
+                        {% else %}
+                        {{ o.get('status', '—') }}
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty">无挂单</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="card">
+        <p class="empty">请先保存 API 密钥，即可查看余额和下单</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 初始价格数据（从后端传入）
+var priceData = {
+    {% for sym, p in prices.items() %}
+    "{{ sym }}": {{ p }},
+    {% endfor %}
+};
+
+function togglePrice() {
+    var t = document.getElementById('order_type');
+    var p = document.getElementById('price_field');
+    p.style.display = (t.value === 'limit') ? 'block' : 'none';
+}
+
+function toggleQtyLabel() {
+    var mode = document.getElementById('qty_mode').value;
+    var label = document.getElementById('qty_label');
+    var input = document.getElementById('qty_input');
+    if (mode === 'usdt') {
+        label.textContent = '金额 (USDT)';
+        input.placeholder = '100';
+    } else if (mode === 'percent') {
+        label.textContent = '百分比 (%)';
+        input.placeholder = '100';
+    } else {
+        label.textContent = '数量';
+        input.placeholder = '0.001';
+    }
+    updateQtyHint();
+}
+
+function updateQtyHint() {
+    var mode = document.getElementById('qty_mode').value;
+    var symbol = document.getElementById('order_symbol').value;
+    var input = document.getElementById('qty_input');
+    var hint = document.getElementById('qty_hint');
+    var price = priceData[symbol];
+    if (mode === 'usdt' && price && input.value > 0) {
+        var qty = parseFloat(input.value) / price;
+        hint.textContent = '= ' + qty.toFixed(8) + ' ' + symbol.split('/')[0];
+    } else {
+        hint.textContent = '';
+    }
+}
+
+// 更新下单交易对下拉框中的价格文本（括号显示）
+function updateSymbolPriceText() {
+    var select = document.getElementById('order_symbol');
+    for (var i = 0; i < select.options.length; i++) {
+        var opt = select.options[i];
+        var sym = opt.value;
+        var p = priceData[sym];
+        opt.text = sym + (p ? ' (' + p.toFixed(2) + ')' : ' (—)');
+    }
+}
+
+// 刷新价格
+function refreshPrices() {
+    fetch('/demo/api/prices')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.prices) {
+                // 更新价格数据
+                for (var k in data.prices) { priceData[k] = data.prices[k]; }
+
+                // 更新下单交易对下拉框的价格文本
+                updateSymbolPriceText();
+
+                // 更新余额表中的价格和估值
+                var rows = document.querySelectorAll('tr[data-asset]');
+                rows.forEach(function(row) {
+                    var asset = row.getAttribute('data-asset');
+                    var priceCell = row.querySelector('.price-cell');
+                    var valueCell = row.querySelector('.value-cell');
+                    if (asset === 'USDT') return;
+                    var sym = asset + '/USDT';
+                    var p = priceData[sym];
+                    if (p && priceCell) {
+                        priceCell.textContent = p.toFixed(4);
+                        var totalCell = row.querySelector('.total-cell');
+                        if (totalCell && valueCell) {
+                            var total = parseFloat(totalCell.getAttribute('data-value'));
+                            valueCell.textContent = (total * p).toFixed(2);
+                        }
+                    }
+                });
+
+                // 更新总估值
+                var totalValue = 0;
+                rows.forEach(function(row) {
+                    var asset = row.getAttribute('data-asset');
+                    if (asset === 'USDT') {
+                        totalValue += parseFloat(row.querySelector('.total-cell').getAttribute('data-value'));
+                    } else {
+                        var v = row.querySelector('.value-cell');
+                        if (v && v.textContent !== '—') totalValue += parseFloat(v.textContent);
+                    }
+                });
+                var pv = document.getElementById('portfolio-value');
+                if (pv) pv.textContent = totalValue.toFixed(2);
+
+                // 更新下单提示
+                updateQtyHint();
+            }
+        })
+        .catch(function(e) { console.error('refresh prices', e); });
+}
+
+// 自动刷新控制
+var refreshTimer = null;
+function startRefresh(sec) {
+    stopRefresh();
+    if (sec > 0) {
+        refreshTimer = setInterval(refreshPrices, sec * 1000);
+        document.getElementById('refresh-status').textContent = '自动刷新: ' + sec + '秒';
+    } else {
+        document.getElementById('refresh-status').textContent = '自动刷新: 关闭';
+    }
+}
+function stopRefresh() {
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+// 页面加载
+document.getElementById('order_symbol').addEventListener('change', updateQtyHint);
+document.getElementById('qty_input').addEventListener('input', updateQtyHint);
+
+// 默认5秒刷新
+var defaultSec = 5;
+document.getElementById('refresh_sec').value = defaultSec;
+startRefresh(defaultSec);
+</script>
+{% endblock %}
