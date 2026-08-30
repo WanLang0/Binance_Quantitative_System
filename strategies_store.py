@@ -25,7 +25,7 @@ _TF_MIN = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
 # 美股代币（bStocks/美股永续）：按 symbol 基础币名归类，其余为虚拟货币
 US_TOKENS = {'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'MU', 'MUU',
              'QQQ', 'TQQQ', 'MUB', 'MUUB', 'MUBD', 'SNDKB', 'SKHYB', 'NVDAB',
-             'UNITREE', 'CXMT'}
+             'UNITREE', 'CXMT', 'TREE'}
 
 
 def is_us_symbol(symbol):

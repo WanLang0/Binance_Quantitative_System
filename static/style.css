@@ -162,6 +162,17 @@ input:focus, select:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 2px rgba(37, 99, 235, .12);
 }
+/* 交易对可搜索下拉（自动现货/合约页） */
+.sym-combo { position: relative; }
+.sym-list {
+    display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 30;
+    max-height: 230px; overflow-y: auto; margin-top: 2px;
+    background: #fff; border: 1px solid var(--border-strong); border-radius: 6px;
+    box-shadow: 0 8px 20px rgba(16, 24, 40, .14);
+}
+.sym-opt { padding: 4px 10px; font-size: .9rem; cursor: pointer; white-space: nowrap; }
+.sym-opt:hover { background: var(--primary-soft); color: var(--primary); }
+.sym-empty { padding: 6px 10px; font-size: .88rem; color: var(--muted); }
 /* 深色搜索框（策略页历史记录搜索等，覆盖全局白底输入框） */
 input.search-input {
     background: #0f1319 !important;

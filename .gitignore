@@ -17,7 +17,7 @@ data/*.db-wal
 data/*.db-shm
 
 # 环境配置（代理等，按机器不同）
-.env
+# .env
 
 # 回测结果产物
 results/

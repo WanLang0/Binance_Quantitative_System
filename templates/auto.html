@@ -37,12 +37,14 @@
         <form method="POST" action="/auto">
             <div class="form-grid">
                 <div class="field">
-                    <label>交易对</label>
-                    <select name="symbol">
-                        {% for s in symbols %}
-                        <option value="{{ s }}" {% if status and status.symbol == s %}selected{% endif %}>{{ s }}</option>
-                        {% endfor %}
-                    </select>
+                    <label>交易对（输入过滤）</label>
+                    <div class="sym-combo">
+                        <input type="text" name="symbol" id="sym-input" autocomplete="off"
+                               placeholder="输入代码过滤，如 NVDA"
+                               value="{{ status.symbol if status and status.symbol else symbols[0] }}"
+                               oninput="symFilter()" onfocus="symFilter()">
+                        <div class="sym-list" id="sym-list"></div>
+                    </div>
                 </div>
                 <div class="field">
                     <label>时间周期</label>
@@ -172,6 +174,29 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+// ---- 交易对可搜索下拉（模糊匹配，不区分大小写） ----
+var SYM_ALL = {{ symbols | tojson }};
+var symInput = document.getElementById('sym-input');
+var symList = document.getElementById('sym-list');
+function symFilter() {
+    var q = symInput.value.trim().toUpperCase();
+    var hits = q ? SYM_ALL.filter(function (s) { return s.toUpperCase().indexOf(q) >= 0; }) : SYM_ALL;
+    symList.innerHTML = hits.length
+        ? hits.map(function (s) { return '<div class="sym-opt" data-v="' + s + '">' + s + '</div>'; }).join('')
+        : '<div class="sym-empty">无匹配交易对</div>';
+    symList.style.display = 'block';
+}
+symList.addEventListener('click', function (e) {
+    var opt = e.target.closest('.sym-opt');
+    if (!opt) return;
+    symInput.value = opt.dataset.v;
+    symList.style.display = 'none';
+});
+document.addEventListener('click', function (e) {
+    if (!e.target.closest('.sym-combo')) symList.style.display = 'none';
+});
+</script>
 <script>
 var RUNNING = {% if status and status.running %}true{% else %}false{% endif %};
 var pollTimer = null;

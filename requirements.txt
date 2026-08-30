@@ -1,6 +1,6 @@
 ccxt==4.1.77
 pandas==2.1.4
-numpy==1.24.3
+numpy==1.26.4
 matplotlib==3.7.2
 seaborn==0.12.2
 flask==3.1.3

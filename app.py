@@ -562,7 +562,8 @@ def download_trades():
 
 # ==================== 模拟现货交易 ====================
 
-DEMO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUUB/USDT", "TQQQ/USDT", "QQQ/USDT"]
+DEMO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUUB/USDT", "TQQQ/USDT", "QQQ/USDT",
+                "CXMT/USDT", "TREE/USDT"]
 # 现货 Demo 默认 API 密钥（已移除硬编码，请在页面手动填写或配置环境变量）
 DEFAULT_DEMO_API_KEY = ""
 DEFAULT_DEMO_API_SECRET = ""
@@ -608,7 +609,8 @@ def _prewarm_trader(trader):
 # 合约交易对列表（USDT永续；bStocks 永续需用完整符号 :USDT）
 FUTURES_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT",
                    "TON/USDT", "NEAR/USDT", "AVAX/USDT", "XLM/USDT", "ICP/USDT", "LTC/USDT",
-                   "MU/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT"]
+                   "MU/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT",
+                   "CXMT/USDT:USDT", "TREE/USDT:USDT", "NVDA/USDT:USDT"]
 # 合约交易器缓存与自动合约引擎
 _futures_traders = {}
 _auto_futures = None
