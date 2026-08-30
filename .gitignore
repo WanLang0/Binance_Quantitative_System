@@ -12,6 +12,7 @@ data/auto_futures_state.json
 data/spot_tasks.json
 data/futures_tasks.json
 data/x.html
+data/logs/
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm

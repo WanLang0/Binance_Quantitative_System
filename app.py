@@ -144,8 +144,8 @@ _load_env_file()
 
 # 全局数据获取器（单例，按需切换现货/合约）
 _data_fetcher = None
-# 全局自动交易引擎（单例）
-_auto_trader = None
+# 全局自动交易引擎（多实例：task_id -> AutoTrader，支持多任务并行运行）
+_auto_traders = {}
 # DemoTrader 实例缓存（按 api_key 缓存，避免每次请求重建 ccxt 触发 load_markets 拖慢页面）
 _demo_traders = {}
 # 市场概览缓存（60秒过期，避免每次打开首页都走代理请求阻塞）
@@ -613,7 +613,8 @@ FUTURES_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "
                    "CXMT/USDT:USDT", "TREE/USDT:USDT", "NVDA/USDT:USDT"]
 # 合约交易器缓存与自动合约引擎
 _futures_traders = {}
-_auto_futures = None
+# 合约自动引擎（多实例：task_id -> AutoFutures，支持多任务并行运行）
+_auto_futures_engines = {}
 # 每格默认参数
 FUTURES_LEVERAGE = 5
 # 合约测试网默认 API 密钥（已移除硬编码，请在页面手动填写或配置环境变量）
@@ -676,6 +677,137 @@ def _futures_display_data(auto_futures, symbol, ttl=8):
     return data
 
 
+# ==================== 交易对列表：静态基础 + 历史测试过的币种动态扩充 ====================
+
+def _symbols_from_history():
+    """从策略记录库提取历史测试过的真实交易对（过滤汇总行如'DOGE~XLM等10山寨'），返回 base 币名集合"""
+    bases = set()
+    try:
+        import re
+        pat = re.compile(r'^([A-Z0-9]{2,15})/USDT(:USDT)?$')
+        with _store._conn() as c:
+            rows = c.execute("SELECT DISTINCT symbol FROM strategy_records").fetchall()
+        for r in rows:
+            m = pat.match((r[0] or '').strip().upper())
+            if m:
+                bases.add(m.group(1))
+    except Exception:
+        pass
+    return bases
+
+
+def spot_symbol_list():
+    """现货下拉：静态列表 + 历史测试过的币（统一 X/USDT 格式）"""
+    out = list(DEMO_SYMBOLS)
+    for b in sorted(_symbols_from_history()):
+        s = f'{b}/USDT'
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def futures_symbol_list():
+    """合约下拉：静态列表 + 历史测试过的币（bStocks 用 X/USDT:USDT，加密用 X/USDT）"""
+    out = list(FUTURES_SYMBOLS)
+    for b in sorted(_symbols_from_history()):
+        s = f'{b}/USDT:USDT' if _store.is_us_symbol(f'{b}/USDT') else f'{b}/USDT'
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _market_check(trader, symbol, market_label):
+    """校验交易对在币安对应市场存在且可交易；返回 None=通过，字符串=错误提示（启动前拦截）"""
+    if trader is None:
+        return None
+    try:
+        mkt = trader.exchange.market(symbol)
+        if not mkt:
+            return f"{symbol} 不在币安{market_label}市场，无法启动"
+        if not mkt.get('active', True):
+            return f"{symbol} 在币安{market_label}市场已下架/停牌，无法启动"
+        return None
+    except Exception as e:
+        return f"{symbol} 不在币安{market_label}市场，无法启动（{e}）"
+
+
+# ==================== 自动合约：多实例任务管理 ====================
+
+def _fut_running_engines():
+    """运行中的合约引擎列表（按 task_id 倒序，最新在前）"""
+    return [e for tid, e in sorted(_auto_futures_engines.items(), reverse=True) if e.status.get('running')]
+
+
+def _fut_tasks_view():
+    """任务列表叠加实时运行状态（磁盘记录 + 内存引擎标记）"""
+    tasks = AutoFutures.list_tasks()
+    for t in tasks:
+        eng = _auto_futures_engines.get(t.get('id'))
+        t['is_running'] = bool(eng and eng.status.get('running'))
+    return tasks
+
+
+def _fut_log_lines(task_id):
+    """读取任务磁盘日志全量行（运行中/已停止任务通用；无文件返回空）。task_id 仅数字，防路径穿越"""
+    if not task_id or not str(task_id).isdigit():
+        return []
+    path = os.path.join('data', 'logs', f'futures_{task_id}.log')
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return [ln.rstrip('\n') for ln in f if ln.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _fut_fix_stale_running():
+    """把磁盘上标记 running 但进程内无引擎的合约任务改为 stopped（服务崩溃残留）"""
+    try:
+        tasks = AutoFutures.list_tasks()
+        changed = False
+        for t in tasks:
+            if t.get('status') == 'running' and t.get('id') not in _auto_futures_engines:
+                t['status'] = 'stopped'
+                changed = True
+        if changed:
+            import auto_futures as _af
+            with open(_af.TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _fut_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, indicator_params,
+                    step_pct, max_levels, stop_pct, long_only, api_key, api_secret,
+                    shared_trader, leverage, testnet):
+    """启动一个合约量化任务（多实例并行；同币种已有运行任务则拒绝；币种不在币安合约市场则拒绝）"""
+    for e in _auto_futures_engines.values():
+        if e.status.get('running') and e.status.get('symbol') == symbol:
+            return False, f"{symbol} 已有运行中的任务，请先停止后再启动同币种任务"
+    mkt_err = _market_check(shared_trader, symbol, '合约')
+    if mkt_err:
+        return False, mkt_err
+    eng = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
+    if mode == 'grid':
+        ok, msg = eng.start(symbol, timeframe, {}, qty_usdt, interval,
+                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels, stop_pct=0)
+    else:
+        ok, msg = eng.start(symbol, timeframe, indicator_params, qty_usdt, interval,
+                            strategies=strategies, mode='standard', stop_pct=stop_pct, long_only=long_only)
+    if ok:
+        _auto_futures_engines[eng._task_id] = eng
+    return ok, msg
+
+
+def _fut_stop_task(task_id):
+    """停止单个合约任务并移出运行字典"""
+    eng = _auto_futures_engines.pop(task_id, None)
+    if not eng:
+        return False, f"任务未在运行: {task_id}"
+    return eng.stop()
+
+
 @app.route("/futures", methods=["GET", "POST"])
 def futures():
     """自动合约交易监控页面"""
@@ -701,42 +833,47 @@ def futures():
 
     if not api_key or not api_secret:
         return render_template("futures.html", error="请输入合约测试网 API 密钥",
-                              message=None, running=False, status=None, symbols=FUTURES_SYMBOLS,
+                              message=None, running=False, status=None, symbols=futures_symbol_list(),
                               timeframe_options=TIMEFRAME_OPTIONS, strategies=STRATEGIES,
                               leverage=leverage, api_key=api_key, api_secret=api_secret, network=network,
+                              tasks=None, running_count=0, cur_task_id=None,
                               alert_email=(_auth.get_email_config(session.get('user', '')) or {}).get('email'),
                               mark_price=None, positions=None, open_orders=None, account_balance=None)
 
-    global _auto_futures
     shared_trader = _get_futures_trader(api_key, api_secret, leverage, testnet)
-    if not _auto_futures or _auto_futures.api_key != api_key or _auto_futures.trader.testnet != testnet:
-        _auto_futures = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage)
-    # 同步杠杆变更到引擎与交易器（改杠杆无需重启，下次开仓即按新杠杆计算张数）
-    _auto_futures.leverage = leverage
+    # 杠杆变更同步到共享交易器（改杠杆无需重启，下次开仓即按新杠杆计算张数）
     if shared_trader:
         shared_trader.leverage = leverage
-    if not _auto_futures.status.get('running'):
-        _auto_futures.status['leverage'] = leverage
 
-    # 若尚未启动，从磁盘恢复上次的配置与持仓
-    if not _auto_futures.status.get('running'):
-        _auto_futures.load_state()
+    # 页面加载时清理僵尸记录（服务崩溃残留的 running 标记）
+    if request.method == "GET":
+        _fut_fix_stale_running()
+
+    # 当前查看实例：优先最新运行中的任务（展示数据/状态卡/手动平仓都作用于它）
+    view_engines = _fut_running_engines()
+    view_engine = view_engines[0] if view_engines else None
+    view_symbol = (view_engine.status.get('symbol') if view_engine else None) or 'BTC/USDT'
 
     # 展示数据（持仓/余额/价格/挂单）走 8 秒缓存，避免每次刷新页面都串行等待多个代理请求
-    disp = _futures_display_data(_auto_futures, _auto_futures.status.get('symbol') or 'BTC/USDT')
+    if view_engine is None and shared_trader:
+        # 无运行任务：建轻量展示实例（不 start 线程，仅复用共享交易器拉展示数据）
+        view_engine = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
+    if view_engine:
+        disp = _futures_display_data(view_engine, view_symbol)
+    else:
+        disp = {'mark_price': None, 'positions': [], 'open_orders': [], 'balance': None}
 
     # 绑定成功提示：校验密钥可用性并读取 USDT 余额
     if request.args.get('_saved') == '1':
         try:
             usdt = 0.0
-            bal_list, bErr = _auto_futures.trader.get_balance()
+            bal_list, bErr = shared_trader.get_balance()
             if bErr:
                 raise RuntimeError(bErr)
             for b in bal_list:
                 if b['asset'] == 'USDT':
                     usdt = float(b['free'])
                     break
-            _auto_futures.status['account_balance'] = round(usdt, 2)
             message = f"API 密钥绑定成功！合约账户 USDT 余额：{usdt:.2f} USDT"
         except Exception as e:
             error = f"API 密钥绑定失败，请检查密钥/IP/合约权限：{e}"
@@ -759,52 +896,55 @@ def futures():
         if mode == 'grid':
             step_pct = _to_float(form.get("grid_step"), 1) / 100
             max_levels = _to_int(form.get("grid_max_levels"), 12)
-            ok, msg = _auto_futures.start(symbol, timeframe, {}, qty_usdt, interval,
-                                          strategies=[], mode=mode, step_pct=step_pct, max_levels=max_levels,
-                                          stop_pct=0)
+            ok, msg = _fut_start_task(symbol, timeframe, qty_usdt, interval, 'grid', [], {},
+                                      step_pct, max_levels, 0, False,
+                                      api_key, api_secret, shared_trader, leverage, testnet)
         else:
             selected_strategies = [v for v in STRATEGIES if form.get(f"strategy_{v.lower()}")]
             if not selected_strategies:
                 selected_strategies = ["RSI"]
             indicator_params = _build_indicators(form, selected_strategies)
             long_only = bool(form.get("long_only"))  # 仅做多：卖出信号只平仓不开空
-            ok, msg = _auto_futures.start(symbol, timeframe, indicator_params, qty_usdt, interval,
-                                          strategies=selected_strategies, mode='standard',
-                                          stop_pct=stop_pct, long_only=long_only)
+            ok, msg = _fut_start_task(symbol, timeframe, qty_usdt, interval, 'standard', selected_strategies,
+                                      indicator_params, 0.01, 12, stop_pct, long_only,
+                                      api_key, api_secret, shared_trader, leverage, testnet)
         return redirect(url_for('futures', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "resume_task":
-        # 恢复历史量化任务（服务崩溃后从任务列表一键续跑）
+        # 恢复历史量化任务（多实例：与其他任务并行，按原参数起新任务）
         tid = form.get("task_id")
-        task = next((t for t in _auto_futures.list_tasks() if t.get('id') == tid), None)
+        task = next((t for t in AutoFutures.list_tasks() if t.get('id') == tid), None)
         if not task:
             return redirect(url_for('futures', _error=f"任务不存在或已丢失: {tid}"))
-        if _auto_futures.status.get('running'):
-            return redirect(url_for('futures', _error='已有任务在运行，请先停止再恢复'))
         if testnet and ":USDT:USDT" in task['symbol']:
             return redirect(url_for('futures', _error=f"测试网无 {task['symbol']} 合约，请把网络切换为「主网」后恢复"))
-        _auto_futures.leverage = int(task.get('leverage', 5))
-        if shared_trader:
-            shared_trader.leverage = _auto_futures.leverage
+        task_lev = int(task.get('leverage', 5))
         sp = float(task.get('stop_pct', 0) or 0)
         if task.get('mode') == 'grid':
-            ok, msg = _auto_futures.start(task['symbol'], task['timeframe'], {},
-                                          float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
-                                          strategies=[], mode='grid',
-                                          step_pct=float(task.get('grid_step', 0.01)),
-                                          max_levels=int(task.get('grid_max_levels', 12)), stop_pct=0)
+            ok, msg = _fut_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
+                                      int(task.get('interval', 30)), 'grid', [], {},
+                                      float(task.get('grid_step', 0.01)), int(task.get('grid_max_levels', 12)), 0, False,
+                                      api_key, api_secret, shared_trader, task_lev, testnet)
         else:
             names = task.get('strategies') or ["RSI"]
             ip = _strategy_params_from_names(names)
-            ok, msg = _auto_futures.start(task['symbol'], task['timeframe'], ip,
-                                          float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
-                                          strategies=names, mode='standard', stop_pct=sp,
-                                          long_only=bool(task.get('long_only', False)))
+            ok, msg = _fut_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
+                                      int(task.get('interval', 30)), 'standard', names, ip,
+                                      0.01, 12, sp, bool(task.get('long_only', False)),
+                                      api_key, api_secret, shared_trader, task_lev, testnet)
+        return redirect(url_for('futures', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop_task":
+        # 停止单个合约量化任务
+        ok, msg = _fut_stop_task(form.get("task_id"))
         return redirect(url_for('futures', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "delete_task":
-        # 删除量化任务记录（仅删历史记录，不影响运行中的引擎）
-        ok, msg = _auto_futures.delete_task(form.get("task_id"))
+        # 删除量化任务记录（运行中的任务需先停止）
+        tid = form.get("task_id")
+        if tid in _auto_futures_engines and _auto_futures_engines[tid].status.get('running'):
+            return redirect(url_for('futures', _error='任务运行中，请先停止再删除'))
+        ok, msg = AutoFutures.delete_task(tid)
         return redirect(url_for('futures', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "save_email":
@@ -815,19 +955,41 @@ def futures():
         return redirect(url_for('settings'))
 
     elif request.method == "POST" and form.get("action") == "stop":
-        _auto_futures.stop()
-        return redirect(url_for('futures'))
+        # 停止全部运行中的合约任务
+        stopped = 0
+        for tid in list(_auto_futures_engines.keys()):
+            ok, _msg = _fut_stop_task(tid)
+            if ok:
+                stopped += 1
+        return redirect(url_for('futures', _error='' if stopped else '没有运行中的任务'))
     elif request.method == "POST" and form.get("action") == "close_position":
-        # 手动平掉当前持仓
-        if _auto_futures:
-            symbol = _auto_futures.status.get('symbol') or 'BTC/USDT'
-            side = _auto_futures.status.get('side', 'none')
+        # 手动平掉指定任务（或最新运行中任务）的持仓
+        tid = form.get("task_id")
+        eng = _auto_futures_engines.get(tid) if tid else (view_engines[0] if view_engines else None)
+        if eng and not eng.status.get('running'):
+            eng = None
+        eng = eng or (view_engines[0] if view_engines else None)
+        if eng:
+            symbol = eng.status.get('symbol') or 'BTC/USDT'
+            side = eng.status.get('side', 'none')
             if side != 'none':
-                _auto_futures._close_position(symbol, side)
-                error = None
+                eng._close_position(symbol, side)
         return redirect(url_for('futures'))
 
-    status = _auto_futures.get_status()
+    # ---- 页面渲染：状态卡默认展示最新运行中的任务；无运行任务展示上次持久化配置 ----
+    tasks = _fut_tasks_view()
+    engines = _fut_running_engines()
+    if engines:
+        status = engines[0].get_status()
+    else:
+        saved = {}
+        try:
+            if os.path.exists(FUTURES_STATE_FILE):
+                with open(FUTURES_STATE_FILE, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+        except Exception:
+            saved = {}
+        status = {'running': False, 'log': [], **saved} if saved else None
 
     # 展示数据直接取缓存结果（_futures_display_data 已聚合拉取）
     mark_price = disp['mark_price']
@@ -835,13 +997,16 @@ def futures():
     acc_bal = disp['balance']
     open_orders = disp['open_orders']
 
+    cur_task_id = engines[0]._task_id if engines else (tasks[0]['id'] if tasks else None)
     return render_template("futures.html", error=error, message=message,
-                          running=status['running'], status=status, symbols=FUTURES_SYMBOLS,
+                          running=bool(engines), status=status, symbols=futures_symbol_list(),
                           timeframe_options=TIMEFRAME_OPTIONS,
                           strategies=STRATEGIES, mark_price=mark_price,
                           positions=positions, open_orders=open_orders,
                           account_balance=acc_bal, leverage=leverage, network=network,
-                          tasks=_auto_futures.list_tasks(),
+                          tasks=tasks,
+                          running_count=len(engines),
+                          cur_task_id=cur_task_id,
                           api_key=api_key, api_secret=api_secret)
 
 
@@ -1474,24 +1639,58 @@ def strategies_summary():
 
 @app.route("/futures/api/status")
 def futures_status():
-    """JSON 接口：返回自动合约交易状态（供前端 AJAX 轮询刷新）"""
+    """JSON 接口：返回合约任务列表 + 指定任务状态（供前端 AJAX 轮询/切换任务）"""
     from flask import jsonify
-    if not _auto_futures:
-        saved = {}
+    tid = request.args.get('task_id')
+    tasks = _fut_tasks_view()
+    brief = [{'id': t.get('id'), 'symbol': t.get('symbol'), 'timeframe': t.get('timeframe'),
+              'mode': t.get('mode'), 'strategies': t.get('strategies'), 'qty_usdt': t.get('qty_usdt'),
+              'interval': t.get('interval'), 'started_at': t.get('started_at'), 'leverage': t.get('leverage'),
+              'is_running': t.get('is_running', False)} for t in tasks]
+    eng = None
+    if tid:
+        eng = _auto_futures_engines.get(tid)
+    else:
+        engines = _fut_running_engines()
+        eng = engines[0] if engines else None
+    if eng:
+        # 实时刷新合约持仓与余额，让前端看到最新未实现盈亏/强平价
         try:
-            if os.path.exists(FUTURES_STATE_FILE):
-                with open(FUTURES_STATE_FILE, 'r', encoding='utf-8') as f:
-                    saved = json.load(f)
+            symbol = eng.status.get('symbol') or 'BTC/USDT'
+            eng._refresh_real_position(symbol)
         except Exception:
-            saved = {}
-        return jsonify({"running": False, "log": ["未启动"], **saved})
-    # 实时刷新合约持仓与余额，让前端看到最新未实现盈亏/强平价
-    try:
-        symbol = _auto_futures.status.get('symbol') or 'BTC/USDT'
-        _auto_futures._refresh_real_position(symbol)
-    except Exception:
-        pass
-    return jsonify(_auto_futures.get_status())
+            pass
+        cur = eng.get_status()
+        cur['id'] = eng._task_id  # 任务ID（供前端定位当前查看任务，如合约手动平仓）
+        disk = _fut_log_lines(eng._task_id)
+        if disk:
+            cur['log'] = disk
+    else:
+        cur = {'running': False, 'log': ['未启动']}
+        if tid:
+            rec = next((t for t in tasks if t.get('id') == tid), None)
+            if rec:
+                cur = {**rec, 'running': False, 'log': _fut_log_lines(tid) or ['（该任务暂无日志）']}
+    return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+@app.route("/futures/api/export")
+def futures_export():
+    """导出单个合约任务的配置或日志文件"""
+    tid = request.args.get('task_id', '')
+    typ = request.args.get('type', 'log')
+    rec = next((t for t in AutoFutures.list_tasks() if t.get('id') == tid), None)
+    if not rec:
+        abort(404)
+    if typ == 'config':
+        content = json.dumps(rec, ensure_ascii=False, indent=2)
+        fname, mime = f'futures_config_{tid}.json', 'application/json'
+    else:
+        lines = _fut_log_lines(tid)
+        content = '\n'.join(lines) if lines else '（该任务暂无日志）'
+        fname, mime = f'futures_log_{tid}.log', 'text/plain'
+    return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
+                     download_name=fname, mimetype=mime)
 
 
 @app.route("/demo", methods=["GET", "POST"])
@@ -1671,10 +1870,68 @@ def demo_prices():
     return jsonify({"prices": prices})
 
 
+# ==================== 自动现货：多实例任务管理 ====================
+
+def _spot_running_engines():
+    """运行中的现货引擎列表（按 task_id 倒序，最新在前）"""
+    return [e for tid, e in sorted(_auto_traders.items(), reverse=True) if e.status.get('running')]
+
+
+def _spot_tasks_view():
+    """任务列表叠加实时运行状态（磁盘记录 + 内存引擎标记）"""
+    tasks = AutoTrader.list_tasks()
+    for t in tasks:
+        eng = _auto_traders.get(t.get('id'))
+        t['is_running'] = bool(eng and eng.status.get('running'))
+    return tasks
+
+
+def _spot_log_lines(task_id):
+    """读取任务磁盘日志全量行（运行中/已停止任务通用；无文件返回空）。task_id 仅数字，防路径穿越"""
+    if not task_id or not str(task_id).isdigit():
+        return []
+    path = os.path.join('data', 'logs', f'spot_{task_id}.log')
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return [ln.rstrip('\n') for ln in f if ln.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, indicator_params,
+                     step_pct, max_levels, api_key, api_secret, shared_trader):
+    """启动一个现货量化任务（多实例并行；同币种已有运行任务则拒绝；币种不在币安现货市场则拒绝）"""
+    for e in _auto_traders.values():
+        if e.status.get('running') and e.status.get('symbol') == symbol:
+            return False, f"{symbol} 已有运行中的任务，请先停止后再启动同币种任务"
+    mkt_err = _market_check(shared_trader, symbol, '现货')
+    if mkt_err:
+        return False, mkt_err
+    eng = AutoTrader(api_key, api_secret, trader=shared_trader)
+    if mode == 'grid':
+        ok, msg = eng.start(symbol, timeframe, {}, qty_usdt, interval,
+                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels)
+    else:
+        ok, msg = eng.start(symbol, timeframe, indicator_params, qty_usdt, interval,
+                            strategies=strategies, mode='standard')
+    if ok:
+        _auto_traders[eng._task_id] = eng
+    return ok, msg
+
+
+def _spot_stop_task(task_id):
+    """停止单个现货任务并移出运行字典"""
+    eng = _auto_traders.pop(task_id, None)
+    if not eng:
+        return False, f"任务未在运行: {task_id}"
+    return eng.stop()
+
+
 @app.route("/auto", methods=["GET", "POST"])
 def auto():
-    """自动现货交易监控页面"""
-    from flask import jsonify
+    """自动现货交易监控页面（多任务并行）"""
     form = request.form
     # 自动现货使用独立密钥（不与模拟现货共用）；预填充优先级：表单 > auto会话 > 合约会话 > 合约默认密钥
     api_key = form.get("api_key") or session.get("auto_api_key") or session.get("futures_api_key") or DEFAULT_FUTURES_API_KEY
@@ -1689,25 +1946,19 @@ def auto():
 
     if not api_key or not api_secret:
         return render_template("auto.html", error="请输入自动现货 API 密钥",
-                              message=None, running=False, status=None, symbols=DEMO_SYMBOLS,
+                              message=None, running=False, status=None, symbols=spot_symbol_list(),
                               timeframe_options=TIMEFRAME_OPTIONS, strategies=STRATEGIES,
+                              tasks=None, running_count=0, cur_task_id=None,
                               api_key=api_key, api_secret=api_secret)
 
-    global _auto_trader
-    # 复用缓存 DemoTrader，避免每次启动自动交易都重建 ccxt 触发 load_markets 拖慢
+    # 复用缓存 DemoTrader，避免每次启动任务都重建 ccxt 触发 load_markets 拖慢
     shared_trader = _get_demo_trader_for(api_key, api_secret)
-    if not _auto_trader or _auto_trader.api_key != api_key:
-        _auto_trader = AutoTrader(api_key, api_secret, trader=shared_trader)
 
-    # 若尚未启动，从磁盘恢复上次的配置与持仓（断网/重启后恢复）
-    if not _auto_trader.status.get('running'):
-        _auto_trader.load_state()
-
-    # 绑定成功提示：校验密钥可用性并读取 USDT 余额
+    # 绑定成功提示：校验密钥可用性并读取 USDT 余额（用共享交易器，无需引擎实例）
     error = None
     if request.args.get('_saved') == '1':
         try:
-            bal_list, bErr = _auto_trader.trader.get_balance()
+            bal_list, bErr = (shared_trader.get_balance() if shared_trader else (None, '未配置密钥'))
             if bErr:
                 raise RuntimeError(bErr)
             usdt = 0.0
@@ -1715,7 +1966,6 @@ def auto():
                 if b['asset'] == 'USDT':
                     usdt = float(b['free'])
                     break
-            _auto_trader.status['account_balance'] = round(usdt, 2)
             message = f"API 密钥绑定成功！现货账户 USDT 余额：{usdt:.2f} USDT"
         except Exception as e:
             error = f"API 密钥绑定失败，请检查密钥权限：{e}"
@@ -1723,6 +1973,11 @@ def auto():
     # 启动自动交易（仅 POST；_saved 提示优先展示）
     if request.args.get('_saved') != '1':
         error = request.args.get('_error', '') or None
+
+    # ---- 页面加载时清理僵尸记录：磁盘上标 running 但进程内已无对应引擎（服务崩溃残留） ----
+    if request.method == "GET":
+        _spot_fix_stale_running()
+
     if request.method == "POST" and form.get("action") == "start":
         symbol = form.get("symbol", "BTC/USDT")
         timeframe = form.get("timeframe", "15m")
@@ -1730,67 +1985,68 @@ def auto():
         interval = _to_int(form.get("interval"), 30)
         mode = form.get("mode", "standard")
         if mode == 'grid':
-            step_pct = _to_float(form.get("grid_step"), 1) / 100  # 前端为百分数(如1表示1%)，转为小数
+            step_pct = _to_float(form.get("grid_step"), 1) / 100
             max_levels = _to_int(form.get("grid_max_levels"), 12)
-            ok, msg = _auto_trader.start(symbol, timeframe, {}, qty_usdt, interval,
-                                         strategies=[], mode=mode, step_pct=step_pct, max_levels=max_levels)
+            ok, msg = _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, [], {},
+                                       step_pct, max_levels, api_key, api_secret, shared_trader)
         else:
-            # 标准多策略 OR
             selected_strategies = [v for v in STRATEGIES if form.get(f"strategy_{v.lower()}")]
             if not selected_strategies:
                 selected_strategies = ["RSI"]
             indicator_params = _build_indicators(form, selected_strategies)
-            ok, msg = _auto_trader.start(symbol, timeframe, indicator_params, qty_usdt, interval,
-                                         strategies=selected_strategies, mode='standard')
+            ok, msg = _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, selected_strategies,
+                                       indicator_params, 0.01, 12, api_key, api_secret, shared_trader)
         # PRG：POST 处理完重定向到 GET，避免刷新页面重放 start 导致重复下单
         return redirect(url_for('auto', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "resume_task":
-        # 恢复历史现货量化任务（服务崩溃后从任务列表一键续跑）
+        # 恢复历史现货量化任务（多实例：与其他任务并行，按原参数起新任务）
         tid = form.get("task_id")
-        task = next((t for t in _auto_trader.list_tasks() if t.get('id') == tid), None)
+        task = next((t for t in AutoTrader.list_tasks() if t.get('id') == tid), None)
         if not task:
             return redirect(url_for('auto', _error=f"任务不存在或已丢失: {tid}"))
-        if _auto_trader.status.get('running'):
-            return redirect(url_for('auto', _error='已有任务在运行，请先停止再恢复'))
+        step_pct = float(task.get('grid_step', 0.01))
+        max_levels = int(task.get('grid_max_levels', 12))
         if task.get('mode') == 'grid':
-            ok, msg = _auto_trader.start(task['symbol'], task['timeframe'], {},
-                                         float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
-                                         strategies=[], mode='grid',
-                                         step_pct=float(task.get('grid_step', 0.01)),
-                                         max_levels=int(task.get('grid_max_levels', 12)))
+            ok, msg = _spot_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
+                                       int(task.get('interval', 30)), 'grid', [], {},
+                                       step_pct, max_levels, api_key, api_secret, shared_trader)
         else:
             names = task.get('strategies') or ["RSI"]
             ip = _strategy_params_from_names(names)
-            ok, msg = _auto_trader.start(task['symbol'], task['timeframe'], ip,
-                                         float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
-                                         strategies=names, mode='standard')
+            ok, msg = _spot_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
+                                       int(task.get('interval', 30)), 'standard', names, ip,
+                                       0.01, 12, api_key, api_secret, shared_trader)
+        return redirect(url_for('auto', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop_task":
+        # 停止单个现货量化任务
+        ok, msg = _spot_stop_task(form.get("task_id"))
         return redirect(url_for('auto', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "delete_task":
-        # 删除现货量化任务记录（仅删历史记录，不影响运行中的引擎）
-        ok, msg = _auto_trader.delete_task(form.get("task_id"))
+        # 删除现货量化任务记录（运行中的任务需先停止）
+        tid = form.get("task_id")
+        if tid in _auto_traders and _auto_traders[tid].status.get('running'):
+            return redirect(url_for('auto', _error='任务运行中，请先停止再删除'))
+        ok, msg = AutoTrader.delete_task(tid)
         return redirect(url_for('auto', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop":
-        _auto_trader.stop()
-        return redirect(url_for('auto'))
+        # 停止全部运行中的现货任务
+        stopped = 0
+        for tid in list(_auto_traders.keys()):
+            ok, _msg = _spot_stop_task(tid)
+            if ok:
+                stopped += 1
+        return redirect(url_for('auto', _error='' if stopped else '没有运行中的任务'))
 
-    status = _auto_trader.get_status()
-    return render_template("auto.html", error=error, message=message, running=status['running'],
-                          status=status, symbols=DEMO_SYMBOLS,
-                          timeframe_options=TIMEFRAME_OPTIONS,
-                          strategies=STRATEGIES,
-                          tasks=_auto_trader.list_tasks(),
-                          api_key=api_key, api_secret=api_secret)
-
-
-@app.route("/auto/api/status")
-def auto_status():
-    """JSON 接口：返回自动交易状态（供前端 AJAX 轮询刷新）"""
-    from flask import jsonify
-    if not _auto_trader:
-        # 未启动：读取上次持久化状态，便于断网/重启后恢复展示
+    # ---- 页面渲染：状态卡/日志默认展示最新运行中的任务；无运行任务则展示上次持久化配置 ----
+    tasks = _spot_tasks_view()
+    engines = _spot_running_engines()
+    if engines:
+        status = engines[0].get_status()
+    else:
         saved = {}
         try:
             if os.path.exists(STATE_FILE):
@@ -1798,16 +2054,92 @@ def auto_status():
                     saved = json.load(f)
         except Exception:
             saved = {}
-        return jsonify({"running": False, "log": ["未启动"], **saved})
-    # 若已配置密钥，实时从交易所刷新真实持仓与余额，让前端看到最新持仓（即使交易已停止）
+        status = {'running': False, 'log': [], **saved} if saved else None
+    running = bool(engines)
+    cur_task_id = engines[0]._task_id if engines else (tasks[0]['id'] if tasks else None)
+    return render_template("auto.html", error=error, message=message, running=running,
+                          status=status, symbols=spot_symbol_list(),
+                          timeframe_options=TIMEFRAME_OPTIONS,
+                          strategies=STRATEGIES,
+                          tasks=tasks,
+                          running_count=len(engines),
+                          cur_task_id=cur_task_id,
+                          api_key=api_key, api_secret=api_secret)
+
+
+def _spot_fix_stale_running():
+    """把磁盘上标记 running 但进程内无引擎的任务改为 stopped（服务崩溃残留）"""
     try:
-        trader = getattr(_auto_trader, 'trader', None)
-        symbol = _auto_trader.status.get('symbol') or 'BTC/USDT'
-        if trader and getattr(trader, 'is_configured', lambda: False)():
-            _auto_trader._refresh_real_position(symbol)
+        tasks = AutoTrader.list_tasks()
+        changed = False
+        for t in tasks:
+            if t.get('status') == 'running' and t.get('id') not in _auto_traders:
+                t['status'] = 'stopped'
+                changed = True
+        if changed:
+            import auto_trader as _at
+            with open(_at.TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    return jsonify(_auto_trader.get_status())
+
+
+@app.route("/auto/api/status")
+def auto_status():
+    """JSON 接口：返回现货任务列表 + 指定任务状态（供前端 AJAX 轮询/切换任务）"""
+    from flask import jsonify
+    tid = request.args.get('task_id')
+    tasks = _spot_tasks_view()
+    brief = [{'id': t.get('id'), 'symbol': t.get('symbol'), 'timeframe': t.get('timeframe'),
+              'mode': t.get('mode'), 'strategies': t.get('strategies'), 'qty_usdt': t.get('qty_usdt'),
+              'interval': t.get('interval'), 'started_at': t.get('started_at'),
+              'is_running': t.get('is_running', False)} for t in tasks]
+    eng = None
+    if tid:
+        eng = _auto_traders.get(tid)
+    else:
+        engines = _spot_running_engines()
+        eng = engines[0] if engines else None
+    if eng:
+        # 实时刷新真实持仓与余额，让前端看到最新持仓（即使交易已停止）
+        try:
+            symbol = eng.status.get('symbol') or 'BTC/USDT'
+            if eng.trader and getattr(eng.trader, 'is_configured', lambda: False)():
+                eng._refresh_real_position(symbol)
+        except Exception:
+            pass
+        cur = eng.get_status()
+        cur['id'] = eng._task_id  # 任务ID（供前端定位当前查看任务）
+        # 日志优先取磁盘全量（内存仅保留最近50条）
+        disk = _spot_log_lines(eng._task_id)
+        if disk:
+            cur['log'] = disk
+    else:
+        cur = {'running': False, 'log': ['未启动']}
+        if tid:
+            rec = next((t for t in tasks if t.get('id') == tid), None)
+            if rec:
+                cur = {**rec, 'running': False, 'log': _spot_log_lines(tid) or ['（该任务暂无日志）']}
+    return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+@app.route("/auto/api/export")
+def auto_export():
+    """导出单个现货任务的配置或日志文件"""
+    tid = request.args.get('task_id', '')
+    typ = request.args.get('type', 'log')
+    rec = next((t for t in AutoTrader.list_tasks() if t.get('id') == tid), None)
+    if not rec:
+        abort(404)
+    if typ == 'config':
+        content = json.dumps(rec, ensure_ascii=False, indent=2)
+        fname, mime = f'spot_config_{tid}.json', 'application/json'
+    else:
+        lines = _spot_log_lines(tid)
+        content = '\n'.join(lines) if lines else '（该任务暂无日志）'
+        fname, mime = f'spot_log_{tid}.log', 'text/plain'
+    return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
+                     download_name=fname, mimetype=mime)
 
 
 if __name__ == "__main__":

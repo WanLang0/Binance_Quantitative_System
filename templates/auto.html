@@ -89,50 +89,52 @@
 
             <div class="btn-row">
                 <button type="submit" name="action" value="start" class="btn btn-primary">启动自动交易</button>
-                <button type="submit" name="action" value="stop" class="btn btn-danger" {% if not status or not status.running %}disabled{% endif %}>停止</button>
-                <span id="run-tag" class="run-tag {% if status and status.running %}on{% endif %}">
-                    {% if status and status.running %}● 运行中{% else %}○ 未运行{% endif %}
+                <button type="submit" name="action" value="stop" class="btn btn-danger" {% if not running_count %}disabled{% endif %}
+                        onclick="return confirm('确定停止全部运行中的任务？')">全部停止</button>
+                <span id="run-tag" class="run-tag {% if running_count %}on{% endif %}">
+                    {% if running_count %}● {{ running_count }} 个任务运行中{% else %}○ 未运行{% endif %}
                 </span>
             </div>
-            <p class="info-note">策略类型：<b>标准多策略(OR)</b>=所勾选策略任一满足即买卖；<b>网格交易</b>=价格每跌一格买、每涨一格卖。买入按金额自动换算数量，卖出清空持仓（网格卖对应格数）。</p>
+            <p class="info-note">策略类型：<b>标准多策略(OR)</b>=所勾选策略任一满足即买卖；<b>网格交易</b>=价格每跌一格买、每涨一格卖。买入按金额自动换算数量，卖出清空持仓（网格卖对应格数）。<b>支持多任务并行</b>：不同币种可同时运行（同币种仅允许一个任务）。</p>
         </form>
     </div>
 
     {% if status %}
-    <!-- 实时状态 -->
+    <!-- 实时状态（跟随下方任务切换） -->
     <div class="card">
-        <h2>📡 实时状态</h2>
+        <h2>📡 实时状态 <span id="cur-task-name" style="font-size:.8rem;color:var(--muted);font-weight:400">
+            {{ status.symbol if status else '' }}{% if status.running %} · 运行中{% endif %}</span></h2>
         <div class="stat-grid">
-            <div class="stat-box"><div class="lbl">交易对</div><div class="val">{{ status.symbol }}</div></div>
-            <div class="stat-box"><div class="lbl">周期</div><div class="val">{{ status.timeframe }}</div></div>
+            <div class="stat-box"><div class="lbl">交易对</div><div class="val" id="st-symbol">{{ status.symbol }}</div></div>
+            <div class="stat-box"><div class="lbl">周期</div><div class="val" id="st-tf">{{ status.timeframe }}</div></div>
             <div class="stat-box"><div class="lbl">模式</div><div class="val" id="st-mode">{{ '标准多策略' if status.mode == 'standard' else '网格交易' }}</div></div>
             <div class="stat-box"><div class="lbl">策略</div><div class="val" id="st-strategies">{{ status.strategies | join(' + ') if status.strategies else '—' }}</div></div>
-            <div class="stat-box"><div class="lbl">买入金额</div><div class="val">{{ '%.0f' | format(status.qty_usdt) if status.qty_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+            <div class="stat-box"><div class="lbl">买入金额</div><div class="val" id="st-qty">{{ '%.0f' | format(status.qty_usdt) if status.qty_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
             <div class="stat-box"><div class="lbl">网格持仓</div><div class="val" id="st-grid">{{ status.grid.filled if status.grid else '—' }} <span style="font-size:.7rem">格</span></div></div>
             <div class="stat-box"><div class="lbl">当前信号</div><div class="val" id="st-signal">{{ status.signal }}</div></div>
-            <div class="stat-box"><div class="lbl">最近价格</div><div class="val">{{ '%.4f' | format(status.last_price) if status.last_price else '—' }}</div></div>
-            <div class="stat-box"><div class="lbl">持仓数量</div><div class="val">{{ '%.8f' | format(status.position) if status.position else '0' }}</div></div>
-            <div class="stat-box"><div class="lbl">持仓均价</div><div class="val">{{ '%.4f' | format(status.avg_price) if status.avg_price else '—' }}</div></div>
+            <div class="stat-box"><div class="lbl">最近价格</div><div class="val" id="st-price">{{ '%.4f' | format(status.last_price) if status.last_price else '—' }}</div></div>
+            <div class="stat-box"><div class="lbl">持仓数量</div><div class="val" id="st-pos">{{ '%.8f' | format(status.position) if status.position else '0' }}</div></div>
+            <div class="stat-box"><div class="lbl">持仓均价</div><div class="val" id="st-avg">{{ '%.4f' | format(status.avg_price) if status.avg_price else '—' }}</div></div>
             <div class="stat-box"><div class="lbl">账户余额(USDT)</div><div class="val" id="st-balance">{{ '%.2f' | format(status.account_balance) if status.account_balance else '—' }}</div></div>
             <div class="stat-box"><div class="lbl">真实持仓数量</div><div class="val" id="st-realpos">{{ '%.8f' | format(status.real_position) if status.real_position else '0' }}</div></div>
             <div class="stat-box"><div class="lbl">真实持仓市值</div><div class="val" id="st-realvalue">{{ '%.2f' | format(status.real_value_usdt) if status.real_value_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
-            <div class="stat-box"><div class="lbl">买入次数</div><div class="val">{{ status.buy_count }}</div></div>
-            <div class="stat-box"><div class="lbl">卖出次数</div><div class="val">{{ status.sell_count }}</div></div>
+            <div class="stat-box"><div class="lbl">买入次数</div><div class="val" id="st-buyc">{{ status.buy_count }}</div></div>
+            <div class="stat-box"><div class="lbl">卖出次数</div><div class="val" id="st-sellc">{{ status.sell_count }}</div></div>
         </div>
         {% if status.last_error %}
-        <div class="alert alert-error" style="margin-top:8px">上次错误：{{ status.last_error }}</div>
+        <div class="alert alert-error" style="margin-top:8px" id="st-error">上次错误：{{ status.last_error }}</div>
         {% endif %}
     </div>
 
-    <!-- 量化任务列表（崩溃恢复） -->
+    <!-- 量化任务列表（多任务并行：单任务启停/切换查看/导出） -->
     {% if tasks %}
     <div class="card">
-        <h2>🗂️ 量化任务列表（{{ tasks | length }} 条，服务重启后可一键恢复）</h2>
+        <h2>🗂️ 量化任务列表（{{ tasks | length }} 条，{{ running_count }} 个运行中）</h2>
         <div class="table-wrap">
         <table class="table">
             <tr><th>启动时间</th><th>交易对</th><th>周期</th><th>模式</th><th>策略</th><th>买入金额</th><th>轮询间隔</th><th>状态</th><th>操作</th></tr>
             {% for t in tasks %}
-            <tr>
+            <tr data-id="{{ t.id }}">
                 <td>{{ t.started_at }}</td>
                 <td><b>{{ t.symbol }}</b></td>
                 <td>{{ t.timeframe }}</td>
@@ -140,25 +142,46 @@
                 <td>{{ t.strategies | join('+') if t.strategies else '—' }}</td>
                 <td>{{ t.qty_usdt }}U</td>
                 <td>{{ t.interval }}s</td>
-                <td>{% if running and t.status == 'running' %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
-                <td>
+                <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
+                <td style="white-space:nowrap">
                     <form method="POST" action="/auto" style="display:inline">
                         <input type="hidden" name="task_id" value="{{ t.id }}">
-                        <button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 12px" {% if running %}disabled{% endif %}>继续运行</button>
-                        <button type="submit" name="action" value="delete_task" class="btn btn-cancel" style="padding:3px 12px" onclick="return confirm('确定删除该任务记录？删除后不可恢复。')">删除</button>
+                        <button type="button" class="btn" style="padding:3px 10px" onclick="selectTask('{{ t.id }}')">查看</button>
+                        {% if t.is_running %}
+                        <button type="submit" name="action" value="stop_task" class="btn btn-danger" style="padding:3px 10px"
+                                onclick="return confirm('确定停止该任务？')">停止</button>
+                        {% else %}
+                        <button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 10px">继续运行</button>
+                        {% endif %}
+                        <button type="submit" name="action" value="delete_task" class="btn btn-cancel" style="padding:3px 10px"
+                                {% if t.is_running %}disabled{% endif %}
+                                onclick="return confirm('确定删除该任务记录？删除后不可恢复。')">删除</button>
                     </form>
+                    <a class="btn" style="padding:3px 10px" href="/auto/api/export?task_id={{ t.id }}&type=config">导出配置</a>
+                    <a class="btn" style="padding:3px 10px" href="/auto/api/export?task_id={{ t.id }}&type=log">导出日志</a>
                 </td>
             </tr>
             {% endfor %}
         </table>
         </div>
-        <p class="info-note">每次「启动自动交易」都会记录一条任务；服务崩溃后重启，打开本页即可看到历史任务，点「继续运行」按原参数快速恢复。运行状态为「已停止」的记录可能是正常停止，也可能是服务崩溃时未及更新。</p>
+        <p class="info-note">支持<b>多任务并行</b>：不同币种可同时运行，同币种仅允许一个任务。点「查看」在下方日志与实时状态中切换该任务；「停止/继续运行」控制单个任务；可导出任务配置与全量日志（日志同时落盘 data/logs/）。</p>
     </div>
     {% endif %}
 
-    <!-- 运行日志 -->
+    <!-- 运行日志（可切换任务查看） -->
     <div class="card">
-        <h2>📜 运行日志（最近 {{ status.log | length }} 条）</h2>
+        <h2>📜 运行日志（<span id="log-count">{{ status.log | length }}</span> 条）
+            <select id="task-switch" onchange="selectTask(this.value)"
+                    style="width:auto;font-size:.85rem;padding:3px 6px;margin-left:8px">
+                {% if tasks %}
+                {% for t in tasks %}
+                <option value="{{ t.id }}">{{ t.symbol }} · {{ t.started_at }}{% if t.is_running %} · 运行中{% endif %}</option>
+                {% endfor %}
+                {% else %}
+                <option value="">（暂无任务）</option>
+                {% endif %}
+            </select>
+        </h2>
         <div class="log-box" id="log-box">
             {% if status.log %}
             {% for line in status.log %}<div>{{ line }}</div>{% endfor %}
@@ -198,21 +221,38 @@ document.addEventListener('click', function (e) {
 });
 </script>
 <script>
-var RUNNING = {% if status and status.running %}true{% else %}false{% endif %};
+var RUNNING_COUNT = {{ running_count or 0 }};
+var CUR_TASK = {{ cur_task_id | tojson }};
 var pollTimer = null;
 
-function setRunTag(running) {
+function setRunTag(n) {
     runTag = document.getElementById('run-tag');
-    if (running) {
-        runTag.textContent = '● 运行中';
+    if (n > 0) {
+        runTag.textContent = '● ' + n + ' 个任务运行中';
         runTag.classList.add('on');
     } else {
         runTag.textContent = '○ 未运行';
         runTag.classList.remove('on');
     }
+    var stopBtn = document.querySelector('button[name="action"][value="stop"]');
+    if (stopBtn) stopBtn.disabled = (n === 0);
 }
 
 function updateStatus(data) {
+    // 基本信息
+    var m = {
+        'st-symbol': data.symbol || '—', 'st-tf': data.timeframe || '—',
+        'st-qty': (data.qty_usdt != null) ? Number(data.qty_usdt).toFixed(0) + ' USDT' : '—',
+        'st-price': data.last_price ? Number(data.last_price).toFixed(4) : '—',
+        'st-pos': data.position ? Number(data.position).toFixed(8) : '0',
+        'st-avg': data.avg_price ? Number(data.avg_price).toFixed(4) : '—',
+        'st-buyc': data.buy_count != null ? data.buy_count : 0,
+        'st-sellc': data.sell_count != null ? data.sell_count : 0
+    };
+    for (var k in m) {
+        var el = document.getElementById(k);
+        if (el) el.textContent = m[k];
+    }
     // 策略列表
     var strat = document.getElementById('st-strategies');
     if (strat) {
@@ -221,15 +261,15 @@ function updateStatus(data) {
     // 模式
     var mode = document.getElementById('st-mode');
     if (mode) {
-        var m = data.mode || 'standard';
-        mode.textContent = (m === 'grid') ? '网格交易' : '标准多策略';
+        var mv = data.mode || 'standard';
+        mode.textContent = (mv === 'grid') ? '网格交易' : '标准多策略';
     }
     // 网格持仓格数
     var grid = document.getElementById('st-grid');
     if (grid) {
         var filled = (data.grid && data.grid.filled) ? data.grid.filled : 0;
         grid.textContent = filled + ' 格';
-        }
+    }
     // 账户余额 / 真实持仓
     var bal = document.getElementById('st-balance');
     if (bal) bal.textContent = (data.account_balance != null) ? Number(data.account_balance).toFixed(2) : '—';
@@ -245,17 +285,24 @@ function updateStatus(data) {
         if (data.signal === '买入') sig.classList.add('sig-buy');
         else if (data.signal === '卖出') sig.classList.add('sig-sell');
     }
+    // 当前任务名
+    var cname = document.getElementById('cur-task-name');
+    if (cname) {
+        cname.textContent = (data.symbol || '') + (data.running ? ' · 运行中' : ' · 已停止');
+    }
     // 日志区
     var box = document.getElementById('log-box');
     var logs = data.log || [];
     var html = '';
     var num = 0;
-    for (var i = logs.length - 1; i >= 0 && num < 50; i--) {
+    for (var i = logs.length - 1; i >= 0 && num < 100; i--) {
         html += '<div>' + escapeHtml(logs[i]) + '</div>';
         num++;
     }
     var empty = '<div class="empty">暂无日志</div>';
     box.innerHTML = html || empty;
+    var lc = document.getElementById('log-count');
+    if (lc) lc.textContent = logs.length;
 }
 
 function escapeHtml(s) {
@@ -263,14 +310,50 @@ function escapeHtml(s) {
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// 任务列表行 + 切换下拉的实时刷新（不整页刷新，避免打断操作）
+function refreshTaskRows(tasks) {
+    tasks.forEach(function (t) {
+        var row = document.querySelector('tr[data-id="' + t.id + '"]');
+        if (!row) return;
+        var stCell = row.querySelector('.t-status');
+        if (stCell) {
+            stCell.innerHTML = t.is_running ? '<span class="pos">● 运行中</span>' : '<span class="muted">○ 已停止</span>';
+        }
+        var resumeBtn = row.querySelector('button[value="resume_task"]');
+        var stopBtn = row.querySelector('button[value="stop_task"]');
+        var delBtn = row.querySelector('button[value="delete_task"]');
+        if (t.is_running) {
+            if (resumeBtn) resumeBtn.outerHTML = '<button type="submit" name="action" value="stop_task" class="btn btn-danger" style="padding:3px 10px" onclick="return confirm(\'确定停止该任务？\')">停止</button>';
+        } else {
+            if (stopBtn) stopBtn.outerHTML = '<button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 10px">继续运行</button>';
+        }
+        if (delBtn) delBtn.disabled = !!t.is_running;
+        // 切换下拉项文案
+        var sel = document.getElementById('task-switch');
+        if (sel) {
+            var opt = sel.querySelector('option[value="' + t.id + '"]');
+            if (opt) opt.textContent = t.symbol + ' · ' + t.started_at + (t.is_running ? ' · 运行中' : '');
+        }
+    });
+}
+
 function pollStatus() {
-    fetch('/auto/api/status')
+    var url = CUR_TASK ? '/auto/api/status?task_id=' + encodeURIComponent(CUR_TASK) : '/auto/api/status';
+    fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            setRunTag(data.running);
+            setRunTag(data.running_count || 0);
             updateStatus(data);
+            if (data.tasks) refreshTaskRows(data.tasks);
         })
         .catch(function(e) { console.error('poll status', e); });
+}
+
+function selectTask(tid) {
+    CUR_TASK = tid;
+    var sel = document.getElementById('task-switch');
+    if (sel && sel.value !== tid) sel.value = tid;
+    pollStatus();
 }
 
 function startPolling(sec) {
@@ -298,6 +381,12 @@ function updateModeUI() {
     if (s) s.style.display = showStrat ? '' : 'none';
     if (g) g.style.display = showGrid ? '' : 'none';
 }
+
+// 初始选中当前任务
+(function () {
+    var sel = document.getElementById('task-switch');
+    if (sel && CUR_TASK) sel.value = CUR_TASK;
+})();
 
 // 默认每 3 秒轮询一次
 startPolling(3);

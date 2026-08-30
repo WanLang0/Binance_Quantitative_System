@@ -23,6 +23,8 @@ import mailer
 STATE_FILE = os.path.join('data', 'auto_futures_state.json')
 # 量化任务历史列表（用于崩溃后查看/手动恢复）
 TASKS_FILE = os.path.join('data', 'futures_tasks.json')
+# 任务日志目录（每任务一个文件，供前端切换查看与导出）
+LOG_DIR = os.path.join('data', 'logs')
 # 心跳告警阈值：连续失败达到该次数触发告警
 ALERT_THRESHOLD = 3
 
@@ -42,6 +44,8 @@ class AutoFutures:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = False
+        self.log_file = None      # 任务日志文件（start 时按 task_id 生成，磁盘持久化供导出）
+        self._task_id = None
         self.reset_status()
 
     # ---------- 状态管理 ----------
@@ -98,6 +102,14 @@ class AutoFutures:
             self.status['log'].append(line)
             if len(self.status['log']) > 50:
                 self.status['log'] = self.status['log'][-50:]
+        # 磁盘持久化（全量，供前端切换任务查看与导出；失败不影响交易）
+        if self.log_file:
+            try:
+                os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+                with open(self.log_file, 'a', encoding='utf-8') as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
 
     def _alert(self, msg):
         """告警：写入告警列表（页面红框展示）+ 运行日志 + 磁盘文件"""
@@ -118,7 +130,7 @@ class AutoFutures:
     def _save_task(self):
         """启动时把本次量化配置写入任务列表（保留最近20条），供崩溃后手动恢复"""
         rec = {
-            'id': datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}",
+            'id': self._task_id,
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': self.status['symbol'],
             'timeframe': self.status['timeframe'],
@@ -675,6 +687,9 @@ class AutoFutures:
             self.status['grid']['step_pct'] = step_pct
             self.status['grid']['max_levels'] = max_levels
             self._stop_event.clear()
+            # 先生成任务ID与日志文件（在线程启动前，确保首条日志也能落盘）
+            self._task_id = datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}"
+            self.log_file = os.path.join(LOG_DIR, f'futures_{self._task_id}.log')
             self._running = True
             self.status['running'] = True
             self.status['started_at'] = datetime.now().isoformat()
@@ -708,13 +723,15 @@ class AutoFutures:
         self.save_state()
         return True, '已停止'
 
-    def list_tasks(self):
+    @staticmethod
+    def list_tasks():
         """返回量化任务历史列表（最新在前）"""
-        return self._read_tasks()
+        return AutoFutures._read_tasks()
 
-    def delete_task(self, task_id):
+    @staticmethod
+    def delete_task(task_id):
         """删除指定的量化任务记录（不影响正在运行的引擎）"""
-        tasks = self._read_tasks()
+        tasks = AutoFutures._read_tasks()
         remains = [t for t in tasks if t.get('id') != task_id]
         if len(remains) == len(tasks):
             return False, f"任务不存在: {task_id}"
