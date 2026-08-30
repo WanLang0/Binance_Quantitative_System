@@ -67,9 +67,18 @@ pip install -r requirements.txt
 
 主要依赖：Flask、ccxt、pandas、numpy、plotly、ta、openpyxl。
 
+> ⚠️ **ccxt 版本必须锁定 4.1.77**：币安已废弃 USDT-M 合约测试网，新版 ccxt 移除了 `binanceusdm` 的 sandbox 支持（保存密钥时报 `NotSupported: testnet/sandbox mode is not supported` 或 `-2008 Invalid Api-Key ID`）。务必使用 `pip install -r requirements.txt` 安装，不要单独升级 ccxt。
+
 ### 4. 配置代理（可选）
 
-系统默认使用 `http://127.0.0.1:7892` 代理。如果你的代理端口不同，设置环境变量：
+代理地址在项目根目录的 **`.env`** 文件中配置（默认 `http://127.0.0.1:7892`）：
+
+```bash
+HTTP_PROXY=http://127.0.0.1:7892
+HTTPS_PROXY=http://127.0.0.1:7892
+```
+
+修改后重启服务生效。优先级：**系统环境变量 > .env 文件 > 不设代理（直连）**。也可用环境变量临时覆盖：
 
 ```bash
 # Windows (PowerShell)
@@ -81,7 +90,7 @@ export HTTP_PROXY=http://127.0.0.1:你的端口
 export HTTPS_PROXY=http://127.0.0.1:你的端口
 ```
 
-不需要代理的环境（如海外服务器）可跳过。
+不需要代理的环境（如海外服务器）：把 `.env` 中两行的值删除、或将该文件中这两行注释掉即可直连。
 
 ### 5. API 密钥
 

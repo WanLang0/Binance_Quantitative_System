@@ -63,5 +63,18 @@
             当前登录账号：<b>{{ session.get('user') }}</b>。服务器公网部署前建议：启用 HTTPS、交易所 API 密钥绑定服务器 IP 白名单并关闭提币权限。
         </div>
     </div>
+
+    <!-- 版本信息 -->
+    <div class="card">
+        <h2>📋 版本信息（当前 {{ APP_VERSION }}）</h2>
+        {% for ver, items in changelog.items() %}
+        <div style="margin-bottom:12px">
+            <b>{{ ver }}</b>{% if ver == APP_VERSION %} <span class="tag tag-balanced">当前</span>{% endif %}
+            <ul style="margin:6px 0 0 20px;line-height:1.9;color:var(--muted);font-size:.9rem">
+                {% for it in items %}<li>{{ it }}</li>{% endfor %}
+            </ul>
+        </div>
+        {% endfor %}
+    </div>
 </div>
 {% endblock %}

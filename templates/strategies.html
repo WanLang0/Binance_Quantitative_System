@@ -7,12 +7,14 @@
 <div class="wrap">
     <h1 class="page-title">🏆 最优策略汇总</h1>
 
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+
     <div class="card">
         <p class="info-note">
-            汇总历次多品种寻优回测（约 <b>13700+</b> 组参数组合）筛选出的最优策略。
-            窗口：<b>2025 全年</b>（365天交叉验证）、<b>2026-01-01 ~ 08-26</b> 及 <b>2023~2026 四年矩阵</b>；
-            初始资金 1 万 USDT；手续费 0.1%；双向 = 买入信号开多、卖出信号平多并开空。风险分档：
-            <span class="tag tag-stable">稳健</span> <span class="tag tag-balanced">均衡</span> <span class="tag tag-aggressive">激进</span>
+            历次多品种寻优回测（约 <b>13700+</b> 组参数组合）沉淀。下方「最优策略」为当前推荐配置（可排序/移出），
+            其余全部回测结果收录于「历史测试记录」（可翻页，可提升为最优，可删除）。初始资金 1 万 USDT；手续费 0.1%；
+            双向 = 买入信号开多、卖出信号平多并开空。
         </p>
         <div class="alert alert-warn" style="margin:10px 0 0">
             <b>分品种一句话结论：</b>主流蓝筹（ETH/BTC）用<b>超卖回归</b>——KDJ 仅做多 + 小止盈止损快进快出；
@@ -20,98 +22,249 @@
         </div>
     </div>
 
-    {% for g in groups %}
+    <!-- 历史测试记录（可搜索/翻页） -->
     <div class="card">
-        <h2>
-            {% if g.get('tag') == 'stable' %}<span class="tag tag-stable">稳健</span>
-            {% elif g.get('tag') == 'aggressive' %}<span class="tag tag-aggressive">激进</span>
-            {% else %}<span class="tag tag-balanced">均衡</span>{% endif %}
-            {{ g['name'] }}
-            <span style="font-size:.78rem;color:var(--muted);font-weight:400">［{{ g.get('window','') }}］</span>
-        </h2>
-        <div class="info-note" style="margin:0 0 8px">{{ g['desc'] }}</div>
+        <h2>🗂️ 历史测试记录（{% if q %}搜索「{{ q }}」命中 {{ total }} 条{% else %}{{ '全部' if not cat else ('美股代币' if cat == 'us' else '虚拟货币') }} {{ total }} 条{% endif %}{% if total > 15 %}，第 {{ page }}/{{ pages }} 页{% endif %}）</h2>
+        <div style="display:flex;gap:8px;align-items:center;margin:0 0 10px;flex-wrap:wrap">
+            <form method="GET" action="/strategies" style="display:flex;gap:8px">
+                {% if cat %}<input type="hidden" name="cat" value="{{ cat }}">{% endif %}
+                <input type="text" name="q" class="search-input" value="{{ q }}" placeholder="搜索：品种 / 策略 / 模式 / 来源 / 备注…" style="width:300px">
+                <button type="submit" class="btn btn-primary" style="padding:8px 18px">搜索</button>
+            </form>
+            <div style="display:flex;gap:6px;align-items:center">
+                <span style="color:var(--muted);font-size:.85rem">类别：</span>
+                {% for cv, cl in [('', '全部'), ('crypto', '虚拟货币'), ('us', '美股代币')] %}
+                <a class="btn{% if cat == cv %} btn-primary{% endif %}" style="padding:5px 12px;font-size:.85rem"
+                   href="/strategies?cat={{ cv }}{{ ('&q=' ~ q|urlencode) if q else '' }}">{{ cl }}</a>
+                {% endfor %}
+            </div>
+            {% if q %}<a class="btn" style="padding:8px 14px" href="/strategies{% if cat %}?cat={{ cat }}{% endif %}">清除搜索</a>{% endif %}
+        </div>
+        {% if history %}
         <div class="table-wrap">
-        <table class="table bordered">
+        <table class="table" style="table-layout:fixed;width:100%">
+            <colgroup>
+                <col style="width:78px"><col style="width:44px"><col style="width:110px"><col style="width:80px"><col style="width:56px">
+                <col style="width:44px"><col style="width:50px"><col style="width:54px"><col style="width:54px"><col style="width:112px">
+                <col style="width:60px"><col style="width:60px"><col style="width:230px"><col style="width:106px">
+            </colgroup>
             <tr>
-                <th>品种</th><th>周期</th><th>策略</th><th>模式</th><th>止盈/止损</th>
-                <th>总收益</th><th>日均</th><th>月均</th><th>交易次数</th><th>胜率</th><th>最大回撤</th><th>稳定性</th>
-                <th>市场</th><th>备注</th>
+                <th>品种</th>
+                {% set qs0 = ((('cat=' ~ cat) if cat else '') ~ (('&q=' ~ q|urlencode) if q else '')) %}
+                {% set qp = ('&' ~ qs0) if qs0 else '' %}
+                <th class="sortable">
+                    {% if sort == 'timeframe' and order == 'desc' %}{% set nhref = '/strategies' ~ (('?' ~ qs0) if qs0 else '') %}{% else %}{% set nhref = '/strategies?sort=timeframe&order=' ~ ('desc' if (sort == 'timeframe' and order == 'asc') else 'asc') ~ qp %}{% endif %}
+                    <a href="{{ nhref }}" title="点击排序，再次点击换方向，第三次取消排序" style="color:inherit;text-decoration:none">
+                        周期{% if sort == 'timeframe' %}{{ ' ▲' if order == 'asc' else ' ▼' }}{% else %} <span style="opacity:.35">⇅</span>{% endif %}
+                    </a>
+                </th>
+                <th>日期</th>
+                {% for key, label in [('ret','收益'), ('daily','日均'), ('trades','交易'), ('winrate','胜率'), ('mdd','回撤'), ('sharpe','夏普')] %}
+                <th class="sortable">
+                    {% if sort == key and order == 'desc' %}{% set nhref = '/strategies' ~ (('?' ~ qs0) if qs0 else '') %}{% else %}{% set nhref = '/strategies?sort=' ~ key ~ '&order=' ~ ('desc' if (sort == key and order == 'asc') else 'asc') ~ qp %}{% endif %}
+                    <a href="{{ nhref }}" title="点击排序，再次点击换方向，第三次取消排序" style="color:inherit;text-decoration:none">
+                        {{ label }}{% if sort == key %}{{ ' ▲' if order == 'asc' else ' ▼' }}{% else %} <span style="opacity:.35">⇅</span>{% endif %}
+                    </a>
+                </th>
+                {% endfor %}
+                <th>策略</th><th>模式</th><th>止盈/止损</th><th>备注</th><th>操作</th>
             </tr>
-            {% for r in g['rows'] %}
+            {% for r in history %}
             <tr>
-                <td><b>{{ r['品种'] }}</b></td>
-                <td>{{ r['周期'] }}</td>
-                <td>{{ r['策略'] }}</td>
-                <td>{{ r['模式'] }}</td>
-                <td>{{ r['止盈止损'] }}</td>
-                <td class="pos">{{ r['收益'] }}</td>
-                <td class="pos">{{ r.get('日均', '-') }}</td>
-                <td class="pos">{{ r.get('月均', '-') }}</td>
-                <td>{{ r.get('交易次数', '-') }}</td>
-                <td class="pos">{{ r.get('胜率', '-') }}</td>
-                <td class="neg">{{ r['最大回撤'] }}</td>
-                <td>{{ r['稳定性'] }}</td>
-                <td>{{ r['市场'] }}</td>
-                <td style="white-space:normal;color:var(--muted)">{{ r['备注'] }}</td>
+                <td class="td-clip" title="{{ r.symbol }}"><b>{% if r.symbol.endswith('USDT') and '/' in r.symbol %}{{ r.symbol.split('/')[0] }}{% else %}{{ r.symbol }}{% endif %}</b></td>
+                <td class="td-clip" title="{{ r.timeframe }}">{{ r.timeframe }}</td>
+                <td class="td-clip" title="{{ r.period or '—' }}">{{ r.period or '—' }}</td>
+                <td class="pos td-clip" title="{{ r.ret }}">{{ r.ret }}</td>
+                <td class="pos td-clip" title="{{ r.daily or '—' }}">{{ r.daily or '—' }}</td>
+                <td class="td-clip" title="{{ r.trades or '—' }}">{{ r.trades or '—' }}</td>
+                <td class="pos td-clip" title="{{ r.winrate or '—' }}">{{ r.winrate or '—' }}</td>
+                <td class="neg td-clip" title="{{ r.mdd or '—' }}">{{ r.mdd or '—' }}</td>
+                <td class="td-clip {{ 'pos' if r.sharpe and r.sharpe[0] != '-' }}" title="{{ r.sharpe or '—' }}{{ '（年化夏普比率，未回填则显示—）' if not r.sharpe }}">{{ r.sharpe or '—' }}</td>
+                <td class="td-clip" title="{{ r.strategy }}">{{ r.strategy }}</td>
+                <td class="td-clip" title="{{ r.mode }}">{{ r.mode }}</td>
+                <td class="td-clip" title="{{ r.tpsl }}">{{ r.tpsl }}</td>
+                <td class="td-clip" title="{{ r.note }}" style="color:var(--muted)">{{ r.note }}</td>
+                <td style="white-space:nowrap;font-size:1rem">
+                    <button type="button" class="btn" style="padding:2px 9px" title="展开逐年收益与详情"
+                            onclick="var d=document.getElementById('det-{{ r.id }}'); d.style.display = d.style.display==='none' ? 'table-row' : 'none'">👁</button>
+                    <form method="POST" action="/strategies" style="display:inline">
+                        <input type="hidden" name="rid" value="{{ r.id }}">
+                        <input type="hidden" name="page" value="{{ page }}">
+                        <input type="hidden" name="q" value="{{ q }}">
+                        <input type="hidden" name="cat" value="{{ cat }}">
+                        <button type="submit" name="action" value="promote" class="btn btn-primary" style="padding:2px 9px" title="加入最优策略">★</button>
+                        <button type="submit" name="action" value="delete" class="btn btn-cancel" style="padding:2px 9px" title="删除该记录" onclick="return confirm('确定删除该历史记录？删除后不可恢复。')">🗑</button>
+                    </form>
+                </td>
+            </tr>
+            <tr id="det-{{ r.id }}" style="display:none">
+                <td colspan="14" style="background:#0d1117;padding:12px 16px">
+                    <div style="margin-bottom:8px;white-space:nowrap;overflow-x:auto;color:#fff">
+                        <b>逐年收益：</b>
+                        {% if r.yearly %}
+                        <span style="margin:2px 10px 2px 0">2023：
+                            <b class="{{ 'pos' if r.yearly.y2023 and r.yearly.y2023[0]=='+' else 'neg' if r.yearly.y2023 else '' }}">{{ r.yearly.y2023 or '—' }}</b></span>
+                        <span style="margin:2px 10px 2px 0">2024：
+                            <b class="{{ 'pos' if r.yearly.y2024 and r.yearly.y2024[0]=='+' else 'neg' if r.yearly.y2024 else '' }}">{{ r.yearly.y2024 or '—' }}</b></span>
+                        <span style="margin:2px 10px 2px 0">2025：
+                            <b class="{{ 'pos' if r.yearly.y2025 and r.yearly.y2025[0]=='+' else 'neg' if r.yearly.y2025 else '' }}">{{ r.yearly.y2025 or '—' }}</b></span>
+                        <span style="margin:2px 10px 2px 0">2026至今：
+                            <b class="{{ 'pos' if r.yearly.y2026 and r.yearly.y2026[0]=='+' else 'neg' if r.yearly.y2026 else '' }}">{{ r.yearly.y2026 or '—' }}</b></span>
+                        {% if r.yearly.verdict %}<span style="margin:2px 14px 2px 0">跨年评价：{{ r.yearly.verdict }}</span>{% endif %}
+                        {% else %}
+                        <span style="margin:2px 14px 2px 0">无跨年明细（单窗口测试或未收录年度数据）</span>
+                        {% endif %}
+                        {% if r.trades_list and r.trades_list.trades %}
+                        <span>交易流水：共 {{ r.trades_list.n }} 笔（回测口径，含手续费）</span>
+                        {% else %}
+                        <span>交易流水：未收录逐笔明细（口径不可复原或多配置汇总行）</span>
+                        {% endif %}
+                    </div>
+                    {% if r.trades_list and r.trades_list.trades %}
+                    <div style="margin-bottom:8px">
+                        <div style="max-height:220px;overflow:auto;margin-top:6px;border:1px solid #30363d;border-radius:6px;background:#fff">
+                        <table class="table" style="font-size:.8rem;background:#fff;color:#111">
+                            <tr><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">#</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">开仓时间</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">方向</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">数量</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">开仓价</th>
+                                 <th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">平仓时间</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">平仓价</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">单笔收益</th></tr>
+                            {% for t in r.trades_list.trades %}
+                            <tr>
+                                <td style="color:#666;border-bottom:1px solid #eee">{{ loop.index }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ t.in }}</td>
+                                <td class="{{ 'pos' if t.side == '多' else 'neg' }}" style="border-bottom:1px solid #eee">{{ t.side }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ t.qty }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ t.pin }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ t.out }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ t.pout }}</td>
+                                <td class="{{ 'pos' if t.ret >= 0 else 'neg' }}" style="border-bottom:1px solid #eee">{{ '%+.2f'|format(t.ret) }}%</td>
+                            </tr>
+                            {% endfor %}
+                        </table>
+                        </div>
+                    </div>
+                    {% endif %}
+                    <div style="font-size:.85rem;line-height:1.8;color:#fff">
+                        <div>来源：{{ r.source or '—' }}{% if r.market %} ｜ 市场：{{ r.market }}{% endif %}{% if r.stability %} ｜ 稳定性：{{ r.stability }}{% endif %}</div>
+                        <div>备注全文：{{ r.note or '—' }}</div>
+                    </div>
+                </td>
             </tr>
             {% endfor %}
         </table>
         </div>
+        {% if pages > 1 %}
+        <div style="margin-top:10px;text-align:center">
+            {% set qs0 = ((('cat=' ~ cat) if cat else '') ~ (('&q=' ~ q|urlencode) if q else '')) %}
+            {% set qp = ('&' ~ qs0) if qs0 else '' %}
+            {% if page > 1 %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page - 1 }}{{ qp }}">← 上一页</a>{% endif %}
+            <span style="margin:0 10px;color:#7a8394">第 {{ page }} / {{ pages }} 页</span>
+            {% if page < pages %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page + 1 }}{{ qp }}">下一页 →</a>{% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <p class="info-note">{% if q %}没有匹配「{{ q }}」的记录，换个关键字或<a href="/strategies">清除搜索</a>。{% else %}暂无历史记录。{% endif %}</p>
+        {% endif %}
     </div>
-    {% endfor %}
 
-    {% if year_matrix %}
+    <!-- 最优策略（当前推荐，可排序） -->
     <div class="card">
-        <h2><span class="tag tag-balanced">对比</span> 历年收益矩阵（2023 ~ 2026）</h2>
-        <div class="desc">同一配置在四个年度窗口的总收益率对比（2026为1~8月；"爆仓"=权益归零；"—"=当年无该品种合约）。用于识别真正跨年有效的策略，而非单年幸存者。</div>
-        <table>
+        <h2>⭐ 最优策略（当前推荐 {{ tops | length }} 条）</h2>
+        <div class="info-note" style="margin:0 0 8px">用「↑ ↓」调整优先级顺序，「移出」放回历史记录。</div>
+        {% if tops %}
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr><th>#</th><th>品种</th><th>周期</th><th>日期</th><th>策略</th><th>模式</th><th>止盈/止损</th>
+                <th>收益</th><th>交易</th><th>胜率</th><th>最大回撤</th><th>夏普</th><th>备注</th><th>操作</th></tr>
+            {% for t in tops %}
             <tr>
-                <th>配置</th><th>2023</th><th>2024</th><th>2025</th><th>2026至今</th><th>跨年评价</th>
+                <td>{{ loop.index }}</td>
+                <td><b>{{ t.symbol }}</b></td>
+                <td>{{ t.timeframe }}</td>
+                <td>{{ t.period or '—' }}</td>
+                <td>{{ t.strategy }}</td>
+                <td>{{ t.mode }}</td>
+                <td>{{ t.tpsl }}</td>
+                <td class="pos">{{ t.ret }}</td>
+                <td>{{ t.trades or '—' }}</td>
+                <td class="pos">{{ t.winrate or '—' }}</td>
+                <td class="neg">{{ t.mdd or '—' }}</td>
+                <td class="{{ 'pos' if t.sharpe and t.sharpe[0] != '-' }}" title="年化夏普比率">{{ t.sharpe or '—' }}</td>
+                <td style="white-space:normal;color:var(--muted)">{{ t.note }}</td>
+                <td style="white-space:nowrap;font-size:1rem">
+                    <button type="button" class="btn" style="padding:2px 8px" title="展开逐年收益与详情"
+                            onclick="var d=document.getElementById('topdet-{{ t.id }}'); d.style.display = d.style.display==='none' ? 'table-row' : 'none'">👁</button>
+                    <form method="POST" action="/strategies" style="display:inline">
+                        <input type="hidden" name="rid" value="{{ t.id }}">
+                        <button type="submit" name="action" value="move" class="btn" style="padding:2px 8px" title="上移" onclick="this.form.dir.value='up'">↑</button>
+                        <input type="hidden" name="dir" value="down">
+                        <button type="submit" name="action" value="move" class="btn" style="padding:2px 8px" title="下移">↓</button>
+                        <button type="submit" name="action" value="demote" class="btn btn-cancel" style="padding:2px 9px" title="移出最优策略" onclick="return confirm('移出最优策略？该记录将回到历史列表。')">移出</button>
+                    </form>
+                </td>
             </tr>
-            {% for r in year_matrix %}
-            <tr>
-                <td style="white-space:nowrap"><b>{{ r['配置'] }}</b></td>
-                {% for y in ['y2023', 'y2024', 'y2025', 'y2026'] %}
-                <td class="{% if r[y] and r[y][0] == '+' %}pos{% elif r[y] == '爆仓' %}neg{% elif r[y] and r[y][0] == '-' %}neg{% else %}{% endif %}">{{ r[y] }}</td>
-                {% endfor %}
-                <td style="white-space:normal;color:#aaa">{{ r['评价'] }}</td>
+            <tr id="topdet-{{ t.id }}" style="display:none">
+                <td colspan="14" style="background:#0d1117;padding:12px 16px">
+                    <div style="margin-bottom:8px;white-space:nowrap;overflow-x:auto;color:#fff">
+                        <b>逐年收益：</b>
+                        {% if t.yearly %}
+                        {% for y, label in [('y2023', '2023'), ('y2024', '2024'), ('y2025', '2025'), ('y2026', '2026至今')] %}
+                        <span style="margin:2px 10px 2px 0">{{ label }}：
+                            <b class="{{ 'pos' if t.yearly[y] and t.yearly[y][0]=='+' else 'neg' if t.yearly[y] else '' }}">{{ t.yearly[y] or '—' }}</b></span>
+                        {% endfor %}
+                        {% if t.yearly.verdict %}<span style="margin:2px 14px 2px 0">跨年评价：{{ t.yearly.verdict }}</span>{% endif %}
+                        {% else %}
+                        <span style="margin:2px 14px 2px 0">无跨年明细</span>
+                        {% endif %}
+                        {% if t.trades_list and t.trades_list.trades %}
+                        <span>交易流水：共 {{ t.trades_list.n }} 笔（回测口径，含手续费）</span>
+                        {% else %}
+                        <span>交易流水：未收录逐笔明细</span>
+                        {% endif %}
+                    </div>
+                    {% if t.trades_list and t.trades_list.trades %}
+                    <div style="margin-bottom:8px">
+                        <div style="max-height:220px;overflow:auto;margin-top:6px;border:1px solid #30363d;border-radius:6px;background:#fff">
+                        <table class="table" style="font-size:.8rem;background:#fff;color:#111">
+                            <tr><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">#</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">开仓时间</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">方向</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">数量</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">开仓价</th>
+                                <th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">平仓时间</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">平仓价</th><th style="background:#e9ecef;color:#333;border-bottom:1px solid #c9d1d9">单笔收益</th></tr>
+                            {% for tr in t.trades_list.trades %}
+                            <tr>
+                                <td style="color:#666;border-bottom:1px solid #eee">{{ loop.index }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ tr.in }}</td>
+                                <td class="{{ 'pos' if tr.side == '多' else 'neg' }}" style="border-bottom:1px solid #eee">{{ tr.side }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ tr.qty }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ tr.pin }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ tr.out }}</td>
+                                <td style="color:#111;border-bottom:1px solid #eee">{{ tr.pout }}</td>
+                                <td class="{{ 'pos' if tr.ret >= 0 else 'neg' }}" style="border-bottom:1px solid #eee">{{ '%+.2f'|format(tr.ret) }}%</td>
+                            </tr>
+                            {% endfor %}
+                        </table>
+                        </div>
+                    </div>
+                    {% endif %}
+                    <div style="font-size:.85rem;line-height:1.8;color:#fff">
+                        <div>来源：{{ t.source or '—' }}{% if t.market %} ｜ 市场：{{ t.market }}{% endif %}{% if t.stability %} ｜ 稳定性：{{ t.stability }}{% endif %}</div>
+                        <div>备注全文：{{ t.note or '—' }}</div>
+                    </div>
+                </td>
             </tr>
             {% endfor %}
         </table>
-        <p class="info-note" style="font-size:0.78rem;color:#888;margin-top:8px;line-height:1.7">
-            <b>结论：</b>没有任何策略四年全盈。<b>ETH 4h KDJ 8/5（累计+40%）与 NEAR 4h EMA 2/2（+29%）</b>是仅有的"4年3盈且最差年亏损个位数"的配置——共同点是<b>仅做多+小止损</b>。<br>
-            <b>山寨币结论（2026-08轮）：</b>趋势跟随（EMA/双均线）是市值10-20币上唯一系统性有效方向（EMA仅多不设 6/10币为正）；
-            <b>XLM EMA双向 5/5（累计+239%）</b>为山寨首选——4年3盈、2025/2026熊市靠空头盈利；而 KDJ 移植山寨 0/10 全亏、反转类双向爆仓38币·年，均已在矩阵中标 ❌。
-        </p>
+        </div>
+        {% else %}
+        <p class="info-note">最优策略列表为空，可从下方历史记录中「设为最优」。</p>
+        {% endif %}
     </div>
-    {% endif %}
 
-    {% if research_log %}
-    <div class="card">
-        <h2><span class="tag tag-balanced">记录</span> 研究结论时间线（历轮验证沉淀）</h2>
-        <div class="desc">按时间倒序记录每轮策略研究的方法与结论，已证伪方向不重复验证。</div>
-        <table>
-            <tr><th style="width:90px">日期</th><th style="width:34%">研究</th><th style="width:30%">结果</th><th>结论</th></tr>
-            {% for r in research_log %}
-            <tr>
-                <td style="white-space:nowrap">{{ r['date'] }}</td>
-                <td style="white-space:normal"><b>{{ r['title'] }}</b></td>
-                <td style="white-space:normal;color:var(--muted)">{{ r['result'] }}</td>
-                <td style="white-space:normal">{{ r['conclusion'] }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
-    {% endif %}
+    <!-- 历年收益矩阵 / 研究结论时间线：数据迁移至 year_matrix.py / research_log.py 单独维护，界面暂不展示 -->
 
     <div class="card">
         <div class="alert alert-warn" style="margin-bottom:0">
             <b>风险提示：</b><br>
             1. 以上全部为<b>历史回测</b>结果，样本内寻优存在过拟合，实盘收益通常打 5~7 折，不构成投资建议。<br>
-            2. <b>年度冠军会轮换</b>：2023/2024 无一冠军策略存活到 2025 之后——BCH(2025冠军,+337%)在2023爆仓、2026亏57%；TON(2026冠军)前两年连亏。
-            四年数据验证真正跨年稳的蓝筹配置只有 <b>ETH 4h KDJ 8/5 与 NEAR 4h EMA 2/2</b>（仅做多+小止损），山寨配置首选 <b>XLM EMA 双向 5/5</b>（回撤约为ETH的3倍，仓位务必≤主策略1/3），详见上方历年矩阵。<br>
+            2. <b>年度冠军会轮换</b>：BCH(2025冠军)在2023爆仓、2026亏57%；TON(2026冠军)前两年连亏。跨年稳健配置详见上方最优策略。<br>
             3. 标注「仅主网」的品种（TQQQ/MUB/MUUB/QQQ）在测试网无对应合约，需主网真实资金。<br>
-            4. bStocks（美股代币）为虚拟股票映射，<b>存在随时下架风险</b>，加密主流币长期存续性更好。<br>
+            4. bStocks（美股代币）为虚拟股票映射，<b>存在随时下架风险</b>。<br>
             5. 「双向」模式在合约页面选「标准多策略(OR)」即自动生效；叠加杠杆会同时放大收益与回撤。
         </div>
         <a class="btn btn-accent" style="margin-top:10px" href="/futures">去合约页面实测 →</a>

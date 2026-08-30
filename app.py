@@ -18,8 +18,16 @@ from auto_trader import AutoTrader, STATE_FILE
 from futures_trader import FuturesTrader
 from auto_futures import AutoFutures, STATE_FILE as FUTURES_STATE_FILE
 import auth as _auth
+import strategies_store as _store
 
 app = Flask(__name__)
+
+from changelog import APP_VERSION, CHANGELOG
+
+@app.context_processor
+def _inject_version():
+    """全模板可用 APP_VERSION（顶栏显示）"""
+    return {'APP_VERSION': APP_VERSION}
 
 
 def _load_secret_key():
@@ -112,10 +120,27 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
-# 默认代理（用户 VPN 常用端口 7892），若未显式设置环境变量则采用
-if not os.environ.get("HTTP_PROXY") and not os.environ.get("HTTPS_PROXY"):
-    os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:7892")
-    os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:7892")
+# ==================== 环境配置（.env） ====================
+def _load_env_file():
+    """加载项目根目录 .env（KEY=VALUE，支持 # 注释与引号）；已存在的系统环境变量优先，不覆盖"""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, _, val = line.partition('=')
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if val and not os.environ.get(key):
+                os.environ[key] = val
+
+
+_load_env_file()
+
+# 代理说明：优先级 系统环境变量 > .env 文件 > 无代理直连（境外服务器直连场景）
+# 本地默认在 .env 中配置 HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:7892
 
 # 全局数据获取器（单例，按需切换现货/合约）
 _data_fetcher = None
@@ -583,7 +608,7 @@ def _prewarm_trader(trader):
 # 合约交易对列表（USDT永续；bStocks 永续需用完整符号 :USDT）
 FUTURES_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT",
                    "TON/USDT", "NEAR/USDT", "AVAX/USDT", "XLM/USDT", "ICP/USDT", "LTC/USDT",
-                   "QQQ/USDT:USDT", "TQQQ/USDT:USDT"]
+                   "MU/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT"]
 # 合约交易器缓存与自动合约引擎
 _futures_traders = {}
 _auto_futures = None
@@ -654,8 +679,9 @@ def futures():
     """自动合约交易监控页面"""
     from flask import jsonify
     form = request.form
-    api_key = form.get("api_key", session.get("futures_api_key", DEFAULT_FUTURES_API_KEY))
-    api_secret = form.get("api_secret", session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET))
+    # strip() 去除复制粘贴带入的空格/换行（否则币安报 -2008 Invalid Api-Key ID）
+    api_key = (form.get("api_key") or session.get("futures_api_key", DEFAULT_FUTURES_API_KEY)).strip()
+    api_secret = (form.get("api_secret") or session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET)).strip()
     leverage = _to_int(form.get("leverage"), session.get("futures_leverage", FUTURES_LEVERAGE))
     # 网络切换：testnet(默认)/mainnet(主网真实资金)。测试网无 TQQQ 等美股永续
     network = form.get("network") or session.get("futures_network", "testnet")
@@ -833,10 +859,10 @@ STRATEGY_SUMMARY = [
             {'品种': 'BTC/USDT', '周期': '4h', '策略': 'KDJ(9,3,3) 买20/卖80', '模式': '仅做多', '止盈止损': '8%/5%',
              '收益': '+19.2%', '月均': '~0.5%', '交易次数': 94, '胜率': '59.0%', '最大回撤': '-24.0%',
              '稳定性': '四年2盈2亏', '市场': '合约/现货', '备注': '可选第二路：累计为正但年度胜负随机，仓位减半'},
-            {'品种': 'ETH等蓝筹', '周期': '4h', '策略': 'KDJ/RSI/布林带', '模式': '双向做空', '止盈止损': '任意',
+            {'品种': 'ETH/BTC等蓝筹', '周期': '4h', '策略': 'KDJ/RSI/布林带', '模式': '双向做空', '止盈止损': '任意',
              '收益': '亏损/爆仓', '交易次数': '-', '胜率': '-', '最大回撤': '-100%',
              '稳定性': '10币扫描反转做空21次爆仓', '市场': '-', '备注': '❌禁止：蓝筹超卖回归策略移植到山寨币0/10全亏'},
-            {'品种': '山寨币', '周期': '4h', '策略': 'KDJ(9,3,3)', '模式': '任意', '止盈止损': '任意',
+            {'品种': 'DOGE~XLM等10山寨', '周期': '4h', '策略': 'KDJ(9,3,3)', '模式': '任意', '止盈止损': '任意',
              '收益': '0/10为正', '交易次数': '-', '胜率': '-', '最大回撤': '-84%~-92%',
              '稳定性': '平均四年-55%~-92%', '市场': '-', '备注': '❌禁止：KDJ只对ETH有效，DOGE~XLM十币全军覆没'},
         ],
@@ -864,12 +890,12 @@ STRATEGY_SUMMARY = [
             {'品种': 'LINK/USDT', '周期': '4h', '策略': '布林带 仅多 不设', '模式': '仅做多', '止盈止损': '不设',
              '收益': '+175.9%', '月均': '~2.4%', '交易次数': 94, '胜率': '—', '最大回撤': '—',
              '稳定性': '最差年-28.2%', '市场': '合约/现货', '备注': 'LINK专属：布林带仅多在其上5币为正（LINK/TRX/LTC/UNI/BCH）'},
-            {'品种': '普适性冠军', '周期': '4h', '策略': 'EMA(12/26) 仅多 不设', '模式': '仅做多', '止盈止损': '不设',
+            {'品种': 'DOGE~XLM等10山寨', '周期': '4h', '策略': 'EMA(12/26) 仅多 不设', '模式': '仅做多', '止盈止损': '不设',
              '收益': '6/10币为正', '月均': '平均+59.9%', '交易次数': '—', '胜率': '—', '最大回撤': '平均约-30%',
-             '稳定性': '唯一系统性有效', '市场': '合约/现货', '备注': 'XLM+382%/BCH+207%/ICP+98%/DOGE+90%/TRX+73%/LINK+9%，双均线仅多同款6/10'},
-            {'品种': '组合策略结论', '周期': '4h', '策略': '9组合AND过滤 vs EMA单策略', '模式': '双向/仅多', '止盈止损': '不设/5/5',
+             '稳定性': '唯一系统性有效', '市场': '合约/现货', '备注': '★普适性冠军：XLM+382%/BCH+207%/ICP+98%/DOGE+90%/TRX+73%/LINK+9%，双均线仅多同款6/10'},
+            {'品种': 'DOGE~XLM等10山寨', '周期': '4h', '策略': '9组合AND过滤 vs EMA单策略', '模式': '双向/仅多', '止盈止损': '不设/5/5',
              '收益': '全部不如基准', '交易次数': '2712→7笔', '胜率': '—', '最大回撤': '—',
-             '稳定性': '系统性证伪', '市场': '—', '备注': '❌EMA+RSI/KDJ/布林40币·年零信号（趋势与超卖互斥）；过滤越狠错过大行情越多；个别亮点LINK EMA+双均线+354%属10选1，勿用'},
+             '稳定性': '系统性证伪', '市场': '—', '备注': '❌组合策略结论：EMA+RSI/KDJ/布林40币·年零信号（趋势与超卖互斥）；过滤越狠错过大行情越多；个别亮点LINK EMA+双均线+354%属10选1，勿用'},
         ],
     },
     {
@@ -895,17 +921,18 @@ STRATEGY_SUMMARY = [
         'desc': '收益与风险平衡，适合中等仓位',
         'rows': [
             {'品种': 'TQQQ/USDT', '周期': '4h', '策略': 'RSI+MACD', '模式': '双向', '止盈止损': '不设',
-             '收益': '+42.3%', '日均': '0.64%', '交易次数': 16, '胜率': '62.5%', '最大回撤': '-7.1%',
-             '稳定性': '盈利日49%', '市场': '合约(仅主网)', '备注': '收益回撤比6:1，全场最优；3倍纳指ETF'},
+             '收益': '+42.3%(2026年6月底~8月)', '日均': '0.64%', '交易次数': 16, '胜率': '62.5%', '最大回撤': '-7.1%',
+             '稳定性': '盈利日49%', '市场': '合约(仅主网)', '备注': '收益回撤比6:1，全场最优；3倍纳指ETF（6月29日上市）'},
             {'品种': 'TQQQ/USDT', '周期': '4h', '策略': 'MACD', '模式': '双向', '止盈止损': '5%/5%',
-             '收益': '+32.3%', '日均': '0.49%', '交易次数': 16, '胜率': '68.8%', '最大回撤': '-6.9%',
+             '收益': '+32.3%(2026年6月底~8月)', '日均': '0.49%', '交易次数': 16, '胜率': '68.8%', '最大回撤': '-6.9%',
              '稳定性': '日波动1.9%', '市场': '合约(仅主网)', '备注': '稳定组日均最高'},
             {'品种': 'ETH/USDT', '周期': '4h', '策略': 'KDJ', '模式': '仅做多', '止盈止损': '8%/5%',
              '收益': '+19.7%', '月均': '~2.5%', '交易次数': 25, '胜率': '64.0%', '最大回撤': '-20.0%',
              '稳定性': '高胜率', '市场': '合约/现货', '备注': 'ETH月均收益冠军（2026年1~8月口径）'},
-            {'品种': 'MUB/USDT', '周期': '4h', '策略': 'KDJ', '模式': '双向', '止盈止损': '不设',
-             '收益': '+201.8%', '日均': '1.57%', '交易次数': 17, '胜率': '82.4%', '最大回撤': '-14.7%',
-             '稳定性': '盈利日57%', '市场': '现货代币(做空为模拟)', '备注': '美股美光代币，样本77天，无永续合约'},
+            {'品种': 'MUB/USDT', '周期': '4h', '策略': 'KDJ', '模式': '双向(模拟)', '止盈止损': '不设',
+             '收益': '+201.8%(2026年6~8月)', '日均': '1.57%', '交易次数': 17, '胜率': '82.4%', '最大回撤': '-14.7%',
+             '稳定性': '盈利日57%', '市场': '现货代币(主网1倍MU合约可做空)',
+             '备注': '2倍美光现货代币，6月12日上市；主网无MUB/MUUB合约（测试网亦无），本结果为系统模拟多空测试'},
         ],
     },
     {
@@ -913,14 +940,15 @@ STRATEGY_SUMMARY = [
         'desc': '波动大，务必小仓位+严格风控',
         'rows': [
             {'品种': 'TQQQ/USDT', '周期': '1h', '策略': 'KDJ', '模式': '双向', '止盈止损': '不设',
-             '收益': '+54.5%', '日均': '0.80%', '交易次数': 41, '胜率': '80.5%', '最大回撤': '-17.4%',
+             '收益': '+54.5%(2026年6月底~8月)', '日均': '0.80%', '交易次数': 41, '胜率': '80.5%', '最大回撤': '-17.4%',
              '稳定性': '盈利日64%', '市场': '合约(仅主网)', '备注': '日均最接近1%目标'},
             {'品种': 'TON/USDT', '周期': '4h', '策略': 'MACD', '模式': '双向', '止盈止损': '不设',
              '收益': '+189.6%', '日均': '0.51%', '交易次数': 63, '胜率': '41.3%', '最大回撤': '-29.5%',
              '稳定性': '盈利日37%', '市场': '合约', '备注': '加密币2026年度冠军，靠盈亏比取胜'},
-            {'品种': 'MUUB/USDT', '周期': '4h', '策略': 'KDJ', '模式': '双向', '止盈止损': '不设',
-             '收益': '+136.8%', '日均': '2.94%', '交易次数': 8, '胜率': '87.5%', '最大回撤': '-33.4%',
-             '稳定性': '盈利日53%', '市场': '现货代币(做空为模拟)', '备注': '2倍美光ETF，仅36天8笔，过拟合风险极高'},
+            {'品种': 'MUUB/USDT', '周期': '4h', '策略': 'KDJ', '模式': '双向(模拟)', '止盈止损': '不设',
+             '收益': '+136.8%(2026年7~8月)', '日均': '2.94%', '交易次数': 8, '胜率': '87.5%', '最大回撤': '-33.4%',
+             '稳定性': '盈利日53%', '市场': '现货代币(主网1倍MU合约可做空)',
+             '备注': '2倍美光ETF代币，7月22日上市，仅38天8笔；主网无对应合约，本结果为系统模拟多空测试，过拟合风险极高'},
         ],
     },
     {
@@ -950,89 +978,9 @@ STRATEGY_SUMMARY = [
 ]
 
 
-# 历年收益对比矩阵（总收益率%；"爆仓"=权益归零；"—"=当年无数据；2026为1~8月）
-YEAR_MATRIX = [
-    {'配置': 'ETH 4h KDJ 8/5 仅多', 'y2023': '+8.8%', 'y2024': '+16.1%', 'y2025': '-7.0%', 'y2026': '+36.3%',
-     '评价': '★跨年最稳：4年3盈，最差仅-7%，累计+60%'},
-    {'配置': 'NEAR 4h EMA 2/2 仅多', 'y2023': '+2.8%', 'y2024': '+3.7%', 'y2025': '-8.9%', 'y2026': '+32.9%',
-     '评价': '★次稳：4年3盈，最差-8.9%，累计+29%'},
-    {'配置': 'ETH 4h KDJ 5/5 仅多', 'y2023': '+24.7%', 'y2024': '+2.2%', 'y2025': '-24.1%', 'y2026': '+32.2%',
-     '评价': '4年3盈，但2025亏24%'},
-    {'配置': 'NEAR 4h EMA+MACD 3/3 仅多', 'y2023': '-18.1%', 'y2024': '+5.4%', 'y2025': '-38.9%', 'y2026': '+49.6%',
-     '评价': '4年2盈，波动大'},
-    {'配置': 'TON 4h MACD 5/5 双向', 'y2023': '—', 'y2024': '-28.9%', 'y2025': '-13.1%', 'y2026': '+50.1%',
-     '评价': '上市后前两年连亏，仅2026有效'},
-    {'配置': 'TON 4h MACD 双向', 'y2023': '—', 'y2024': '-5.1%', 'y2025': '-40.1%', 'y2026': '+189.6%',
-     '评价': '仅2026爆发，前两年亏'},
-    {'配置': 'XRP 4h RSI 双向', 'y2023': '-10.9%', 'y2024': '爆仓', 'y2025': '+230.7%', 'y2026': '+3.9%',
-     '评价': '2024爆仓，2025冠军是幸存者'},
-    {'配置': 'LTC 1h RSI 双向', 'y2023': '-48.1%', 'y2024': '-56.8%', 'y2025': '+293.1%', 'y2026': '-6.0%',
-     '评价': '仅2025单年有效'},
-    {'配置': 'BTC 4h 布林带 双向', 'y2023': '-55.4%', 'y2024': '-61.8%', 'y2025': '+65.4%', 'y2026': '-22.8%',
-     '评价': '4年3亏，不跨年'},
-    {'配置': 'BCH 4h RSI+EMA 双向', 'y2023': '爆仓', 'y2024': '-63.8%', 'y2025': '+337.2%', 'y2026': '-57.5%',
-     '评价': '2025年度冠军跨年爆仓，典型过拟合'},
-    {'配置': 'AVAX 4h EMA+MACD 5/5 双向', 'y2023': '-48.5%', 'y2024': '-29.8%', 'y2025': '+214.4%', 'y2026': '-63.3%',
-     '评价': '仅2025有效，其余三年全亏'},
-    {'配置': 'NEAR 4h RSI 双向', 'y2023': '爆仓', 'y2024': '爆仓', 'y2025': '+134.6%', 'y2026': '爆仓',
-     '评价': '四年三爆仓，最危险样本'},
-    # ---- 市值10-20山寨币扫描（2026-08 轮） ----
-    {'配置': 'XLM 4h EMA12/26 双向 5/5', 'y2023': '-11.8%', 'y2024': '+74.4%', 'y2025': '+30.4%', 'y2026': '+69.0%',
-     '评价': '★山寨最稳：4年3盈，累计+239%；熊市靠空头盈利（2025+38.9pp/2026+42.6pp）'},
-    {'配置': 'XLM 4h EMA12/26 双向 不设', 'y2023': '+20.8%', 'y2024': '+379.8%', 'y2025': '-1.3%', 'y2026': '+60.1%',
-     '评价': '累计+815%居首，但几乎全靠2024.11单月+402%，回撤-43%，不可外推'},
-    {'配置': 'ICP 4h 双均线10/30 双向 不设', 'y2023': '+74.7%', 'y2024': '+107.8%', 'y2025': '+13.2%', 'y2026': '+4.9%',
-     '评价': '罕见4年全正（累计+331%），但年度回撤-42%~-61%，仅适合小仓位'},
-    {'配置': 'LTC 4h RSI 双向 不设', 'y2023': '+46.0%', 'y2024': '+44.2%', 'y2025': '+73.2%', 'y2026': '+12.8%',
-     '评价': '4年全正累计+311%，但同策略在其余9币爆仓12币·年——10选1幸存者，慎用'},
-    {'配置': 'BCH 4h EMA 仅多 不设', 'y2023': '+76.8%', 'y2024': '+132.3%', 'y2025': '-11.1%', 'y2026': '-16.0%',
-     '评价': '山寨牛市赚翻、熊市阴亏（累计+207%），不跨牛熊'},
-    {'配置': '山寨币 KDJ 8/5 仅多(10币)', 'y2023': '全负', 'y2024': '全负', 'y2025': '全负', 'y2026': '全负',
-     '评价': '❌DOGE~XLM十币0/10为正：KDJ超卖回归是ETH特供，禁移植山寨'},
-    {'配置': '山寨币 反转类做空(不设止损)', 'y2023': '爆仓', 'y2024': '爆仓', 'y2025': '爆仓', 'y2026': '亏损',
-     '评价': '❌RSI/布林/KDJ/RSI+布林四款双向不设，10币4年共爆仓38币·年（12+9+8+9）：高波动币逆势做空被轧空即归零'},
-]
+from year_matrix import YEAR_MATRIX  # 数据单独维护于 year_matrix.py（迁移④逐年回填仍依赖）
 
-
-# 研究记录（按时间倒序）：每轮策略研究的结论沉淀，避免重复验证已证伪方向
-RESEARCH_LOG = [
-    {'date': '2026-08-30', 'title': '缠论可量化子集验证（一买=底分型+前期超跌抄底、三买/三卖=突破回踩，6币×4参数×3出场×4年）',
-     'result': '一买深跌30%+8/5 六币四年全正（LTC+105%/ADA+125%）但ETH仅+25.8%不及KDJ基准+40.5%；三买N=20不设止盈五年均+105%但收益全在2023/24牛市，2025全线亏损不跨牛熊；三卖做空全面负贡献',
-     'conclusion': '缠论两子集有真实统计信号（深跌抄底6/6全正非随机）但无增量价值：ETH上不如KDJ、山寨上不如EMA双向；再次验证"回归单必设小止盈止损、趋势单不设"规律跨理论成立；不替换现有配置'},
-    {'date': '2026-08-29', 'title': '山寨币组合策略验证（9组合AND过滤 vs EMA单策略基准，10币×2模式×2止盈止损×4年≈1600组）',
-     'result': '无一组合在正收益币数与平均累计上同时超过基准（EMA仅多不设6/10、+59.9%）；EMA+RSI/KDJ/布林三组合40币·年零信号；三重趋势4年仅7笔',
-     'conclusion': 'AND过滤在趋势策略上砍掉大行情（2712笔→7笔），过滤越狠错过越多；组合策略在蓝筹与山寨上均已系统性证伪，单策略为王'},
-    {'date': '2026-08-29', 'title': '分品种最终结论',
-     'result': '全部研究收敛',
-     'conclusion': 'ETH/BTC蓝筹用超卖回归（KDJ仅多+小止损快进快出）；山寨币用趋势跟随（EMA/双均线双向）；两类方向相反，禁止混用'},
-    {'date': '2026-08-29', 'title': '市值10-20山寨币四年扫描（10币×7策略×2模式×3止盈止损×4年≈1700组）',
-     'result': 'EMA仅多不设 6/10币四年为正（平均+59.9%）；XLM EMA双向5/5四年+239%最平衡；反转类双向爆仓38币·年',
-     'conclusion': '趋势跟随是山寨币上唯一系统性有效策略；做空只限顺势（EMA/双均线），止盈止损与蓝筹规则相反'},
-    {'date': '2026-08-28', 'title': 'ETH 4h KDJ 8/5 移植9币验证',
-     'result': '仅BTC为正（四年+19.2%）；BNB/SOL/XRP/ADA/NEAR/AVAX/TON全亏，ADA -75%/AVAX -85%',
-     'conclusion': 'KDJ超卖抄底依赖"跌多了会回来"，只有蓝筹有此特性；山寨单边阴跌下是绞肉机'},
-    {'date': '2026-08-27', 'title': '教科书组合策略验证（MACD+20日线/KDJ+MACD过滤/布林+RSI+MACD三重确认，4币4年）',
-     'result': '全部不如ETH 4h KDJ 8/5基准；三重确认四年零信号',
-     'conclusion': '"多指标共振提高胜率"话术不成立：过滤条件越多信号越少越滞后，不实测不要相信'},
-    {'date': '2026-08-26', 'title': '高频周期验证（1h/15m vs 4h）',
-     'result': '同策略1h/15m全面差于4h',
-     'conclusion': '手续费按交易次数线性损耗，周期越短磨损越大；4h是手续费与信号质量的最优平衡'},
-    {'date': '2026-08-25', 'title': 'BTC-ETH统计套利（log价格比z-score均值回归）',
-     'result': '全部参数组合亏损',
-     'conclusion': '两币相关但非协整，价差不具稳定均值回归特性，配对交易在该市场不可用'},
-    {'date': '2026-08-24', 'title': '动量轮动（每月按N日涨幅轮换TopK币）',
-     'result': '较大盘基准改善但整体仍亏',
-     'conclusion': '月度动量在加密市场无稳定溢价，轮动换仓成本吃掉残余优势'},
-    {'date': '2026-08-23', 'title': '多币种全扫描组合（15币同策略组合）',
-     'result': '全亏',
-     'conclusion': '多币种≠分散风险，更多时候是分散到烂标的上；策略必须先单币验证'},
-    {'date': '2026-08-20', 'title': '月回撤≤3%约束寻优 → 放宽为月均收益最大化 → 2025全年交叉验证 → 2023/2024补测 → 四年矩阵',
-     'result': '月回撤3%无解；四年矩阵证伪全部2025单年冠军（BCH/AVAX/NEAR-RSI等跨年爆仓）',
-     'conclusion': '单年寻优必过拟合，评价策略最低标准=4年3盈且最差年个位数亏损'},
-    {'date': '2026-08-15', 'title': '日盈利1%目标总寻优（ETH/BTC/TQQQ/15币，12000+组）',
-     'result': '无稳定达标解；确立 ETH 4h KDJ 8/5 仅多（四年+40%）与 NEAR 4h EMA 2/2 仅多（+29%）',
-     'conclusion': '日1%复利=年化3678%不现实；可持续目标应为月均1~3%且回撤可控'},
-]
+from research_log import RESEARCH_LOG  # 数据单独维护于 research_log.py（界面暂不展示）
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -1050,7 +998,7 @@ def settings():
             import mailer as _mailer
             ok, msg = _mailer.send_email("✅ 币安量化系统：邮件告警测试",
                                          "这是一封测试邮件。\n收到即说明邮件告警配置正确：\n"
-                                         "当引擎无法访问币安时，将每10分钟提醒一次、共3封。")
+                                         "当引擎无法访问币安时，将每10分钟提醒一次、共3封；网络恢复后另发一封恢复邮件。")
             error, message = (None, msg) if ok else (msg, None)
         elif action == "change_pwd":
             old_pwd = request.form.get("old_password", "")
@@ -1066,14 +1014,460 @@ def settings():
     error = request.args.get('_error') or None
     message = request.args.get('_message') or None
     alert_email = (_auth.get_email_config(session.get('user', '')) or {}).get('email')
-    return render_template("settings.html", error=error, message=message, alert_email=alert_email)
+    return render_template("settings.html", error=error, message=message, alert_email=alert_email,
+                           changelog=CHANGELOG)
 
 
-@app.route("/strategies")
+# ==================== 最优策略页数据种子（首次启动导入历史回测记录） ====================
+# 年化夏普比率（2026-08 重跑回测，从权益曲线逐bar收益率计算，4h年化√2190；
+# 来源 scripts/results/sharpe_backfill.json，由 scripts/tmp_sharpe_backfill.py 生成）
+SHARPE_DATA = {
+    'ETH_KDJ': '0.81', 'XLM_OPT': '1.11',
+    'DOGE_EMA': '0.59', 'DOGE_KDJ': '-1.00', 'TRX_EMA': '0.57', 'TRX_KDJ': '-0.01',
+    'LINK_EMA': '0.32', 'LINK_KDJ': '-0.15', 'DOT_EMA': '-0.23', 'DOT_KDJ': '-0.72',
+    'BCH_EMA': '0.81', 'BCH_KDJ': '0.10', 'LTC_EMA': '-0.56', 'LTC_KDJ': '0.16',
+    'UNI_EMA': '-0.12', 'UNI_KDJ': '0.19', 'APT_EMA': '-0.22', 'APT_KDJ': '-0.73',
+    'ICP_EMA': '0.61', 'ICP_KDJ': '-0.99', 'XLM_EMA': '0.97', 'XLM_KDJ': '-0.01',
+    'AAPL_M7': '1.42', 'MSFT_M7': '1.97', 'NVDA_M7': '2.63', 'GOOGL_M7': '1.34',
+    'AMZN_M7': '1.39', 'META_M7': '2.39', 'TSLA_M7': '0.96',
+    'MUB_SB': '4.54', 'MUUB_SB': '6.14',
+}
+
+
+def _migrate_strategy_records():
+    """数据修订（幂等）：① 收益补时间周期 ② MUB/MUUB 标注模拟 ③ 补实盘口径记录 ④ yearly列+历年矩阵数据回填"""
+    PERIODS = [('最终推荐', '(2023-01-01~2026-08-26)'), ('市值10-20', '(2023-01-01~2026-08-26)'),
+               ('分品种最终结论', '(2023-01-01~2026-08-26)'),
+               ('2025全年回测', '(2025-01-01~2025-12-31)'), ('稳健型', '(2026-01-01~2026-08-26)'),
+               ('均衡型', '(2026-01-01~2026-08-26)'), ('激进型', '(2026-01-01~2026-08-26)')]
+    # 美股代币精确到日：起点=上市日（首根4h K线），终点=测试数据末日 2026-08-30
+    US_WINDOW = {'TSLA': '2026-01-28~2026-08-30', 'AMZN': '2026-02-09~2026-08-30',
+                 'NVDA': '2026-03-26~2026-08-30', 'GOOGL': '2026-03-26~2026-08-30',
+                 'META': '2026-03-26~2026-08-30', 'AAPL': '2026-04-06~2026-08-30',
+                 'MSFT': '2026-04-20~2026-08-30', 'MU': '2026-04-07~2026-08-30',
+                 'TQQQ': '2026-06-29~2026-08-30', 'MUB': '2026-06-12~2026-08-30',
+                 'MUUB': '2026-07-22~2026-08-30'}
+
+    # ---- ④ 老库平滑加 yearly 列，并把 YEAR_MATRIX 匹配回填为年度明细 ----
+    import re as _re
+    with _store._conn() as c:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(strategy_records)")]
+        if 'yearly' not in cols:
+            c.execute("ALTER TABLE strategy_records ADD COLUMN yearly TEXT")
+
+    def _match_matrix(cfg, rec):
+        """YEAR_MATRIX 配置名匹配到记录：币种前缀 + 周期 + 策略词 + 方向 + 止盈止损"""
+        base = (rec['symbol'] or '').split('/')[0]
+        if not cfg.startswith(base + ' '):
+            return False
+        for tfw in ('15m', '1h', '4h', '1d'):
+            if tfw in cfg:
+                if rec['timeframe'] != tfw:
+                    return False
+                break
+        words = [w for w in ('KDJ', 'EMA', 'RSI', 'MACD', '布林', '双均线') if w in (rec['strategy'] or '')]
+        if not words or not any(w in cfg for w in words):
+            return False
+        mode = rec['mode'] or ''
+        if '双向' in cfg and '双向' not in mode and mode != '任意' and '双向做空' not in mode:
+            return False
+        if '仅多' in cfg and '仅做多' not in mode and mode != '任意':
+            return False
+        if '不设' in cfg:  # 含"不设"优先按无止盈止损匹配（EMA12/26、双均线10/30 等参数不干扰）
+            if rec['tpsl'] not in (None, '', '不设'):
+                return False
+        else:
+            ms = _re.findall(r'(\d+)/(\d+)', cfg)
+            if ms and rec['tpsl'] != f"{ms[-1][0]}%/{ms[-1][1]}%":  # 取最后一个 X/X 为止盈止损
+                return False
+        return True
+
+    with _store._conn() as c:
+        recs = [dict(r) for r in c.execute(
+            "SELECT id, symbol, strategy, mode, tpsl, yearly, timeframe FROM strategy_records").fetchall()]
+        for mx in YEAR_MATRIX:
+            cfg = mx.get('配置', '')
+            hits = [r for r in recs if _match_matrix(cfg, r) and not r['yearly']]
+            if hits:  # 同配置可能在最优区和历史区各有一条（不同来源），都写入
+                detail = json.dumps({'y2023': mx['y2023'], 'y2024': mx['y2024'], 'y2025': mx['y2025'],
+                                     'y2026': mx['y2026'], 'verdict': mx['评价']}, ensure_ascii=False)
+                for h in hits:
+                    c.execute("UPDATE strategy_records SET yearly = ? WHERE id = ?", (detail, h['id']))
+                    h['yearly'] = detail
+
+    with _store._conn() as c:
+        rows = c.execute("SELECT id, ret, period, source, mode, note, symbol FROM strategy_records").fetchall()
+        for r in rows:
+            updates = {}
+            ret = r['ret'] or ''
+            per = r['period'] or ''
+            # ---- ⑪ 日期独立成列：把收益尾部的 (时间标注) 拆到 period 列 ----
+            m = _re.search(r'^(.*?)\(([^()]*)\)\s*$', ret)
+            if m and any(k in m.group(2) for k in ('年', '月', '天', '至')):
+                base, per = m.group(1), m.group(2)
+                updates['ret'], updates['period'] = base, per
+            if per == '四年':  # 最优两行的笼统标注 → 按来源精确化
+                per = next((p[1:-1] for key, p in PERIODS if key in (r['source'] or '')), '四年')
+                updates['period'] = per
+            if ret and ret != '—' and not per and not updates.get('period'):
+                per = next((p[1:-1] for key, p in PERIODS if key in (r['source'] or '')), '2026-01-01~2026-08-26')
+                updates['period'] = per
+            # ---- ⑮ 日期精确到日：旧月份/笼统标签 → 统一日期区间（美股按上市日~08-30）----
+            base_coin = (r['symbol'] or '').split('/')[0].split('~')[0]
+            per_now = updates.get('period') or r['period'] or ''
+            if base_coin in US_WINDOW:
+                if per_now != US_WINDOW[base_coin]:
+                    updates['period'] = US_WINDOW[base_coin]
+            elif per_now != '各股自上市至8月':
+                if '四年' in per_now:
+                    updates['period'] = '2023-01-01~2026-08-26'
+                elif per_now == '2025全年':
+                    updates['period'] = '2025-01-01~2025-12-31'
+                elif per_now.startswith('2026年'):
+                    updates['period'] = '2026-01-01~2026-08-26'
+            if r['symbol'] in ('MUB/USDT', 'MUUB/USDT') and r['mode'] == '双向':
+                updates['mode'] = '双向(模拟)'
+                note = r['note'] or ''
+                if '系统模拟多空测试' not in note:
+                    updates['note'] = '美股代币做空需走主网合约；MUB/MUUB为2倍现货代币、暂无对应合约（主网现有1倍MU合约），测试网亦无此品种。本结果为系统模拟多空测试' + (('；' + note) if note else '')
+            if updates:
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                c.execute(f"UPDATE strategy_records SET {sets} WHERE id = ?", (*updates.values(), r['id']))
+        # ---- ⑩ 最优策略两条的夏普回填（仅置顶行，空值才写，幂等）----
+        for sym, sv in (('ETH/USDT', SHARPE_DATA.get('ETH_KDJ')),
+                        ('XLM/USDT', SHARPE_DATA.get('XLM_OPT'))):
+            if sv:
+                c.execute("UPDATE strategy_records SET sharpe=? WHERE symbol=? AND is_top=1 "
+                          "AND (sharpe IS NULL OR sharpe='')", (sv, sym))
+        # ---- ⑫ 其余历史记录夏普回填（2026-08 复跑回测并核对累计收益≤20%偏差后才采信；
+        #      MUUB双向/BTC-KDJ/ETH-2026 三条原口径无法复现、蓝筹做空汇总行非单一回测，保持'—'）----
+        # (symbol, strategy, mode, tpsl, timeframe, sharpe)
+        EXTRA_SHARPE = [
+            ('AVAX/USDT', 'EMA+MACD', '双向', '5%/5%', '4h', '2.04'),
+            ('BCH/USDT', 'RSI+EMA', '双向', '不设', '4h', '2.40'),
+            ('BTC/USDT', '布林带', '双向', '不设', '4h', '1.40'),
+            ('LTC/USDT', 'RSI', '双向', '不设', '1h', '2.04'),
+            ('NEAR/USDT', 'RSI', '双向', '不设', '4h', '1.34'),
+            ('XRP/USDT', 'RSI', '双向', '不设', '4h', '1.81'),
+            ('MUB/USDT', 'KDJ', '双向(模拟)', '不设', '4h', '6.43'),
+            ('TQQQ/USDT', 'RSI+MACD', '双向', '不设', '4h', '4.23'),
+            ('TQQQ/USDT', 'MACD', '双向', '5%/5%', '4h', '4.47'),
+            ('TQQQ/USDT', 'KDJ', '双向', '不设', '1h', '4.55'),
+            ('TON/USDT', 'MACD', '双向', '不设', '4h', '2.83'),
+            ('TON/USDT', 'MACD', '双向', '5%/5%', '4h', '1.75'),
+            ('ICP/USDT', '双均线(10/30) 双向 不设', '双向', '不设', '4h', '0.89'),
+            ('LINK/USDT', '布林带 仅多 不设', '仅做多', '不设', '4h', '0.79'),
+            ('LTC/USDT', 'RSI(14) 双向 不设', '双向', '不设', '4h', '0.90'),
+            ('XLM/USDT', 'EMA(12/26) 双向 不设', '双向', '不设', '4h', '1.15'),
+            ('BCH/USDT', 'EMA 仅多 不设', '仅做多', '不设', '4h', '0.81'),
+            ('NEAR/USDT', 'EMA', '仅做多', '2%/2%', '4h', '2.16'),
+            ('NEAR/USDT', 'EMA+MACD', '仅做多', '3%/3%', '4h', '1.89'),
+        ]
+        for sym, strat, mode, tpsl, tf, sv in EXTRA_SHARPE:
+            c.execute("UPDATE strategy_records SET sharpe=? WHERE symbol=? AND strategy=? AND mode=? "
+                      "AND tpsl IS ? AND timeframe=? AND (sharpe IS NULL OR sharpe='')",
+                      (sv, sym, strat, mode, tpsl, tf))
+        # ---- ⑤ MUB/MUUB 标注口径修正（含上一版文案的平滑替换）----
+        for r in c.execute("SELECT id, symbol, mode, note, market FROM strategy_records "
+                           "WHERE symbol IN ('MUB/USDT','MUUB/USDT')").fetchall():
+            note = r['note'] or ''
+            updates = {}
+            if '系统模拟多空测试' not in note:
+                for old_prefix in ('现货无永续合约，做空为回测模拟、实盘仅能做多；',
+                                   '现货做空不可用后的真实口径；'):
+                    note = note.replace(old_prefix, '')
+                if (r['mode'] or '') == '双向(模拟)':
+                    updates['note'] = ('美股代币做空需走主网合约；MUB/MUUB为2倍现货代币、暂无对应合约'
+                                       '（主网现有1倍MU合约），测试网亦无此品种。本结果为系统模拟多空测试'
+                                       + (('；' + note) if note else ''))
+                    updates['market'] = '现货代币(主网1倍MU合约可做空)'
+                else:
+                    updates['note'] = ('现货口径；主网1倍MU合约可实现双向做空（2倍MUB暂无合约）'
+                                       + (('；' + note) if note else ''))
+                    updates['market'] = '现货/主网合约'
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                c.execute(f"UPDATE strategy_records SET {sets} WHERE id = ?", (*updates.values(), r['id']))
+        # 插入 MUB/MUUB 实盘口径（仅做多）记录：upsert（存在则刷新标签字段，保留置顶/排序）
+        now = datetime.now().isoformat(timespec='seconds')
+        new_rows = [
+            {'symbol': 'MUB/USDT', 'timeframe': '4h', 'strategy': 'KDJ', 'mode': '仅做多', 'tpsl': '不设',
+             'ret': '+76.2%', 'period': '2026-06-12~2026-08-30', 'daily': '+0.96%', 'trades': '9', 'winrate': '—', 'mdd': '-12.7%',
+             'stability': '6月12日上市', 'market': '现货/主网合约', 'source': '美股代币实盘口径复验（2026-08）',
+             'note': '现货口径；主网1倍MU合约可实现双向做空（2倍MUB暂无合约）；对照双向模拟版+201.8%：约2/3利润来自做空',
+             'sharpe': SHARPE_DATA.get('MUB_SB')},
+            {'symbol': 'MUUB/USDT', 'timeframe': '4h', 'strategy': 'KDJ', 'mode': '仅做多', 'tpsl': '不设',
+             'ret': '+76.0%', 'period': '2026-07-22~2026-08-30', 'daily': '+2.00%', 'trades': '5', 'winrate': '—', 'mdd': '-9.0%',
+             'stability': '7月22日上市', 'market': '现货/主网合约', 'source': '美股代币实盘口径复验（2026-08）',
+             'note': '现货口径；主网1倍MU合约可实现双向做空（2倍MUB暂无合约）；上市极短无统计意义，观察即可',
+             'sharpe': SHARPE_DATA.get('MUUB_SB')},
+        ]
+        for rec in new_rows:
+            exist = c.execute("SELECT id FROM strategy_records WHERE symbol=? AND source=?",
+                              (rec['symbol'], rec['source'])).fetchone()
+            if exist:
+                sets = ", ".join(f"{f} = ?" for f in _store.FIELDS)
+                c.execute(f"UPDATE strategy_records SET {sets} WHERE id = ?",
+                          (*[rec.get(f) for f in _store.FIELDS], exist[0]))
+            else:
+                c.execute("INSERT INTO strategy_records (is_top, sort_order, created_at, " + ",".join(_store.FIELDS) + ") "
+                          "VALUES (0, 0, ?, " + ",".join("?" * len(_store.FIELDS)) + ")",
+                          (now, *[rec.get(f) for f in _store.FIELDS]))
+        # 插入美股七姐妹扫描结果：upsert（存在则刷新标签字段，保留置顶/排序；范围汇总行随后被⑦删除）
+        now2 = datetime.now().isoformat(timespec='seconds')
+        m7_rows = [
+            {'symbol': 'NVDA/USDT:USDT', 'timeframe': '4h', 'strategy': 'RSI+MACD', 'mode': '仅做多', 'tpsl': '不设',
+             'ret': '+31.2%', 'period': '2026-03-26~2026-08-30', 'daily': '+0.20%', 'trades': '29', 'winrate': '—', 'mdd': '-8.9%',
+             'stability': '前后半都赚', 'market': '主网合约', 'source': '美股七姐妹扫描（2026-08）',
+             'note': '★七姐妹最强个股：前半+20%/后半+8%；标的自身+25.4%，策略略胜且回撤更浅',
+             'sharpe': SHARPE_DATA.get('NVDA_M7')},
+            {'symbol': 'META/USDT:USDT', 'timeframe': '4h', 'strategy': 'RSI', 'mode': '仅做多', 'tpsl': '5%/5%',
+             'ret': '+26.4%', 'period': '2026-03-26~2026-08-30', 'daily': '+0.17%', 'trades': '8', 'winrate': '—', 'mdd': '-10.0%',
+             'stability': '前后半都赚', 'market': '主网合约', 'source': '美股七姐妹扫描（2026-08）',
+             'note': '横盘股策略大幅超越标的（标的仅+4.2%）；8笔小样本',
+             'sharpe': SHARPE_DATA.get('META_M7')},
+            {'symbol': 'AAPL~TSLA等7币', 'timeframe': '4h', 'strategy': 'RSI(14)', 'mode': '仅做多', 'tpsl': '5%/5%',
+             'ret': '+9.4%', 'period': '各股自上市~2026-08-30', 'daily': '—', 'trades': '—', 'winrate': '—', 'mdd': '—',
+             'stability': '7/7全胜', 'market': '主网合约', 'source': '美股七姐妹扫描（2026-08）',
+             'note': '★普适性冠军：唯一7/7全胜配置，蓝筹属性与ETH同族（超卖回归+快进快出）；EMA仅多不设6/7(+10.6%)；7股上线：TSLA 1月/AMZN 2月/NVDA·GOOGL·META 3月/AAPL·MSFT 4月'},
+            {'symbol': 'AAPL~TSLA等7币', 'timeframe': '4h', 'strategy': '双向做空(全部28配置)', 'mode': '双向', 'tpsl': '—',
+             'ret': '全部≤4/7', 'period': '各股自上市~2026-08-30', 'daily': '—', 'trades': '—', 'winrate': '—', 'mdd': '—',
+             'stability': '系统性无效', 'market': '主网合约', 'source': '美股七姐妹扫描（2026-08）',
+             'note': '❌禁用做空：样本期七姐妹整体上涨，做空逆势全灭（KDJ双向5/5为0/7）；蓝筹做空逻辑同ETH禁用'},
+        ]
+        for rec in m7_rows:
+            exist = c.execute("SELECT id FROM strategy_records WHERE symbol=? AND strategy=? AND source=?",
+                              (rec['symbol'], rec['strategy'], rec['source'])).fetchone()
+            if exist:
+                sets = ", ".join(f"{f} = ?" for f in _store.FIELDS)
+                c.execute(f"UPDATE strategy_records SET {sets} WHERE id = ?",
+                          (*[rec.get(f) for f in _store.FIELDS], exist[0]))
+            else:
+                c.execute("INSERT INTO strategy_records (is_top, sort_order, created_at, " + ",".join(_store.FIELDS) + ") "
+                          "VALUES (0, 0, ?, " + ",".join("?" * len(_store.FIELDS)) + ")",
+                          (now2, *[rec.get(f) for f in _store.FIELDS]))
+        # ---- ⑥ 品种名规范化：汇总/警示行的伪标题改为真实标的范围名 ----
+        _RENAME = {'组合策略结论': 'DOGE~XLM等10山寨', '普适性冠军': 'DOGE~XLM等10山寨',
+                   '山寨币': 'DOGE~XLM等10山寨', 'ETH等蓝筹': 'ETH/BTC等蓝筹',
+                   '七姐妹普适冠军': 'AAPL~TSLA等7币', '七姐妹禁用': 'AAPL~TSLA等7币'}
+        for old, new in _RENAME.items():
+            c.execute("UPDATE strategy_records SET symbol = ? WHERE symbol = ?", (new, old))
+        # ---- ⑧ 山寨币去汇总化：删除 DOGE~XLM 范围行，写入逐币记录 ----
+        MC_SRC = '山寨10币逐币复验（2026-08）'
+        c.execute("DELETE FROM strategy_records WHERE symbol = 'DOGE~XLM等10山寨'")
+        # 清理早期版本 note/source 颠倒的错位记录
+        c.execute("DELETE FROM strategy_records WHERE note = ? AND source != ?", (MC_SRC, MC_SRC))
+        mc_ema = [  # (币, 四年EMA仅多不设收益%, 回撤, 笔数)
+            ('DOGE', 90.3, -48.1, 127), ('TRX', 73.0, -40.7, 135), ('LINK', 9.6, -49.2, 145),
+            ('DOT', -57.1, -58.3, 128), ('BCH', 207.3, -37.7, 129), ('LTC', -75.1, -65.4, 149),
+            ('UNI', -60.1, -51.3, 147), ('APT', -67.5, -59.4, 126), ('ICP', 97.9, -46.2, 139),
+            ('XLM', 382.3, -44.3, 121)]
+        mc_kdj = [  # (币, 四年KDJ8/5仅多收益%, 回撤, 笔数)
+            ('DOGE', -91.0, -67.0, 65), ('TRX', -10.8, -38.5, 84), ('LINK', -51.9, -45.4, 93),
+            ('DOT', -84.1, -75.1, 81), ('BCH', -26.4, -66.9, 70), ('LTC', -8.8, -43.0, 76),
+            ('UNI', -30.7, -61.6, 91), ('APT', -91.2, -72.6, 85), ('ICP', -95.0, -77.5, 76),
+            ('XLM', -48.4, -71.4, 77)]
+        now_mc = datetime.now().isoformat(timespec='seconds')
+        for coin, ret, mdd, trades in mc_ema:
+            sym = f"{coin}/USDT"
+            dup = c.execute("SELECT id FROM strategy_records WHERE symbol=? AND strategy=? AND source=?",
+                            (sym, 'EMA(12/26)', MC_SRC)).fetchone()
+            good = ret > 0
+            mc_vals = (sym, '4h', 'EMA(12/26)', '仅做多', '不设',
+                       f"{ret:+.1f}%", None, None, str(trades), '—', f"{mdd:.1f}%",
+                       '6/10为正' if good else 'EMA失效币', '合约',
+                       ('★EMA普适家族正收益成员' if good else 'EMA仅多在其上为负（山寨中4/10失效）'),
+                       MC_SRC, SHARPE_DATA.get(f'{coin}_EMA'), '2023-01-01~2026-08-26')
+            if dup:  # 已存在则补夏普（保留其他字段与置顶状态）
+                if not c.execute("SELECT sharpe FROM strategy_records WHERE id=?", (dup[0],)).fetchone()[0]:
+                    c.execute("UPDATE strategy_records SET sharpe=? WHERE id=?",
+                              (SHARPE_DATA.get(f'{coin}_EMA'), dup[0]))
+            else:
+                c.execute("INSERT INTO strategy_records (is_top, sort_order, created_at, " + ",".join(_store.FIELDS) + ") "
+                          "VALUES (0, 0, ?, " + ",".join("?" * len(_store.FIELDS)) + ")",
+                          (now_mc, *mc_vals))
+        for coin, ret, mdd, trades in mc_kdj:
+            sym = f"{coin}/USDT"
+            dup = c.execute("SELECT id FROM strategy_records WHERE symbol=? AND strategy=? AND source=?",
+                            (sym, 'KDJ(9,3,3)', MC_SRC)).fetchone()
+            if dup:
+                if not c.execute("SELECT sharpe FROM strategy_records WHERE id=?", (dup[0],)).fetchone()[0]:
+                    c.execute("UPDATE strategy_records SET sharpe=? WHERE id=?",
+                              (SHARPE_DATA.get(f'{coin}_KDJ'), dup[0]))
+            else:
+                c.execute("INSERT INTO strategy_records (is_top, sort_order, created_at, " + ",".join(_store.FIELDS) + ") "
+                          "VALUES (0, 0, ?, " + ",".join("?" * len(_store.FIELDS)) + ")",
+                          (now_mc, sym, '4h', 'KDJ(9,3,3)', '仅做多', '8%/5%',
+                           f"{ret:+.1f}%", None, None, str(trades), '—', f"{mdd:.1f}%",
+                           '0/10为正', '合约', '❌ETH专用策略移植失败（KDJ超卖回归在山寨全灭）', MC_SRC,
+                           SHARPE_DATA.get(f'{coin}_KDJ'), '2023-01-01~2026-08-26'))
+        # ---- ⑦ 七姐妹去汇总化：删除范围汇总行，分别写入 7 条个股记录 ----
+        M7_SRC = '美股七姐妹扫描（2026-08）'
+        # 删除汇总行（symbol 不含 '/USDT' 的即范围汇总名；个股均为 X/USDT:USDT）
+        c.execute("DELETE FROM strategy_records WHERE source = ? AND symbol NOT LIKE '%/USDT%'", (M7_SRC,))
+        # 清理早期版本的错位记录（note/source 字段颠倒的产物）
+        c.execute("DELETE FROM strategy_records WHERE note = ? AND source != ?", (M7_SRC, M7_SRC))
+        m7_stocks = [
+            ('AAPL/USDT:USDT', '双均线', '仅做多', '不设', '+11.2%', '2026-04-06~2026-08-30', '+0.08%', '14', '-10.3%',
+             '标的+23.3%：单边牛股策略跑输买入持有（止盈截断趋势）'),
+            ('MSFT/USDT:USDT', 'EMA', '双向', '不设', '+24.4%', '2026-04-20~2026-08-30', '+0.19%', '25', '-12.2%',
+             '前半+3%/后半+23%稳定；标的+23.4%，策略略胜且回撤更浅'),
+            ('NVDA/USDT:USDT', 'RSI+MACD', '仅做多', '不设', '+31.2%', '2026-03-26~2026-08-30', '+0.20%', '29', '-8.9%',
+             '★七姐妹最强：前半+20%/后半+8%；标的+25.4%，策略胜出且回撤浅'),
+            ('GOOGL/USDT:USDT', '双均线', '仅做多', '不设', '+14.2%', '2026-03-26~2026-08-30', '+0.09%', '16', '-20.2%',
+             '前半+22%/后半-6%（单段依赖）；标的+21.5%跑输持有'),
+            ('AMZN/USDT:USDT', 'EMA', '仅做多', '不设', '+19.6%', '2026-02-09~2026-08-30', '+0.10%', '22', '-12.4%',
+             '前半+17%/后半+2%；标的+27.7%跑输持有；2月9日上市，样本最长（仅TSLA更早）'),
+            ('META/USDT:USDT', 'RSI', '仅做多', '5%/5%', '+26.4%', '2026-03-26~2026-08-30', '+0.17%', '8', '-10.0%',
+             '横盘股策略大幅超越标的（标的仅+4.2%）；前半+7%/后半+12%'),
+            ('TSLA/USDT:USDT', 'EMA', '双向', '5%/5%', '+15.0%', '2026-01-28~2026-08-30', '+0.07%', '42', '-19.7%',
+             '标的-18.9%下跌市中双向策略盈利（前半+21%/后半-5%）；七姐妹唯一跌的股'),
+        ]
+        now_m7 = datetime.now().isoformat(timespec='seconds')
+        for sym, strat, mode, tpsl, ret, period, daily, trades, mdd, note in m7_stocks:
+            dup = c.execute("SELECT id FROM strategy_records WHERE symbol=? AND strategy=? AND mode=? "
+                            "AND tpsl=? AND source=?", (sym, strat, mode, tpsl, M7_SRC)).fetchone()
+            base = sym.split('/')[0]
+            vals = (sym, '4h', strat, mode, tpsl, ret, daily, None, trades, '—', mdd,
+                    '各股上市至8月底', '主网合约', note, M7_SRC, SHARPE_DATA.get(f'{base}_M7'), period)
+            if dup:  # 已存在则刷新标签字段（保留置顶/排序），修正早期天数口径
+                sets = ", ".join(f"{f} = ?" for f in _store.FIELDS)
+                c.execute(f"UPDATE strategy_records SET {sets} WHERE id = ?", (*vals, dup[0]))
+            else:  # 同连接内直接插入，避免嵌套连接写锁
+                c.execute("INSERT INTO strategy_records (is_top, sort_order, created_at, " + ",".join(_store.FIELDS) + ") "
+                          "VALUES (0, 0, ?, " + ",".join("?" * len(_store.FIELDS)) + ")",
+                          (now_m7, *vals))
+        # ---- ⑬ 交易明细回填：scripts/results/trades_detail.json（按 symbol|strategy|mode|tpsl|timeframe 匹配；
+        #      由 scripts/tmp_trades_backfill.py 复跑回测生成，含每笔开/平仓时间、方向、数量、价格、单笔收益）。
+        #      放在块末尾：⑦/⑧/实盘口径本轮插入的行也能立即回填 ----
+        _td_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'scripts', 'results', 'trades_detail.json')
+        if os.path.exists(_td_path):
+            try:
+                with open(_td_path, encoding='utf-8') as f:
+                    _td_map = json.load(f)
+            except Exception:
+                _td_map = {}
+            if _td_map:
+                for r in c.execute("SELECT id, symbol, strategy, mode, tpsl, timeframe FROM strategy_records "
+                                   "WHERE trades_detail IS NULL OR trades_detail=''").fetchall():
+                    v = _td_map.get(f"{r['symbol']}|{r['strategy']}|{r['mode']}|{r['tpsl']}|{r['timeframe']}")
+                    if v:
+                        c.execute("UPDATE strategy_records SET trades_detail=? WHERE id=?",
+                                  (json.dumps(v, ensure_ascii=False), r['id']))
+        # ---- ⑭ 胜率回填：山寨/七姐妹/实盘扫描当年未统计胜率（标'—'），现从交易明细真实计算 ----
+        for r in c.execute("SELECT id, trades_detail FROM strategy_records "
+                           "WHERE (winrate IS NULL OR winrate='' OR winrate='—') "
+                           "AND trades_detail IS NOT NULL AND trades_detail!=''").fetchall():
+            try:
+                trs = (json.loads(r['trades_detail']) or {}).get('trades') or []
+                if trs:
+                    wins = sum(1 for t in trs if (t.get('ret') or 0) > 0)
+                    c.execute("UPDATE strategy_records SET winrate=? WHERE id=?",
+                              (f"{wins / len(trs) * 100:.1f}%", r['id']))
+            except Exception:
+                pass
+
+
+def _seed_strategy_records():
+    """表为空时导入：两条当前最优 + STRATEGY_SUMMARY 全部历史记录（去掉与最优重复的行）"""
+    _store.init_tables()
+    top_rows = [
+        {'symbol': 'ETH/USDT', 'timeframe': '4h', 'strategy': 'KDJ(9,3,3) K上穿D且K<20买 / K下穿D且K>80卖', 'mode': '仅做多',
+         'tpsl': '8%/5%', 'ret': '+40.5%', 'period': '2023-01-01~2026-08-26', 'trades': '102', 'winrate': '55.9%', 'mdd': '-38.9%',
+         'stability': '最差年仅-7%', 'market': '合约/现货',
+         'note': '★主力：唯一无灾难年配置，超卖回归+快进快出；历年 +8.8/+16.1/-7.0/+19.7',
+         'source': '分品种最终结论', 'sharpe': SHARPE_DATA.get('ETH_KDJ')},
+        {'symbol': 'XLM/USDT', 'timeframe': '4h', 'strategy': 'EMA(12/26)', 'mode': '双向',
+         'tpsl': '5%/5%', 'ret': '+239.1%', 'period': '2023-01-01~2026-08-26', 'trades': '234', 'winrate': '42.4%', 'mdd': '-33.1%',
+         'stability': '最差年-11.8%', 'market': '合约',
+         'note': '★山寨仓：高波动币趋势跟随，熊市靠空头盈利；历年 -11.8/+74.4/+30.4/+69.0',
+         'source': '市值10-20山寨币四年扫描', 'sharpe': SHARPE_DATA.get('XLM_OPT')},
+    ]
+    # 与最优重复的行不重复入库
+    def _dup(r):
+        return ((r.get('品种') == 'ETH/USDT' and 'KDJ' in str(r.get('策略', '')) and r.get('止盈止损') == '8%/5%'
+                 and r.get('模式') == '仅做多')
+                or (r.get('品种') == 'XLM/USDT' and 'EMA' in str(r.get('策略', '')) and r.get('止盈止损') == '5%/5%'
+                    and r.get('模式') == '双向'))
+    key_map = {'品种': 'symbol', '周期': 'timeframe', '策略': 'strategy', '模式': 'mode', '止盈止损': 'tpsl',
+               '收益': 'ret', '日均': 'daily', '月均': 'monthly', '交易次数': 'trades', '胜率': 'winrate',
+               '最大回撤': 'mdd', '稳定性': 'stability', '市场': 'market', '备注': 'note'}
+    rows = []
+    for g in STRATEGY_SUMMARY:
+        for r in g['rows']:
+            if _dup(r):
+                continue
+            rec = {v: r.get(k) for k, v in key_map.items()}
+            rec['source'] = f"{g['name']}（{g.get('window', '')}）"
+            rows.append(rec)
+    _store.seed_initial(rows, top_rows)
+
+
+_seed_strategy_records()
+_migrate_strategy_records()
+
+
+@app.route("/strategies", methods=["GET", "POST"])
 def strategies_summary():
-    """最优策略集中展示页（历次寻优回测结果汇总）"""
-    return render_template("strategies.html", groups=STRATEGY_SUMMARY, year_matrix=YEAR_MATRIX,
-                           research_log=RESEARCH_LOG)
+    """最优策略页：可管理的最优列表 + 可翻页历史测试记录 + 历年矩阵 + 研究时间线"""
+    if request.method == "POST":
+        action = request.form.get("action")
+        rid = request.form.get("rid")
+        if action == "promote":
+            ok, msg = _store.promote(rid)
+        elif action == "demote":
+            ok, msg = _store.demote(rid)
+        elif action == "move":
+            ok, msg = _store.move(rid, request.form.get("dir", "up"))
+        elif action == "delete":
+            ok, msg = _store.delete(rid)
+        else:
+            ok, msg = False, '未知操作'
+        return redirect(url_for('strategies_summary', _error='' if ok else msg,
+                                _message=msg if ok else None,
+                                page=request.form.get("page", 1),
+                                q=request.form.get("q", ""),
+                                cat=request.form.get("cat", "")))
+
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except ValueError:
+        page = 1
+    q = (request.args.get('q') or '').strip()
+    cat = request.args.get('cat') or ''
+    if cat not in ('us', 'crypto'):
+        cat = ''
+    sort = request.args.get('sort') or None
+    order = 'asc' if request.args.get('order') == 'asc' else 'desc'
+    if sort not in _store.SORTABLE:
+        sort = None
+    history, total, pages = _store.list_history(page=page, per_page=15, q=q,
+                                                sort=sort, order=order, cat=cat)
+    for r in history:  # 历年明细 JSON → dict（详情展开行使用）
+        try:
+            r['yearly'] = json.loads(r['yearly']) if r.get('yearly') else None
+        except Exception:
+            r['yearly'] = None
+        try:
+            r['trades_list'] = json.loads(r['trades_detail']) if r.get('trades_detail') else None
+        except Exception:
+            r['trades_list'] = None
+    tops = _store.list_top()
+    for t in tops:
+        try:
+            t['yearly'] = json.loads(t['yearly']) if t.get('yearly') else None
+        except Exception:
+            t['yearly'] = None
+        try:
+            t['trades_list'] = json.loads(t['trades_detail']) if t.get('trades_detail') else None
+        except Exception:
+            t['trades_list'] = None
+    return render_template("strategies.html",
+                           tops=tops,
+                           history=history, total=total, pages=pages, page=page, q=q,
+                           sort=sort, order=order, cat=cat,
+                           error=request.args.get('_error') or None,
+                           message=request.args.get('_message') or None)
 
 
 @app.route("/futures/api/status")
@@ -1349,6 +1743,33 @@ def auto():
         # PRG：POST 处理完重定向到 GET，避免刷新页面重放 start 导致重复下单
         return redirect(url_for('auto', _error='' if ok else msg))
 
+    elif request.method == "POST" and form.get("action") == "resume_task":
+        # 恢复历史现货量化任务（服务崩溃后从任务列表一键续跑）
+        tid = form.get("task_id")
+        task = next((t for t in _auto_trader.list_tasks() if t.get('id') == tid), None)
+        if not task:
+            return redirect(url_for('auto', _error=f"任务不存在或已丢失: {tid}"))
+        if _auto_trader.status.get('running'):
+            return redirect(url_for('auto', _error='已有任务在运行，请先停止再恢复'))
+        if task.get('mode') == 'grid':
+            ok, msg = _auto_trader.start(task['symbol'], task['timeframe'], {},
+                                         float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
+                                         strategies=[], mode='grid',
+                                         step_pct=float(task.get('grid_step', 0.01)),
+                                         max_levels=int(task.get('grid_max_levels', 12)))
+        else:
+            names = task.get('strategies') or ["RSI"]
+            ip = _strategy_params_from_names(names)
+            ok, msg = _auto_trader.start(task['symbol'], task['timeframe'], ip,
+                                         float(task.get('qty_usdt', 1000)), int(task.get('interval', 30)),
+                                         strategies=names, mode='standard')
+        return redirect(url_for('auto', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "delete_task":
+        # 删除现货量化任务记录（仅删历史记录，不影响运行中的引擎）
+        ok, msg = _auto_trader.delete_task(form.get("task_id"))
+        return redirect(url_for('auto', _error='' if ok else msg))
+
     elif request.method == "POST" and form.get("action") == "stop":
         _auto_trader.stop()
         return redirect(url_for('auto'))
@@ -1358,6 +1779,7 @@ def auto():
                           status=status, symbols=DEMO_SYMBOLS,
                           timeframe_options=TIMEFRAME_OPTIONS,
                           strategies=STRATEGIES,
+                          tasks=_auto_trader.list_tasks(),
                           api_key=api_key, api_secret=api_secret)
 
 
@@ -1389,4 +1811,4 @@ def auto_status():
 if __name__ == "__main__":
     # threaded=True：让 Flask 并发处理请求。否则单个长耗时网络请求（如市场概览/信号计算）
     # 会占住唯一工作线程，导致其它请求（状态轮询/启动/停止）全部排队阻塞。
-    app.run(debug=True, host="127.0.0.1", port=8502, threaded=True)
+    app.run(debug=True, host="0.0.0.0", port=8502, threaded=True)

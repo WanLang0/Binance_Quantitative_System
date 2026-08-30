@@ -11,6 +11,7 @@
 """
 import ccxt
 import os
+import time
 
 
 class FuturesTrader:
@@ -91,9 +92,18 @@ class FuturesTrader:
             return None, str(e)
 
     def get_ohlcv(self, symbol, timeframe='15m', limit=100):
-        """获取最近 limit 根K线（合约）"""
+        """获取最近 limit 根**已收盘**K线（合约）。丢弃未收盘的进行中K线，
+        避免指标随现价跳动导致信号在K线内反复翻转（与回测收盘口径不一致）。"""
         try:
             candles = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if not candles:
+                return None, "无K线数据"
+            tf_ms = {'1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
+                     '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000,
+                     '4h': 14_400_000, '6h': 21_600_000, '12h': 43_200_000,
+                     '1d': 86_400_000}.get(timeframe, 0)
+            if tf_ms and candles[-1][0] + tf_ms > int(time.time() * 1000):
+                candles = candles[:-1]  # 丢弃未收盘的进行中K线
             if not candles:
                 return None, "无K线数据"
             data = [

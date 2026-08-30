@@ -48,7 +48,7 @@ body {
     box-shadow: 0 1px 3px rgba(0, 0, 0, .15);
 }
 .topbar-inner {
-    max-width: 1400px;
+    max-width: 1800px;
     margin: 0 auto;
     display: flex;
     align-items: center;
@@ -80,9 +80,27 @@ body {
 .topbar-nav a:hover { color: #fff; background: rgba(255, 255, 255, .08); }
 .topbar-nav a.active { color: #101828; background: var(--accent); font-weight: 600; }
 
+/* 顶栏右侧用户区：版本号 + 账户名 + 退出 */
+.topbar-user {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+    color: #cbd5e1;
+    font-size: .88rem;
+}
+.topbar-user .ver {
+    font-size: .74rem;
+    color: #9aa5b4;
+    background: rgba(255, 255, 255, .08);
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 999px;
+    padding: 1px 9px;
+}
+
 /* ===== 通用容器 ===== */
 .wrap {
-    max-width: 1100px;
+    max-width: 1800px;
     margin: 0 auto;
     padding: 12px 16px 28px;
 }
@@ -143,6 +161,25 @@ input[type="date"], select, textarea {
 input:focus, select:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 2px rgba(37, 99, 235, .12);
+}
+/* 深色搜索框（策略页历史记录搜索等，覆盖全局白底输入框） */
+input.search-input {
+    background: #0f1319 !important;
+    color: #e6e9ef !important;
+    border: 1px solid #2a3040;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: .9rem;
+    outline: none;
+}
+input.search-input::placeholder { color: #5b6473; }
+input.search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(240, 185, 11, .15); }
+/* 表格备注列：单行截断，悬浮显示全文（title 属性） */
+.td-clip {
+    max-width: 230px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 input:disabled, select:disabled { background: var(--panel-alt); color: var(--muted); cursor: not-allowed; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); cursor: pointer; }
@@ -342,7 +379,7 @@ td.neg, .neg { color: var(--sell); }
 .app {
     display: flex;
     min-height: calc(100vh - 42px);
-    max-width: 1400px;
+    max-width: 1800px;
     margin: 0 auto;
 }
 
@@ -447,4 +484,5 @@ details.form-group[open] summary::before { content: "▼ "; }
     .app { flex-direction: column; }
     .sidebar { width: 100%; min-width: 0; max-height: none; position: static; }
     .topbar-inner { height: auto; flex-wrap: wrap; padding: 6px 12px; }
+    .topbar-user { margin-left: auto; }
 }

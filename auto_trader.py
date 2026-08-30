@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 自动现货交易引擎（实时信号监控 + 自动买入/卖出）
-复用 BacktestEngine.calculate_signals 的 AND 逻辑与 TechnicalIndicators，保证与回测一致。
+复用 BacktestEngine.calculate_signals 的 OR 逻辑与 TechnicalIndicators，保证与回测一致。
 通过独立后台线程运行，周期拉取K线 → 计算指标 → 校验信号 → 调用 DemoTrader 下单。
 """
 import json
@@ -15,10 +15,15 @@ import pandas as pd
 from indicators import TechnicalIndicators
 from backtest_engine import BacktestEngine
 from demo_trader import DemoTrader
-
+import mailer
 
 # 状态持久化文件（模块级，供 /auto/api/status 在未启动时也能读取上次配置）
 STATE_FILE = os.path.join('data', 'auto_trader_state.json')
+# 任务历史列表（与自动合约一致：崩溃后可一键恢复）
+TASKS_FILE = os.path.join('data', 'spot_tasks.json')
+
+# 邮件告警序列：达到阈值立即发第1封，之后每10分钟一封、共3封；恢复后另发一封恢复邮件（与自动合约 auto_futures 一致）
+MAIL_INTERVAL, MAIL_MAX = 600, 3
 
 
 class AutoTrader:
@@ -34,6 +39,8 @@ class AutoTrader:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = False
+        self._mail_count = 0      # 本轮故障周期已发邮件数
+        self._mail_last_ts = 0.0  # 上封邮件时间戳
         self.reset_status()
 
     # ---------- 状态管理 ----------
@@ -84,6 +91,123 @@ class AutoTrader:
             self.status['log'].append(line)
             if len(self.status['log']) > 50:
                 self.status['log'] = self.status['log'][-50:]
+
+    def _mail_alert(self, reason, errors):
+        """网络故障邮件告警：每10分钟一封、共3封（恢复后 _mail_reset 重置）"""
+        if not mailer.is_configured():
+            if not getattr(self, '_mail_no_cfg_noted', False):
+                self._mail_no_cfg_noted = True
+                self._log("⚠ 达到告警阈值但邮箱未配置，无法发送邮件（请在「个人设置」页填写QQ邮箱+SMTP授权码）")
+            return
+        if self._mail_count >= MAIL_MAX:
+            return
+        if self._mail_count > 0 and time.time() - self._mail_last_ts < MAIL_INTERVAL:
+            return
+        if self._mail_count == 0:
+            self._mail_fault_ts = time.time()
+        sym = self.status.get('symbol') or '?'
+        tf = self.status.get('timeframe') or '?'
+        mode = '网格' if self.status.get('mode') == 'grid' else '标准'
+        body = (f"告警时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"引擎: 自动现货[{mode}]  品种: {sym}  周期: {tf}\n"
+                f"故障: {reason}\n连续失败: {errors} 次\n\n"
+                f"引擎仍在自动重连；现货持仓无合约爆仓风险，但中断期间无法执行买卖信号。\n"
+                f"本故障期内邮件提醒每10分钟一封、最多{MAIL_MAX}封（第 {self._mail_count + 1} 封）；恢复后另发一封恢复邮件。")
+        mailer.send_async(f"⚠ 币安量化告警(现货 {self._mail_count + 1}/{MAIL_MAX}): 无法访问币安", body)
+        self._log(f"已触发邮件告警(现货 {self._mail_count + 1}/{MAIL_MAX})")
+        self._mail_count += 1
+        self._mail_last_ts = time.time()
+
+    def _mail_reset(self):
+        """轮询恢复正常：若本轮故障发过告警邮件则补发一封恢复通知，并重置序列（下次故障重新计3封）"""
+        if self._mail_count:
+            if mailer.is_configured():
+                dur = (time.time() - getattr(self, '_mail_fault_ts', time.time())) / 60
+                sym = self.status.get('symbol') or '?'
+                tf = self.status.get('timeframe') or '?'
+                mode = '网格' if self.status.get('mode') == 'grid' else '标准'
+                body = (f"恢复时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"引擎: 自动现货[{mode}]  品种: {sym}  周期: {tf}\n"
+                        f"故障持续: 约{dur:.0f}分钟（自首封告警起算）\n本轮已发告警: {self._mail_count}封\n\n"
+                        f"引擎已恢复正常轮询，无需操作。")
+                mailer.send_async("✅ 币安量化告警恢复(现货): 币安访问已恢复", body)
+                self._log("已发送恢复通知邮件")
+            self._log("轮询已恢复正常（现货邮件告警序列已重置）")
+        self._mail_count = 0
+        self._mail_no_cfg_noted = False
+
+    # ---------- 任务历史列表（崩溃后一键恢复） ----------
+    def _save_task(self):
+        """启动时把本次量化配置写入任务列表（保留最近20条），供崩溃后手动恢复"""
+        rec = {
+            'id': datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}",
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': self.status['symbol'],
+            'timeframe': self.status['timeframe'],
+            'strategies': self.status['strategies'],
+            'mode': self.status['mode'],
+            'qty_usdt': self.status['qty_usdt'],
+            'interval': self.status['interval'],
+            'grid_step': self.status['grid'].get('step_pct', 0.01),
+            'grid_max_levels': self.status['grid'].get('max_levels', 12),
+            'status': 'running',
+            'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        self._task_id = rec['id']
+        tasks = self._read_tasks()
+        tasks.insert(0, rec)
+        tasks = tasks[:20]
+        try:
+            os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
+            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _update_task_status(self, task_status):
+        """停止时更新任务状态，便于任务列表区分 运行中/已停止"""
+        tid = getattr(self, '_task_id', None)
+        if not tid:
+            return
+        tasks = self._read_tasks()
+        for t in tasks:
+            if t.get('id') == tid:
+                t['status'] = task_status
+                t['last_active'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                break
+        try:
+            os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
+            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _read_tasks():
+        try:
+            if os.path.exists(TASKS_FILE):
+                with open(TASKS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+
+    def list_tasks(self):
+        """返回量化任务历史列表（最新在前）"""
+        return self._read_tasks()
+
+    def delete_task(self, task_id):
+        """删除指定的量化任务记录（不影响正在运行的引擎）"""
+        tasks = self._read_tasks()
+        remains = [t for t in tasks if t.get('id') != task_id]
+        if len(remains) == len(tasks):
+            return False, f"任务不存在: {task_id}"
+        try:
+            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(remains, f, ensure_ascii=False, indent=2)
+            return True, '任务记录已删除'
+        except Exception as e:
+            return False, f'删除失败: {e}'
 
     # ---------- 状态持久化（网络中断后恢复） ----------
     def save_state(self):
@@ -307,11 +431,13 @@ class AutoTrader:
                 self._refresh_real_position(symbol)
                 self.status['monitor_loop'] += 1
                 self.status['consecutive_errors'] = 0
+                self._mail_reset()
             except Exception as e:
                 self.status['last_error'] = str(e)
                 self.status['consecutive_errors'] = self.status.get('consecutive_errors', 0) + 1
                 self._log(f"网格运行异常({self.status['consecutive_errors']}次): {e}")
                 if self.status['consecutive_errors'] >= 3:
+                    self._mail_alert(str(e), self.status['consecutive_errors'])
                     self._reconnect()
             self._stop_event.wait(self.status['interval'] or 30)
 
@@ -411,9 +537,11 @@ class AutoTrader:
                     self.status['consecutive_errors'] = self.status.get('consecutive_errors', 0) + 1
                     self._log(f"信号计算失败({self.status['consecutive_errors']}次): {err}")
                     if self.status['consecutive_errors'] >= 3:
+                        self._mail_alert(err, self.status['consecutive_errors'])
                         self._reconnect()
                 else:
                     self.status['consecutive_errors'] = 0
+                    self._mail_reset()
                     price = self._refresh_last_price(symbol)
                     # 更新信号状态
                     if sig == 1:
@@ -431,6 +559,7 @@ class AutoTrader:
                 self.status['consecutive_errors'] = self.status.get('consecutive_errors', 0) + 1
                 self._log(f"运行异常({self.status['consecutive_errors']}次): {e}")
                 if self.status['consecutive_errors'] >= 3:
+                    self._mail_alert(str(e), self.status['consecutive_errors'])
                     self._reconnect()
             self._stop_event.wait(interval)
 
@@ -448,6 +577,7 @@ class AutoTrader:
             if self._running:
                 return False, '已在运行中'
             self.reset_status()
+            self._mail_count, self._mail_last_ts = 0, 0.0  # 新一轮运行重置邮件告警序列
             self.status['symbol'] = symbol
             self.status['timeframe'] = timeframe
             self.status['qty_usdt'] = qty_usdt
@@ -475,6 +605,7 @@ class AutoTrader:
                 )
             self._thread.start()
             self.save_state()
+            self._save_task()  # 记录任务，供服务崩溃后一键恢复
             return True, '已启动'
 
     def stop(self):
@@ -489,6 +620,7 @@ class AutoTrader:
         # 否则 _log/内部对同一把锁再加锁，而 _lock 是不可重入锁，会死锁导致"停止很慢"。
         self._log("自动交易已停止")
         self.save_state()
+        self._update_task_status('stopped')
         return True, '已停止'
 
     def get_status(self):

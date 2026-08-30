@@ -122,6 +122,38 @@
         {% endif %}
     </div>
 
+    <!-- 量化任务列表（崩溃恢复） -->
+    {% if tasks %}
+    <div class="card">
+        <h2>🗂️ 量化任务列表（{{ tasks | length }} 条，服务重启后可一键恢复）</h2>
+        <div class="table-wrap">
+        <table class="table">
+            <tr><th>启动时间</th><th>交易对</th><th>周期</th><th>模式</th><th>策略</th><th>买入金额</th><th>轮询间隔</th><th>状态</th><th>操作</th></tr>
+            {% for t in tasks %}
+            <tr>
+                <td>{{ t.started_at }}</td>
+                <td><b>{{ t.symbol }}</b></td>
+                <td>{{ t.timeframe }}</td>
+                <td>{{ '网格' if t.mode == 'grid' else '标准OR' }}</td>
+                <td>{{ t.strategies | join('+') if t.strategies else '—' }}</td>
+                <td>{{ t.qty_usdt }}U</td>
+                <td>{{ t.interval }}s</td>
+                <td>{% if running and t.status == 'running' %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
+                <td>
+                    <form method="POST" action="/auto" style="display:inline">
+                        <input type="hidden" name="task_id" value="{{ t.id }}">
+                        <button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 12px" {% if running %}disabled{% endif %}>继续运行</button>
+                        <button type="submit" name="action" value="delete_task" class="btn btn-cancel" style="padding:3px 12px" onclick="return confirm('确定删除该任务记录？删除后不可恢复。')">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        <p class="info-note">每次「启动自动交易」都会记录一条任务；服务崩溃后重启，打开本页即可看到历史任务，点「继续运行」按原参数快速恢复。运行状态为「已停止」的记录可能是正常停止，也可能是服务崩溃时未及更新。</p>
+    </div>
+    {% endif %}
+
     <!-- 运行日志 -->
     <div class="card">
         <h2>📜 运行日志（最近 {{ status.log | length }} 条）</h2>
