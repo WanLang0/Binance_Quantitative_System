@@ -1,0 +1,664 @@
+{% set active_page = 'composite' %}
+{% extends "base.html" %}
+
+{% block title %}美股综合量化交易系统{% endblock %}
+
+{% block head %}
+<style>
+/* ===== 综合量化：左侧配置 + 右侧监控 ===== */
+.composite-sidebar { width: 400px; min-width: 400px; }
+
+/* 币对配置卡片 */
+.sym-card {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+}
+.sym-card-head { display: flex; align-items: center; gap: 6px; }
+.sym-idx {
+    flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--primary); color: #fff; font-size: .74rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+}
+.sym-del {
+    flex: 0 0 auto; width: 22px; height: 22px; border: none; background: transparent;
+    color: var(--sell); cursor: pointer; font-size: .9rem; border-radius: 4px; line-height: 1;
+}
+.sym-del:hover { background: var(--sell-bg); }
+.sym-name-row { margin: 4px 0 6px 26px; font-size: .82rem; color: var(--muted); min-height: 15px; }
+.sym-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }
+.sym-card-grid label { display: flex; flex-direction: column; font-size: .78rem; color: var(--muted); gap: 2px; }
+.sym-card-grid label input, .sym-card-grid label select { width: 100%; }
+.sym-short { grid-column: 1 / -1; flex-direction: row !important; align-items: center; gap: 6px !important; cursor: pointer; color: var(--text) !important; }
+.sym-short input { width: 15px !important; height: 15px; }
+
+/* 常用币对快捷添加 */
+.preset-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 8px; }
+.preset-chip {
+    border: 1px solid var(--border-strong); background: var(--panel-alt);
+    color: var(--text); border-radius: 999px; padding: 2px 10px;
+    font-size: .8rem; cursor: pointer; transition: .12s; font-family: inherit;
+}
+.preset-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+
+.side-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.side-actions .btn { flex: 0 0 auto; }
+
+/* 监控区信号/方向配色 */
+.sig-buy { color: var(--buy); }
+.sig-sell { color: var(--sell); }
+td.long, td.pos { color: var(--buy); }
+td.short, td.neg { color: var(--sell); }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="app">
+    <aside class="sidebar composite-sidebar">
+        <div class="brand">🧩 美股综合量化</div>
+
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+        {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+
+        <!-- 合约 API 密钥 -->
+        <div class="form-group">
+            <div class="group-label">🔑 合约 API 密钥</div>
+            <form method="POST" action="/composite" id="key-form">
+                <div class="field">
+                    <label>API Key</label>
+                    <input type="text" name="api_key" value="{{ api_key or '' }}" placeholder="合约 API Key" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label>API Secret</label>
+                    <input type="password" name="api_secret" value="{{ api_secret or '' }}" placeholder="合约 API Secret" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label>网络</label>
+                    <select name="network">
+                        <option value="mainnet" {% if network == 'mainnet' %}selected{% endif %}>主网（真实资金）</option>
+                        <option value="testnet" {% if network != 'mainnet' %}selected{% endif %}>测试网（模拟）</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>杠杆倍数</label>
+                    <input type="number" name="leverage" step="1" min="1" max="50" value="{{ leverage or 5 }}">
+                </div>
+                <button type="submit" name="save_keys" value="1" class="btn btn-primary btn-block">保存密钥</button>
+                <p class="info-note">通过币安<b> USDT 永续合约</b>交易美股代币（QQQ/TQQQ/NVDA/MU 等）。<b>主网默认</b>（美股永续仅主网有）；测试网只能选币种合约。</p>
+            </form>
+        </div>
+
+        <!-- 综合任务配置 -->
+        <div class="form-group">
+            <div class="group-label">⚙️ 综合任务配置</div>
+            <form method="POST" action="/composite" id="task-form">
+                <div class="field">
+                    <label>任务名称</label>
+                    <input type="text" name="name" value="美股七姐妹综合" placeholder="如：美股七姐妹综合">
+                </div>
+                <div class="field">
+                    <label>任务总资金 (USDT)</label>
+                    <input type="number" name="total_fund" id="total-fund" step="any" min="100" value="{{ ('%.2f' | format(account_balance)) if account_balance and account_balance > 0 else '10000' }}"{% if account_balance and account_balance > 0 %} max="{{ account_balance }}" data-balance="{{ account_balance }}"{% endif %}>
+                    {% if account_balance and account_balance > 0 %}
+                    <div style="margin-top:4px;font-size:.78rem;color:var(--muted)">账户可用余额 <b style="color:var(--text)">{{ '%.2f' | format(account_balance) }} USDT</b>，总资金不可超过</div>
+                    {% endif %}
+                </div>
+                <div class="field">
+                    <label>轮询间隔 (秒)</label>
+                    <input type="number" name="interval" step="1" min="5" value="30">
+                </div>
+                <div class="field">
+                    <label>买入安全系数 %</label>
+                    <input type="number" name="buy_pct" step="1" min="1" max="100" value="95">
+                </div>
+                <div class="field">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input type="checkbox" id="prioritize-chk" onchange="togglePrioritize()">
+                        开启量化优先匹配
+                    </label>
+                    <div id="prioritize-opts" style="display:none;margin-top:6px">
+                        <label>份额数 n
+                            <input type="number" name="share_count" id="share-count" step="1" min="1" value="" placeholder="默认=币对数">
+                        </label>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；股票触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。</div>
+                    </div>
+                    <input type="hidden" name="prioritize" id="prioritize" value="0">
+                </div>
+
+                <div class="group-label">币对配置（点击快捷添加）</div>
+                <div class="preset-chips" id="preset-chips"></div>
+
+                <div id="sym-rows">
+                    <div class="sym-card" id="sym-card-tpl" style="display:none">
+                        <div class="sym-card-head">
+                            <span class="sym-idx">1</span>
+                            <div class="sym-combo" style="flex:1">
+                                <input type="text" name="cs_symbol" class="sym-inp" autocomplete="off" placeholder="搜索/选择币对" oninput="symFilter(this)" onfocus="symFilter(this)">
+                                <div class="sym-list"></div>
+                            </div>
+                            <button type="button" class="sym-del" title="删除该币对" onclick="removeSymRow(this)">✕</button>
+                        </div>
+                        <div class="sym-name-row"><span class="sym-name-tag"></span></div>
+                        <input type="hidden" name="cs_name" value="">
+                        <div class="sym-card-grid">
+                            <label>策略
+                                <select name="cs_strategy">{% for s in strategy_options %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+                            </label>
+                            <label>时间周期
+                                <select name="cs_timeframe">{% for label, value in timeframe_options.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+                            </label>
+                            <label>资金权重 %
+                                <input type="number" name="cs_ratio" step="0.1" min="0" max="100" value="">
+                            </label>
+                            <label>止盈 %
+                                <input type="number" name="cs_take_profit" step="0.5" min="0" value="">
+                            </label>
+                            <label>止损 %
+                                <input type="number" name="cs_stop_loss" step="0.5" min="0" value="">
+                            </label>
+                            <label class="sym-short">
+                                <input type="checkbox" class="cs-short-chk" onchange="var h=this.closest('.sym-card').querySelector('input[name=cs_allow_short]'); if(h) h.value=this.checked?'1':'0';">
+                                允许做空（卖点在空仓开空）
+                            </label>
+                        </div>
+                        <input type="hidden" name="cs_allow_short" value="0">
+                    </div>
+                </div>
+
+                <div class="side-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="addSymRow()">＋ 添加币对</button>
+                    <button type="button" class="btn btn-ghost btn-sm" id="even-weights-btn" onclick="evenWeights()">⚖ 均分权重</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="clearSymbols()">清空</button>
+                </div>
+                <p class="info-note" id="ratio-total">资金权重合计：<b>0%</b>（分配金额 = 任务总资金 × 权重%，实际买入再 × 95% 安全系数）</p>
+
+                <div class="side-actions">
+                    <button type="submit" name="action" value="start" class="btn btn-primary" style="flex:1" onclick="return checkFund()">▶ 启动综合量化</button>
+                    <button type="submit" name="action" value="stop" class="btn btn-danger" {% if not running_count %}disabled{% endif %}
+                            onclick="return confirm('确定停止全部运行中的综合任务？')">全部停止</button>
+                </div>
+                <span id="run-tag" class="run-tag {% if running_count %}on{% endif %}">
+                    {% if running_count %}● {{ running_count }} 个任务运行中{% else %}○ 未运行{% endif %}
+                </span>
+                <p class="info-note" style="font-size:.8rem">每个币对可从历史回测选最优策略（如 NVDA→EMA、QQQ→双均线）。买点开多、卖点平多；勾选「允许做空」时卖点在空仓开空。多币对同时买点按权重分别下单，互不占用。</p>
+            </form>
+        </div>
+    </aside>
+
+    <div class="content">
+        <h1>📡 综合任务监控</h1>
+
+        {% if status %}
+        <!-- 任务级实时状态 -->
+        <div class="card">
+            <h2>任务状态 <span id="cur-task-name" style="font-size:.8rem;color:var(--muted);font-weight:400">
+                {{ status.name if status else '' }}{% if status.running %} · 运行中{% endif %}</span></h2>
+            <div class="stat-grid">
+                <div class="stat-box"><div class="lbl">任务名</div><div class="val" id="st-name">{{ status.name }}</div></div>
+                <div class="stat-box"><div class="lbl">总资金</div><div class="val" id="st-fund">{{ '%.0f' | format(status.total_fund) if status.total_fund else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+                <div class="stat-box"><div class="lbl">币对数量</div><div class="val" id="st-nsym">{{ status.symbols | length if status.symbols else '—' }}</div></div>
+                <div class="stat-box"><div class="lbl">杠杆</div><div class="val" id="st-lev">{{ status.leverage }}x</div></div>
+                <div class="stat-box"><div class="lbl">安全系数</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '95' }}%</div></div>
+                <div class="stat-box" id="share-box" style="display:none"><div class="lbl">可用份额</div><div class="val" id="st-shares">—</div></div>
+                <div class="stat-box"><div class="lbl">任务信号</div><div class="val" id="st-signal">{{ status.signal }}</div></div>
+                <div class="stat-box"><div class="lbl">账户余额</div><div class="val" id="st-balance">{{ '%.2f' | format(status.account_balance) if status.account_balance else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+                <div class="stat-box"><div class="lbl">累计买入</div><div class="val" id="st-buyc">{{ status.buy_count }}</div></div>
+                <div class="stat-box"><div class="lbl">累计卖出</div><div class="val" id="st-sellc">{{ status.sell_count }}</div></div>
+                <div class="stat-box"><div class="lbl">心跳(最近轮询)</div><div class="val" id="st-heartbeat" style="font-size:.8rem">{{ status.last_loop_time[11:19] if status.last_loop_time else '—' }}</div></div>
+                <div class="stat-box"><div class="lbl">停止保护</div><div class="val" style="font-size:.8rem">单币对止盈/止损独立监控</div></div>
+            </div>
+            {% if status.alerts %}
+            <div class="alert alert-error" style="margin-top:8px" id="st-alerts">
+                <b>⚠ 告警（最近 {{ status.alerts | length }} 条）：</b>
+                {% for a in status.alerts %}<div>{{ a }}</div>{% endfor %}
+            </div>
+            {% endif %}
+            {% if status.last_error %}
+            <div class="alert alert-error" style="margin-top:8px" id="st-error">上次错误：{{ status.last_error }}</div>
+            {% endif %}
+        </div>
+
+        <!-- 各币对实时状态表 -->
+        <div class="card">
+            <h2>💰 各币对实时状态（<span id="sym-count">{{ status.symbols | length if status.symbols else 0 }}</span> 个币对）</h2>
+            <div class="table-wrap">
+            <table class="table">
+                <tr><th>币对</th><th>名称</th><th>策略</th><th>周期</th><th>权重</th><th>分配资金</th><th>复利池</th><th>信号</th><th>价格</th><th>方向</th><th>持仓</th><th>均价</th><th>未实现盈亏</th><th>买/卖</th></tr>
+                {% for s in status.symbols %}
+                <tr id="sym-row-{{ loop.index }}">
+                    <td><b>{{ s.symbol }}</b></td>
+                    <td>{{ s.name }}</td>
+                    <td>{{ s.strategy }}</td>
+                    <td>{{ s.timeframe }}</td>
+                    <td>{{ '%.0f' | format(s.fund_ratio * 100) }}%</td>
+                    <td>{{ '%.0f' | format(s.allocated_fund) }}U</td>
+                    <td style="color:#4caf50">{{ '%.2f' | format(s.buy_balance) }}U</td>
+                    <td class="sig-cell {{ 'sig-buy' if '买' in (s.signal or '') else ('sig-sell' if '卖' in (s.signal or '') else '') }}">{{ s.signal }}</td>
+                    <td>{{ '%.4f' | format(s.last_price) if s.last_price else '—' }}</td>
+                    <td class="{{ 'pos' if s.side == 'long' else ('neg' if s.side == 'short' else 'muted') }}">{{ '做多' if s.side == 'long' else ('做空' if s.side == 'short' else '空仓') }}</td>
+                    <td>{{ s.position }}</td>
+                    <td>{{ '%.4f' | format(s.entry_price) if s.entry_price else '—' }}</td>
+                    <td class="{{ 'pos' if (s.unrealized_pnl or 0) >= 0 else 'neg' }}">{{ '%+.2f' | format(s.unrealized_pnl) if s.unrealized_pnl else '0.00' }}U</td>
+                    <td>{{ s.buy_count }}/{{ s.sell_count }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- 综合任务列表 -->
+        {% if tasks %}
+        <div class="card">
+            <h2>🗂️ 综合任务列表（{{ tasks | length }} 条，{{ running_count }} 个运行中）</h2>
+            <div class="table-wrap">
+            <table class="table">
+                <tr><th>启动时间</th><th>任务名</th><th>总资金</th><th>币对</th><th>策略分配</th><th>间隔</th><th>杠杆</th><th>状态</th><th>操作</th></tr>
+                {% for t in tasks %}
+                <tr data-id="{{ t.id }}">
+                    <td>{{ t.started_at }}</td>
+                    <td><b>{{ t.name }}</b></td>
+                    <td>{{ t.total_fund }}U</td>
+                    <td>{{ t.symbols | length if t.symbols else 0 }}个</td>
+                    <td style="font-size:.85rem">{% for c in (t.symbols or [])[:4] %}{{ c.symbol.split('/')[0] }}({{ c.strategy }},{{ '%.0f' | format(c.fund_ratio * 100) }}%){% if not loop.last %} / {% endif %}{% endfor %}{% if (t.symbols or []) | length > 4 %}…{% endif %}</td>
+                    <td>{{ t.interval }}s</td>
+                    <td>{{ t.leverage }}x</td>
+                    <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
+                    <td style="white-space:nowrap">
+                        <form method="POST" action="/composite" style="display:inline">
+                            <input type="hidden" name="task_id" value="{{ t.id }}">
+                            <button type="button" class="btn" style="padding:3px 10px" onclick="selectTask('{{ t.id }}')">查看</button>
+                            {% if t.is_running %}
+                            <button type="submit" name="action" value="stop_task" class="btn btn-danger" style="padding:3px 10px"
+                                    onclick="return confirm('确定停止该综合任务？')">停止</button>
+                            {% else %}
+                            <button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 10px">继续运行</button>
+                            {% endif %}
+                            <button type="submit" name="action" value="delete_task" class="btn btn-cancel" style="padding:3px 10px"
+                                    {% if t.is_running %}disabled{% endif %}
+                                    onclick="return confirm('确定删除该综合任务记录？删除后不可恢复。')">删除</button>
+                        </form>
+                        <a class="btn" style="padding:3px 10px" href="/composite/api/export?task_id={{ t.id }}&type=config">导出配置</a>
+                        <a class="btn" style="padding:3px 10px" href="/composite/api/export?task_id={{ t.id }}&type=log">导出日志</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+            </div>
+            <p class="info-note">各<b>综合任务完全独立</b>互不干扰：币对、策略、资金权重、止盈止损均按任务隔离。点「查看」切换该任务状态与日志；「停止/继续运行」控制单个任务；可导出配置与全量日志（落盘 data/logs/）。</p>
+        </div>
+        {% endif %}
+
+        <!-- 运行日志（可切换任务查看） -->
+        <div class="card">
+            <h2>📜 运行日志（<span id="log-count">{{ log_lines | length }}</span> 条）
+                <select id="task-switch" onchange="selectTask(this.value)"
+                        style="width:auto;font-size:.85rem;padding:3px 6px;margin-left:8px">
+                    {% if tasks %}
+                    {% for t in tasks %}
+                    <option value="{{ t.id }}">{{ t.name }} · {{ t.started_at }}{% if t.is_running %} · 运行中{% endif %}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="">（暂无任务）</option>
+                    {% endif %}
+                </select>
+            </h2>
+            <div class="log-box" id="log-box">
+                {% if log_lines %}
+                {% for line in log_lines %}<div>{{ line }}</div>{% endfor %}
+                {% else %}<div class="empty">暂无日志</div>{% endif %}
+            </div>
+        </div>
+
+        {% if not status and not tasks %}
+        <div class="card"><p class="empty">暂无综合任务。请在左侧配置多币种任务并点击「启动综合量化」。</p></div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ---- 交易对可搜索下拉（模糊匹配，不区分大小写） ----
+var SYM_ALL = {{ symbols | tojson }};
+var NAMES = {{ names | tojson }};
+var ACCOUNT_BALANCE = {{ account_balance if account_balance is not none else 'null' }};
+
+var PRESETS = [
+    ['NVDA/USDT:USDT', '英伟达'], ['QQQ/USDT:USDT', '纳指100'], ['TQQQ/USDT:USDT', '纳指3倍做多'],
+    ['MU/USDT:USDT', '美光'], ['AAPL/USDT:USDT', '苹果'], ['MSFT/USDT:USDT', '微软'],
+    ['GOOGL/USDT:USDT', '谷歌'], ['AMZN/USDT:USDT', '亚马逊'], ['META/USDT:USDT', 'Meta'], ['TSLA/USDT:USDT', '特斯拉']
+];
+
+function checkFund() {
+    var inp = document.getElementById('total-fund');
+    if (!inp) return true;
+    var v = parseFloat(inp.value);
+    if (isNaN(v) || v < 0) { alert('请输入有效的任务总资金'); return false; }
+    if (ACCOUNT_BALANCE != null && v > ACCOUNT_BALANCE) {
+        alert('任务总资金 ' + v.toLocaleString() + ' USDT 超过账户可用余额 ' + ACCOUNT_BALANCE.toLocaleString() + ' USDT，请调低总资金');
+        return false;
+    }
+    return true;
+}
+
+function symFilter(inp) {
+    var combo = inp.closest('.sym-combo');
+    var list = combo.querySelector('.sym-list');
+    var q = inp.value.trim().toUpperCase();
+    var hits = q ? SYM_ALL.filter(function (s) { return s.toUpperCase().indexOf(q) >= 0; }) : SYM_ALL;
+    list.innerHTML = hits.length
+        ? hits.map(function (s) { return '<div class="sym-opt" data-v="' + s + '">' + s + '</div>'; }).join('')
+        : '<div class="sym-empty">无匹配交易对</div>';
+    list.style.display = 'block';
+}
+
+function setSymName(card, symbol) {
+    var base = symbol.split('/')[0];
+    var nm = NAMES[base] || base;
+    var tag = card.querySelector('.sym-name-tag');
+    if (tag) tag.textContent = nm;
+    var nameInput = card.querySelector('input[name="cs_name"]');
+    if (nameInput) nameInput.value = nm;
+}
+
+function bindSymClick(combo) {
+    var list = combo.querySelector('.sym-list');
+    list.addEventListener('click', function (e) {
+        var opt = e.target.closest('.sym-opt');
+        if (!opt) return;
+        var card = combo.closest('.sym-card');
+        var inp = combo.querySelector('.sym-inp');
+        inp.value = opt.dataset.v;
+        setSymName(card, opt.dataset.v);
+        list.style.display = 'none';
+    });
+}
+
+document.addEventListener('click', function (e) {
+    document.querySelectorAll('.sym-list').forEach(function (l) {
+        if (!e.target.closest('.sym-combo')) l.style.display = 'none';
+    });
+});
+
+function renumberRows() {
+    document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)').forEach(function (c, i) {
+        var idx = c.querySelector('.sym-idx');
+        if (idx) idx.textContent = i + 1;
+    });
+}
+
+function addSymRow(symbol) {
+    var tpl = document.getElementById('sym-card-tpl');
+    var container = document.getElementById('sym-rows');
+    // 去重：已存在相同币对则跳过
+    if (symbol) {
+        var dup = false;
+        container.querySelectorAll('.sym-card:not(#sym-card-tpl) .sym-inp').forEach(function (x) {
+            if (x.value === symbol) dup = true;
+        });
+        if (dup) return;
+    }
+    var row = tpl.cloneNode(true);
+    row.style.display = 'block';
+    row.removeAttribute('id');
+    var inp = row.querySelector('.sym-inp');
+    inp.value = symbol || '';
+    if (symbol) setSymName(row, symbol);
+    var strategySel = row.querySelector('select[name="cs_strategy"]');
+    if (strategySel) strategySel.value = 'EMA';
+    var tfSel = row.querySelector('select[name="cs_timeframe"]');
+    if (tfSel) tfSel.value = '1h';
+    var chk = row.querySelector('.cs-short-chk');
+    if (chk) chk.checked = false;
+    var hs = row.querySelector('input[name="cs_allow_short"]');
+    if (hs) hs.value = '0';
+    container.appendChild(row);
+    bindSymClick(row.querySelector('.sym-combo'));
+    renumberRows();
+    updateRatioTotal();
+    updateShareHint();
+}
+
+function removeSymRow(btn) {
+    var card = btn.closest('.sym-card');
+    if (card) card.remove();
+    renumberRows();
+    updateRatioTotal();
+    updateShareHint();
+}
+
+function clearSymbols() {
+    document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)').forEach(function (c) { c.remove(); });
+    renumberRows();
+    updateRatioTotal();
+    updateShareHint();
+}
+
+function evenWeights() {
+    var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
+    var valid = cards.filter(function (c) { return c.querySelector('.sym-inp').value.trim(); });
+    if (!valid.length) return;
+    var each = Math.floor(10000 / valid.length) / 100;
+    valid.forEach(function (c, i) {
+        var ratio = c.querySelector('input[name="cs_ratio"]');
+        ratio.value = (i === valid.length - 1) ? Math.round((100 - each * (valid.length - 1)) * 100) / 100 : each;
+    });
+    updateRatioTotal();
+}
+
+function renderPresets() {
+    var wrap = document.getElementById('preset-chips');
+    if (!wrap) return;
+    wrap.innerHTML = PRESETS.map(function (p) {
+        return '<button type="button" class="preset-chip" onclick="addSymRow(\'' + p[0] + '\')">' + p[0].split('/')[0] + '</button>';
+    }).join('');
+}
+
+function updateRatioTotal() {
+    var el = document.getElementById('ratio-total');
+    if (!el) return;
+    var chk = document.getElementById('prioritize-chk');
+    if (chk && chk.checked) {
+        el.innerHTML = '⚡ 优先匹配已开启：总资金将均分为 n 份份额，个股权重比例已失效。';
+        return;
+    }
+    var total = 0;
+    document.querySelectorAll('input[name="cs_ratio"]').forEach(function (r) {
+        total += parseFloat(r.value) || 0;
+    });
+    var bp = document.querySelector('input[name="buy_pct"]');
+    var bpv = bp ? (parseFloat(bp.value) || 95) : 95;
+    el.innerHTML = '资金权重合计：<b>' + total.toFixed(0) + '%</b>（分配金额 = 任务总资金 × 权重%，实际买入再 × ' + bpv + '% 安全系数）'
+        + (total > 100 ? ' <b style="color:#f6465d">⚠ 超过100%</b>' : '');
+}
+
+function togglePrioritize() {
+    var chk = document.getElementById('prioritize-chk');
+    var opts = document.getElementById('prioritize-opts');
+    var hid = document.getElementById('prioritize');
+    var on = chk && chk.checked;
+    if (opts) opts.style.display = on ? 'block' : 'none';
+    if (hid) hid.value = on ? '1' : '0';
+    // 优先匹配开启后：个股权重比例失效（资金均分为 n 份），禁用权重输入与均分权重按钮
+    document.querySelectorAll('input[name="cs_ratio"]').forEach(function (r) {
+        r.disabled = on;
+    });
+    var evenBtn = document.getElementById('even-weights-btn');
+    if (evenBtn) evenBtn.disabled = on;
+    if (on) updateShareHint();
+    updateRatioTotal();
+}
+
+function updateShareHint() {
+    var sc = document.getElementById('share-count');
+    if (!sc) return;
+    var n = document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)').length;
+    sc.placeholder = '默认 ' + n + '（=币对数）';
+    sc.max = n > 0 ? n : 1;
+}
+
+document.addEventListener('input', function (e) {
+    if (e.target.name === 'cs_ratio') updateRatioTotal();
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+    renderPresets();
+    addSymRow('NVDA/USDT:USDT');
+    addSymRow('QQQ/USDT:USDT');
+});
+</script>
+<script>
+var CUR_TASK = {{ cur_task_id | tojson }};
+var pollTimer = null;
+
+function setRunTag(n) {
+    var runTag = document.getElementById('run-tag');
+    if (n > 0) {
+        runTag.textContent = '● ' + n + ' 个任务运行中';
+        runTag.classList.add('on');
+    } else {
+        runTag.textContent = '○ 未运行';
+        runTag.classList.remove('on');
+    }
+    var stopBtn = document.querySelector('button[name="action"][value="stop"]');
+    if (stopBtn) stopBtn.disabled = (n === 0);
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function sideText(s) { return s === 'long' ? '做多' : (s === 'short' ? '做空' : '空仓'); }
+
+function updateStatus(data) {
+    var m = {
+        'st-name': data.name || '—',
+        'st-fund': (data.total_fund != null) ? Number(data.total_fund).toFixed(0) + ' USDT' : '—',
+        'st-nsym': (data.symbols && data.symbols.length) ? data.symbols.length : 0,
+        'st-lev': (data.leverage != null) ? data.leverage + 'x' : '—',
+        'st-pct': (data.buy_pct != null) ? Number(data.buy_pct * 100).toFixed(0) + '%' : '95%',
+        'st-signal': data.signal || '等待',
+        'st-buyc': data.buy_count != null ? data.buy_count : 0,
+        'st-sellc': data.sell_count != null ? data.sell_count : 0
+    };
+    for (var k in m) {
+        var el = document.getElementById(k);
+        if (el) el.textContent = m[k];
+    }
+    var shareBox = document.getElementById('share-box');
+    var shareVal = document.getElementById('st-shares');
+    if (shareBox && shareVal) {
+        if (data.prioritize) {
+            shareBox.style.display = '';
+            shareVal.textContent = (data.available_shares != null ? data.available_shares : 0) + ' / ' + (data.share_count || 0);
+        } else {
+            shareBox.style.display = 'none';
+        }
+    }
+    var bal = document.getElementById('st-balance');
+    if (bal) bal.textContent = (data.account_balance != null) ? Number(data.account_balance).toFixed(2) : '—';
+    var hb = document.getElementById('st-heartbeat');
+    if (hb) hb.textContent = data.last_loop_time ? String(data.last_loop_time).substring(11, 19) : '—';
+    var cname = document.getElementById('cur-task-name');
+    if (cname) cname.textContent = (data.name || '') + (data.running ? ' · 运行中' : ' · 已停止');
+
+    // 各币对行
+    var syms = data.symbols || [];
+    var sc = document.getElementById('sym-count');
+    if (sc) sc.textContent = syms.length;
+    syms.forEach(function (s, i) {
+        var row = document.getElementById('sym-row-' + (i + 1));
+        if (!row) return;
+        var cells = row.querySelectorAll('td');
+        // idx: 0币对 1名称 2策略 3周期 4权重 5分配 6复利池 7信号 8价格 9方向 10持仓 11均价 12未实现盈亏 13买/卖
+        if (cells[5]) cells[5].textContent = Number(s.allocated_fund || 0).toFixed(0) + 'U';
+        if (cells[6]) cells[6].textContent = Number(s.buy_balance || 0).toFixed(2) + 'U';
+        if (cells[7]) { cells[7].textContent = s.signal || '等待'; cells[7].className = 'sig-cell' + (s.signal === '买入(多)' || s.signal === '买入' ? ' sig-buy' : (s.signal === '卖出(空)' || s.signal === '卖出' ? ' sig-sell' : '')); }
+        if (cells[8]) cells[8].textContent = s.last_price ? Number(s.last_price).toFixed(4) : '—';
+        if (cells[9]) { cells[9].textContent = sideText(s.side); cells[9].className = (s.side === 'long' ? 'pos' : (s.side === 'short' ? 'neg' : 'muted')); }
+        if (cells[10]) cells[10].textContent = s.position || 0;
+        if (cells[11]) cells[11].textContent = s.entry_price ? Number(s.entry_price).toFixed(4) : '—';
+        if (cells[12]) cells[12].textContent = (s.unrealized_pnl != null ? (Number(s.unrealized_pnl) >= 0 ? '+' : '') + Number(s.unrealized_pnl).toFixed(2) : '0.00') + 'U';
+        if (cells[13]) cells[13].textContent = (s.buy_count || 0) + '/' + (s.sell_count || 0);
+    });
+
+    // 日志（倒序显示最新100条）
+    var box = document.getElementById('log-box');
+    var logs = data.log || [];
+    var html = '';
+    var num = 0;
+    for (var i = logs.length - 1; i >= 0 && num < 100; i--) {
+        html += '<div>' + escapeHtml(logs[i]) + '</div>';
+        num++;
+    }
+    box.innerHTML = html || '<div class="empty">暂无日志</div>';
+    var lc = document.getElementById('log-count');
+    if (lc) lc.textContent = logs.length;
+}
+
+function refreshTaskRows(tasks) {
+    tasks.forEach(function (t) {
+        var row = document.querySelector('tr[data-id="' + t.id + '"]');
+        if (!row) return;
+        var stCell = row.querySelector('.t-status');
+        if (stCell) stCell.innerHTML = t.is_running ? '<span class="pos">● 运行中</span>' : '<span class="muted">○ 已停止</span>';
+        var resumeBtn = row.querySelector('button[value="resume_task"]');
+        var stopBtn = row.querySelector('button[value="stop_task"]');
+        var delBtn = row.querySelector('button[value="delete_task"]');
+        if (t.is_running) {
+            if (resumeBtn) resumeBtn.outerHTML = '<button type="submit" name="action" value="stop_task" class="btn btn-danger" style="padding:3px 10px" onclick="return confirm(\'确定停止该综合任务？\')">停止</button>';
+        } else {
+            if (stopBtn) stopBtn.outerHTML = '<button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 10px">继续运行</button>';
+        }
+        if (delBtn) delBtn.disabled = !!t.is_running;
+        var sel = document.getElementById('task-switch');
+        if (sel) {
+            var opt = sel.querySelector('option[value="' + t.id + '"]');
+            if (opt) opt.textContent = t.name + ' · ' + t.started_at + (t.is_running ? ' · 运行中' : '');
+        }
+    });
+}
+
+function pollStatus() {
+    var url = CUR_TASK ? '/composite/api/status?task_id=' + encodeURIComponent(CUR_TASK) : '/composite/api/status';
+    fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            setRunTag(data.running_count || 0);
+            updateStatus(data);
+            if (data.tasks) refreshTaskRows(data.tasks);
+        })
+        .catch(function (e) { console.error('poll status', e); });
+}
+
+function selectTask(tid) {
+    CUR_TASK = tid;
+    var sel = document.getElementById('task-switch');
+    if (sel && sel.value !== tid) sel.value = tid;
+    pollStatus();
+}
+
+function startPolling(sec) {
+    stopPolling();
+    if (sec > 0) pollTimer = setInterval(pollStatus, sec * 1000);
+}
+function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+(function () {
+    var sel = document.getElementById('task-switch');
+    if (sel && CUR_TASK) sel.value = CUR_TASK;
+})();
+
+startPolling(3);
+
+document.querySelectorAll('button[name="action"]').forEach(function (btn) {
+    btn.addEventListener('click', function () { setTimeout(pollStatus, 800); });
+});
+</script>
+{% endblock %}

@@ -6,6 +6,24 @@
 {% block body %}
 <div class="wrap">
     <h1 class="page-title">🏆 最优策略汇总</h1>
+    {# 统一查询串：cat / q / sector 三条件，供各筛选链接与排序链接复用 #}
+    {% set qs_cat = ('cat=' ~ cat) if cat else '' %}
+    {% set qs_q = ('q=' ~ q|urlencode) if q else '' %}
+    {% set qs_sector = ('sector=' ~ sector) if sector else '' %}
+    {% set qs_parts = [] %}
+    {% if qs_cat %}{% set _ = qs_parts.append(qs_cat) %}{% endif %}
+    {% if qs_q %}{% set _ = qs_parts.append(qs_q) %}{% endif %}
+    {% if qs_sector %}{% set _ = qs_parts.append(qs_sector) %}{% endif %}
+    {% set qs0 = qs_parts | join('&') %}
+    {% set qp = ('&' ~ qs0) if qs0 else '' %}
+    {# 构造筛选链接：按需拼接 cat/sector/q #}
+    {% macro filt_url(cat_v, sector_v, q_v) -%}
+        {%- set fp = [] -%}
+        {%- if cat_v %}{%- set _ = fp.append('cat=' ~ cat_v) -%}{%- endif -%}
+        {%- if sector_v %}{%- set _ = fp.append('sector=' ~ sector_v) -%}{%- endif -%}
+        {%- if q_v %}{%- set _ = fp.append('q=' ~ q_v|urlencode) -%}{%- endif -%}
+        /strategies{%- set fqs = fp | join('&') -%}{%- if fqs %}?{{ fqs }}{%- endif -%}
+    {%- endmacro %}
 
     {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
     {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
@@ -24,21 +42,32 @@
 
     <!-- 历史测试记录（可搜索/翻页） -->
     <div class="card">
-        <h2>🗂️ 历史测试记录（{% if q %}搜索「{{ q }}」命中 {{ total }} 条{% else %}{{ '全部' if not cat else ('美股代币' if cat == 'us' else '虚拟货币') }} {{ total }} 条{% endif %}{% if total > 15 %}，第 {{ page }}/{{ pages }} 页{% endif %}）</h2>
+        <h2>🗂️ 历史测试记录（{{ ('板块「' ~ sector ~ '」' if sector else ('美股代币' if cat == 'us' else ('虚拟货币' if cat == 'crypto' else '全部'))) }} {{ total }} 条{% if q %} · 搜索「{{ q }}」{% endif %}{% if total > 15 %}，第 {{ page }}/{{ pages }} 页{% endif %}）</h2>
         <div style="display:flex;gap:8px;align-items:center;margin:0 0 10px;flex-wrap:wrap">
             <form method="GET" action="/strategies" style="display:flex;gap:8px">
                 {% if cat %}<input type="hidden" name="cat" value="{{ cat }}">{% endif %}
+                {% if sector %}<input type="hidden" name="sector" value="{{ sector }}">{% endif %}
                 <input type="text" name="q" class="search-input" value="{{ q }}" placeholder="搜索：品种 / 策略 / 模式 / 来源 / 备注…" style="width:300px">
                 <button type="submit" class="btn btn-primary" style="padding:8px 18px">搜索</button>
             </form>
-            <div style="display:flex;gap:6px;align-items:center">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
                 <span style="color:var(--muted);font-size:.85rem">类别：</span>
-                {% for cv, cl in [('', '全部'), ('crypto', '虚拟货币'), ('us', '美股代币')] %}
-                <a class="btn{% if cat == cv %} btn-primary{% endif %}" style="padding:5px 12px;font-size:.85rem"
-                   href="/strategies?cat={{ cv }}{{ ('&q=' ~ q|urlencode) if q else '' }}">{{ cl }}</a>
-                {% endfor %}
+                <select onchange="location.href=this.value" style="width:auto;padding:5px 8px">
+                    {% for cv, cl in [('', '全部'), ('crypto', '虚拟货币'), ('us', '美股代币')] %}
+                    <option value="{{ filt_url(cv, sector, q) }}"{% if cat == cv %} selected{% endif %}>{{ cl }}</option>
+                    {% endfor %}
+                </select>
             </div>
-            {% if q %}<a class="btn" style="padding:8px 14px" href="/strategies{% if cat %}?cat={{ cat }}{% endif %}">清除搜索</a>{% endif %}
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <span style="color:var(--muted);font-size:.85rem">板块：</span>
+                <select onchange="location.href=this.value" style="width:auto;padding:5px 8px">
+                    <option value="{{ filt_url(cat, '', q) }}"{% if not sector %} selected{% endif %}>全部</option>
+                    {% for sv in sectors %}
+                    <option value="{{ filt_url('us', sv, q) }}"{% if sector == sv %} selected{% endif %}>{{ sv }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% if q %}<a class="btn" style="padding:8px 14px" href="{{ filt_url(cat, sector, '') }}">清除搜索</a>{% endif %}
         </div>
         {% if history %}
         <div class="table-wrap">
@@ -50,8 +79,6 @@
             </colgroup>
             <tr>
                 <th>品种</th>
-                {% set qs0 = ((('cat=' ~ cat) if cat else '') ~ (('&q=' ~ q|urlencode) if q else '')) %}
-                {% set qp = ('&' ~ qs0) if qs0 else '' %}
                 <th class="sortable">
                     {% if sort == 'timeframe' and order == 'desc' %}{% set nhref = '/strategies' ~ (('?' ~ qs0) if qs0 else '') %}{% else %}{% set nhref = '/strategies?sort=timeframe&order=' ~ ('desc' if (sort == 'timeframe' and order == 'asc') else 'asc') ~ qp %}{% endif %}
                     <a href="{{ nhref }}" title="点击排序，再次点击换方向，第三次取消排序" style="color:inherit;text-decoration:none">
@@ -71,7 +98,7 @@
             </tr>
             {% for r in history %}
             <tr>
-                <td class="td-clip" title="{{ r.symbol }}"><b>{% if r.symbol.endswith('USDT') and '/' in r.symbol %}{{ r.symbol.split('/')[0] }}{% else %}{{ r.symbol }}{% endif %}</b></td>
+                <td style="white-space:normal;vertical-align:top" title="{{ r.symbol }}"><b>{% if r.symbol.endswith('USDT') and '/' in r.symbol %}{{ r.symbol.split('/')[0] }}{% else %}{{ r.symbol }}{% endif %}</b>{% if r.sector %}<div style="margin-top:2px;font-size:.72rem;color:var(--muted);background:var(--panel-alt);border:1px solid var(--border);border-radius:999px;padding:0 6px;display:inline-block;white-space:nowrap">{{ r.sector }}</div>{% endif %}</td>
                 <td class="td-clip" title="{{ r.timeframe }}">{{ r.timeframe }}</td>
                 <td class="td-clip" title="{{ r.period or '—' }}">{{ r.period or '—' }}</td>
                 <td class="pos td-clip" title="{{ r.ret }}">{{ r.ret }}</td>
@@ -177,7 +204,7 @@
             {% for t in tops %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td><b>{{ t.symbol }}</b></td>
+                <td style="white-space:normal"><b>{{ t.symbol }}</b>{% if t.sector %}<div style="margin-top:2px;font-size:.72rem;color:var(--muted);background:var(--panel-alt);border:1px solid var(--border);border-radius:999px;padding:0 6px;display:inline-block;white-space:nowrap">{{ t.sector }}</div>{% endif %}</td>
                 <td>{{ t.timeframe }}</td>
                 <td>{{ t.period or '—' }}</td>
                 <td>{{ t.strategy }}</td>

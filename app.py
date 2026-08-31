@@ -17,6 +17,7 @@ from demo_trader import DemoTrader
 from auto_trader import AutoTrader, STATE_FILE
 from futures_trader import FuturesTrader
 from auto_futures import AutoFutures, STATE_FILE as FUTURES_STATE_FILE
+from composite_trader import CompositeTrader, DEFAULT_BUY_PCT, strategy_params as _composite_strategy_params
 import auth as _auth
 import strategies_store as _store
 
@@ -73,7 +74,7 @@ def _require_login():
         return None
     # AJAX 接口未登录返回 401 JSON（避免前端拿到登录页 HTML 解析报错刷屏）
     if request.path.startswith('/futures/api/') or request.path.startswith('/demo/api/') \
-            or request.path.startswith('/auto/api/'):
+            or request.path.startswith('/auto/api/') or request.path.startswith('/composite/api/'):
         from flask import jsonify
         return jsonify({'error': 'unauthorized'}), 401
     return redirect(url_for('login'))
@@ -780,7 +781,8 @@ def _fut_fix_stale_running():
 
 def _fut_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, indicator_params,
                     step_pct, max_levels, stop_pct, long_only, api_key, api_secret,
-                    shared_trader, leverage, testnet):
+                    shared_trader, leverage, testnet, take_profit_pct=0.0, stop_loss_pct=0.0,
+                    task_id=None):
     """启动一个合约量化任务（多实例并行；同币种已有运行任务则拒绝；币种不在币安合约市场则拒绝）"""
     for e in _auto_futures_engines.values():
         if e.status.get('running') and e.status.get('symbol') == symbol:
@@ -788,13 +790,20 @@ def _fut_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, ind
     mkt_err = _market_check(shared_trader, symbol, '合约')
     if mkt_err:
         return False, mkt_err
+    # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）；失败不阻断
+    try:
+        shared_trader.sign_tradfi_agreement()
+    except Exception:
+        pass
     eng = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
     if mode == 'grid':
         ok, msg = eng.start(symbol, timeframe, {}, qty_usdt, interval,
-                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels, stop_pct=0)
+                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels, stop_pct=0,
+                            take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct, task_id=task_id)
     else:
         ok, msg = eng.start(symbol, timeframe, indicator_params, qty_usdt, interval,
-                            strategies=strategies, mode='standard', stop_pct=stop_pct, long_only=long_only)
+                            strategies=strategies, mode='standard', stop_pct=stop_pct, long_only=long_only,
+                            take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct, task_id=task_id)
     if ok:
         _auto_futures_engines[eng._task_id] = eng
     return ok, msg
@@ -890,6 +899,8 @@ def futures():
         mode = form.get("mode", "standard")
         session["futures_leverage"] = leverage  # 启动时持久化当前杠杆
         stop_pct = _to_float(form.get("stop_pct"), 5) / 100  # 断线保护止损比例
+        take_profit_pct = _to_float(form.get("take_profit_pct"), 0) / 100
+        stop_loss_pct = _to_float(form.get("stop_loss_pct"), 0) / 100
         # 测试网只有主流币永续，无 TQQQ 等美股合约
         if testnet and ":USDT:USDT" in symbol:
             return redirect(url_for('futures', _error=f"测试网无 {symbol} 合约，请把网络切换为「主网」或选择币种合约"))
@@ -898,7 +909,8 @@ def futures():
             max_levels = _to_int(form.get("grid_max_levels"), 12)
             ok, msg = _fut_start_task(symbol, timeframe, qty_usdt, interval, 'grid', [], {},
                                       step_pct, max_levels, 0, False,
-                                      api_key, api_secret, shared_trader, leverage, testnet)
+                                      api_key, api_secret, shared_trader, leverage, testnet,
+                                      take_profit_pct, stop_loss_pct)
         else:
             selected_strategies = [v for v in STRATEGIES if form.get(f"strategy_{v.lower()}")]
             if not selected_strategies:
@@ -907,7 +919,8 @@ def futures():
             long_only = bool(form.get("long_only"))  # 仅做多：卖出信号只平仓不开空
             ok, msg = _fut_start_task(symbol, timeframe, qty_usdt, interval, 'standard', selected_strategies,
                                       indicator_params, 0.01, 12, stop_pct, long_only,
-                                      api_key, api_secret, shared_trader, leverage, testnet)
+                                      api_key, api_secret, shared_trader, leverage, testnet,
+                                      take_profit_pct, stop_loss_pct)
         return redirect(url_for('futures', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "resume_task":
@@ -920,18 +933,23 @@ def futures():
             return redirect(url_for('futures', _error=f"测试网无 {task['symbol']} 合约，请把网络切换为「主网」后恢复"))
         task_lev = int(task.get('leverage', 5))
         sp = float(task.get('stop_pct', 0) or 0)
+        tpp = float(task.get('take_profit_pct', 0) or 0)
+        slp = float(task.get('stop_loss_pct', 0) or 0)
         if task.get('mode') == 'grid':
             ok, msg = _fut_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
                                       int(task.get('interval', 30)), 'grid', [], {},
-                                      float(task.get('grid_step', 0.01)), int(task.get('grid_max_levels', 12)), 0, False,
-                                      api_key, api_secret, shared_trader, task_lev, testnet)
+                                      float(task.get('grid_step', 0.01)), int(task.get('grid_max_levels', 12)),
+                                      0, False,
+                                      api_key, api_secret, shared_trader, task_lev, testnet,
+                                      tpp, slp, task_id=tid)
         else:
             names = task.get('strategies') or ["RSI"]
             ip = _strategy_params_from_names(names)
             ok, msg = _fut_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
                                       int(task.get('interval', 30)), 'standard', names, ip,
                                       0.01, 12, sp, bool(task.get('long_only', False)),
-                                      api_key, api_secret, shared_trader, task_lev, testnet)
+                                      api_key, api_secret, shared_trader, task_lev, testnet,
+                                      tpp, slp, task_id=tid)
         return redirect(url_for('futures', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop_task":
@@ -995,6 +1013,10 @@ def futures():
     mark_price = disp['mark_price']
     positions = disp['positions']
     acc_bal = disp['balance']
+    try:
+        acc_bal = float(acc_bal) if acc_bal is not None else None
+    except (TypeError, ValueError):
+        acc_bal = None
     open_orders = disp['open_orders']
 
     cur_task_id = engines[0]._task_id if engines else (tasks[0]['id'] if tasks else None)
@@ -1280,18 +1302,22 @@ def _migrate_strategy_records():
                 per = next((p[1:-1] for key, p in PERIODS if key in (r['source'] or '')), '2026-01-01~2026-08-26')
                 updates['period'] = per
             # ---- ⑮ 日期精确到日：旧月份/笼统标签 → 统一日期区间（美股按上市日~08-30）----
-            base_coin = (r['symbol'] or '').split('/')[0].split('~')[0]
-            per_now = updates.get('period') or r['period'] or ''
-            if base_coin in US_WINDOW:
-                if per_now != US_WINDOW[base_coin]:
-                    updates['period'] = US_WINDOW[base_coin]
-            elif per_now != '各股自上市至8月':
-                if '四年' in per_now:
-                    updates['period'] = '2023-01-01~2026-08-26'
-                elif per_now == '2025全年':
-                    updates['period'] = '2025-01-01~2025-12-31'
-                elif per_now.startswith('2026年'):
-                    updates['period'] = '2026-01-01~2026-08-26'
+            # Yahoo 渠道真实美股记录不受 US_WINDOW(币安上市日) 影响，保留其真实回测区间
+            if 'Yahoo' in (r['source'] or ''):
+                pass  # source 已含真实 period，跳过覆盖
+            else:
+                base_coin = (r['symbol'] or '').split('/')[0].split('~')[0]
+                per_now = updates.get('period') or r['period'] or ''
+                if base_coin in US_WINDOW:
+                    if per_now != US_WINDOW[base_coin]:
+                        updates['period'] = US_WINDOW[base_coin]
+                elif per_now != '各股自上市至8月':
+                    if '四年' in per_now:
+                        updates['period'] = '2023-01-01~2026-08-26'
+                    elif per_now == '2025全年':
+                        updates['period'] = '2025-01-01~2025-12-31'
+                    elif per_now.startswith('2026年'):
+                        updates['period'] = '2026-01-01~2026-08-26'
             if r['symbol'] in ('MUB/USDT', 'MUUB/USDT') and r['mode'] == '双向':
                 updates['mode'] = '双向(模拟)'
                 note = r['note'] or ''
@@ -1594,7 +1620,8 @@ def strategies_summary():
                                 _message=msg if ok else None,
                                 page=request.form.get("page", 1),
                                 q=request.form.get("q", ""),
-                                cat=request.form.get("cat", "")))
+                                cat=request.form.get("cat", ""),
+                                sector=request.form.get("sector", "")))
 
     try:
         page = max(1, int(request.args.get('page', 1)))
@@ -1604,12 +1631,16 @@ def strategies_summary():
     cat = request.args.get('cat') or ''
     if cat not in ('us', 'crypto'):
         cat = ''
+    sector = request.args.get('sector') or ''
+    if sector not in _store.US_SECTOR_LIST:
+        sector = ''
     sort = request.args.get('sort') or None
     order = 'asc' if request.args.get('order') == 'asc' else 'desc'
     if sort not in _store.SORTABLE:
         sort = None
     history, total, pages = _store.list_history(page=page, per_page=15, q=q,
-                                                sort=sort, order=order, cat=cat)
+                                                sort=sort, order=order, cat=cat,
+                                                sector=sector)
     for r in history:  # 历年明细 JSON → dict（详情展开行使用）
         try:
             r['yearly'] = json.loads(r['yearly']) if r.get('yearly') else None
@@ -1619,6 +1650,7 @@ def strategies_summary():
             r['trades_list'] = json.loads(r['trades_detail']) if r.get('trades_detail') else None
         except Exception:
             r['trades_list'] = None
+        r['sector'] = _store.us_sector(r.get('symbol'))
     tops = _store.list_top()
     for t in tops:
         try:
@@ -1629,10 +1661,12 @@ def strategies_summary():
             t['trades_list'] = json.loads(t['trades_detail']) if t.get('trades_detail') else None
         except Exception:
             t['trades_list'] = None
+        t['sector'] = _store.us_sector(t.get('symbol'))
     return render_template("strategies.html",
                            tops=tops,
                            history=history, total=total, pages=pages, page=page, q=q,
-                           sort=sort, order=order, cat=cat,
+                           sort=sort, order=order, cat=cat, sector=sector,
+                           sectors=_store.US_SECTOR_LIST,
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)
 
@@ -1689,6 +1723,370 @@ def futures_export():
         lines = _fut_log_lines(tid)
         content = '\n'.join(lines) if lines else '（该任务暂无日志）'
         fname, mime = f'futures_log_{tid}.log', 'text/plain'
+    return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
+                     download_name=fname, mimetype=mime)
+
+
+# ==================== 美股综合量化：多币种任务管理 ====================
+# 一个综合任务同时监控/交易多个美股币对，每个币对独立配置策略与资金权重。
+# 引擎注册表：task_id -> CompositeTrader，多任务并行，互不干扰。
+
+# 综合量化引擎注册表（多实例并行）
+_composite_engines = {}
+
+# 综合量化可选的币对（美股代币优先；含静态 + 历史测试过的美股币）
+COMPOSITE_SYMBOLS = ["NVDA/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT", "MU/USDT:USDT",
+                     "AAPL/USDT:USDT", "MSFT/USDT:USDT", "GOOGL/USDT:USDT", "AMZN/USDT:USDT",
+                     "META/USDT:USDT", "TSLA/USDT:USDT", "MUB/USDT:USDT", "MUUB/USDT:USDT",
+                     "SNDKB/USDT:USDT", "SKHYB/USDT:USDT", "NVDAB/USDT:USDT",
+                     "CXMT/USDT:USDT", "TREE/USDT:USDT"]
+
+# 币对展示名称映射
+COMPOSITE_NAMES = {
+    'NVDA': '英伟达', 'QQQ': '纳指100', 'TQQQ': '纳指3倍做多', 'MU': '美光', 'AAPL': '苹果',
+    'MSFT': '微软', 'GOOGL': '谷歌', 'AMZN': '亚马逊', 'META': 'Meta', 'TSLA': '特斯拉',
+    'MUB': '美光(bStocks)', 'MUUB': '美光2倍(bStocks)', 'SNDKB': '闪迪(bStocks)',
+    'SKHYB': 'SK海力士(bStocks)', 'NVDAB': '英伟达(bStocks)', 'CXMT': '长鑫存储', 'TREE': 'Tree',
+}
+
+
+def _composite_symbol_list():
+    """综合量化下拉：美股代币列表 + 历史测试过的美股币"""
+    out = list(COMPOSITE_SYMBOLS)
+    for b in sorted(_symbols_from_history()):
+        if not _store.is_us_symbol(f'{b}/USDT'):
+            continue
+        s = f'{b}/USDT:USDT'
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _composite_running_engines():
+    """运行中的综合引擎列表（按 task_id 倒序，最新在前）"""
+    return [e for tid, e in sorted(_composite_engines.items(), reverse=True) if e.status.get('running')]
+
+
+def _composite_tasks_view():
+    """任务列表叠加实时运行状态（磁盘记录 + 内存引擎标记）"""
+    tasks = CompositeTrader.list_tasks()
+    for t in tasks:
+        eng = _composite_engines.get(t.get('id'))
+        t['is_running'] = bool(eng and eng.status.get('running'))
+    return tasks
+
+
+def _composite_log_lines(task_id):
+    """读取任务磁盘日志全量行（运行中/已停止任务通用；无文件返回空）。task_id 仅数字，防路径穿越"""
+    if not task_id or not str(task_id).isdigit():
+        return []
+    path = os.path.join('data', 'logs', f'composite_{task_id}.log')
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return [ln.rstrip('\n') for ln in f if ln.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _composite_fix_stale_running():
+    """把磁盘上标记 running 但进程内无引擎的综合任务改为 stopped（服务崩溃残留）"""
+    try:
+        tasks = CompositeTrader.list_tasks()
+        changed = False
+        for t in tasks:
+            if t.get('status') == 'running' and t.get('id') not in _composite_engines:
+                t['status'] = 'stopped'
+                changed = True
+        if changed:
+            import composite_trader as _ct
+            with open(_ct.TASKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,
+                          api_key, api_secret, shared_trader, leverage, testnet, task_id=None,
+                          prioritize=False, share_count=0):
+    """启动一个综合量化任务（多币种+独立策略+资金比例分配；多任务并行；币种须在币安合约市场）"""
+    # 校验每个币对都在币安合约市场存在且可交易
+    if shared_trader:
+        for cfg in symbol_configs:
+            sym = (cfg.get('symbol') or '').strip()
+            if not sym:
+                continue
+            mkt_err = _market_check(shared_trader, sym, '合约')
+            if mkt_err:
+                return False, mkt_err
+        # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）；失败不阻断
+        try:
+            shared_trader.sign_tradfi_agreement()
+        except Exception:
+            pass
+    eng = CompositeTrader(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
+    ok, msg = eng.start(name, total_fund, symbol_configs, interval, buy_pct, task_id=task_id,
+                        prioritize=prioritize, share_count=share_count)
+    if ok:
+        _composite_engines[eng._task_id] = eng
+    return ok, msg
+
+
+def _composite_stop_task(task_id):
+    """停止单个综合任务并移出运行字典"""
+    eng = _composite_engines.pop(task_id, None)
+    if not eng:
+        return False, f"任务未在运行: {task_id}"
+    return eng.stop()
+
+
+@app.route("/composite", methods=["GET", "POST"])
+def composite():
+    """美股综合量化交易监控页面（多币种+独立策略+资金比例分配）"""
+    from flask import jsonify
+    form = request.form
+    api_key = (form.get("api_key") or session.get("futures_api_key", DEFAULT_FUTURES_API_KEY)).strip()
+    api_secret = (form.get("api_secret") or session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET)).strip()
+    leverage = _to_int(form.get("leverage"), session.get("futures_leverage", FUTURES_LEVERAGE))
+    network = form.get("network") or session.get("futures_network", "testnet")
+    testnet = network != "mainnet"
+    error = None
+    message = None
+
+    if form.get("save_keys"):
+        session["futures_api_key"] = api_key
+        session["futures_api_secret"] = api_secret
+        session["futures_leverage"] = leverage
+        session["futures_network"] = network
+        return redirect(url_for('composite', _saved='1'))
+
+    if not api_key or not api_secret:
+        return render_template("composite.html", error="请输入合约 API 密钥",
+                              message=None, running=False, status=None,
+                              symbols=_composite_symbol_list(), names=COMPOSITE_NAMES,
+                              strategy_options=STRATEGIES, timeframe_options=TIMEFRAME_OPTIONS,
+                              leverage=leverage, network=network,
+                              tasks=None, running_count=0, cur_task_id=None, log_lines=[],
+                              alert_email=(_auth.get_email_config(session.get('user', '')) or {}).get('email'))
+
+    shared_trader = _get_futures_trader(api_key, api_secret, leverage, testnet)
+    if shared_trader:
+        shared_trader.leverage = leverage
+
+    if request.method == "GET":
+        _composite_fix_stale_running()
+
+    if request.args.get('_saved') == '1':
+        try:
+            usdt = 0.0
+            bal_list, bErr = shared_trader.get_balance()
+            if bErr:
+                raise RuntimeError(bErr)
+            for b in bal_list:
+                if b['asset'] == 'USDT':
+                    usdt = float(b['free'])
+                    break
+            message = f"API 密钥绑定成功！合约账户 USDT 余额：{usdt:.2f} USDT"
+        except Exception as e:
+            error = f"API 密钥绑定失败，请检查密钥/IP/合约权限：{e}"
+
+    arg_error = request.args.get('_error', '') or None
+    if arg_error:
+        error = arg_error
+
+    if request.method == "POST" and form.get("action") == "start":
+        name = form.get("name", "美股综合量化任务")
+        total_fund = _to_float(form.get("total_fund"), 10000)
+        # 绑定 API Key 后：任务总资金不得超过合约账户可用余额（余额获取失败/为 0 时不阻断）
+        try:
+            bal_list, bErr = shared_trader.get_balance()
+            if not bErr and bal_list:
+                usdt_free = next((float(b.get('free') or 0) for b in bal_list if b.get('asset') == 'USDT'), 0.0)
+                if usdt_free > 0 and total_fund > usdt_free:
+                    return redirect(url_for('composite',
+                                            _error=f"任务总资金 {total_fund:,.0f} USDT 超过合约账户可用余额 {usdt_free:,.2f} USDT，请调低总资金或先充值"))
+        except Exception:
+            pass
+        interval = _to_int(form.get("interval"), 30)
+        buy_pct = _to_float(form.get("buy_pct"), 95) / 100
+        prioritize = form.get("prioritize") == "1"
+        share_count = _to_int(form.get("share_count"), 0)
+        # 解析每个币对的配置：symbol / strategy / timeframe / fund_ratio / 止盈止损 / allow_short
+        symbol_configs = []
+        raw_syms = form.getlist("cs_symbol")
+        raw_strategies = form.getlist("cs_strategy")
+        raw_timeframes = form.getlist("cs_timeframe")
+        raw_ratios = form.getlist("cs_ratio")
+        raw_tps = form.getlist("cs_take_profit")
+        raw_sls = form.getlist("cs_stop_loss")
+        raw_short = form.getlist("cs_allow_short")
+        for i in range(len(raw_syms)):
+            sym = (raw_syms[i] or '').strip()
+            if not sym:
+                continue
+            base = sym.split('/')[0]
+            symbol_configs.append({
+                'symbol': sym,
+                'name': COMPOSITE_NAMES.get(base, base),
+                'strategy': raw_strategies[i] if i < len(raw_strategies) else 'EMA',
+                'timeframe': raw_timeframes[i] if i < len(raw_timeframes) else '1h',
+                'fund_ratio': _to_float(raw_ratios[i], 0) if i < len(raw_ratios) else 0,
+                'take_profit_pct': _to_float(raw_tps[i], 0) / 100 if i < len(raw_tps) else 0,
+                'stop_loss_pct': _to_float(raw_sls[i], 0) / 100 if i < len(raw_sls) else 0,
+                'allow_short': (raw_short[i] == '1') if i < len(raw_short) else False,
+                'long_only': (raw_short[i] != '1') if i < len(raw_short) else True,
+            })
+        if testnet:
+            for cfg in symbol_configs:
+                if ":USDT:USDT" in cfg['symbol']:
+                    return redirect(url_for('composite', _error=f"测试网无 {cfg['symbol']} 合约，请把网络切换为「主网」"))
+        ok, msg = _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,
+                                        api_key, api_secret, shared_trader, leverage, testnet,
+                                        prioritize=prioritize, share_count=share_count)
+        return redirect(url_for('composite', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "resume_task":
+        tid = form.get("task_id")
+        task = next((t for t in CompositeTrader.list_tasks() if t.get('id') == tid), None)
+        if not task:
+            return redirect(url_for('composite', _error=f"任务不存在或已丢失: {tid}"))
+        if testnet:
+            for cfg in task.get('symbols') or []:
+                if ":USDT:USDT" in cfg.get('symbol', ''):
+                    return redirect(url_for('composite', _error=f"测试网无 {cfg.get('symbol')} 合约，请把网络切换为「主网」后恢复"))
+        task_lev = int(task.get('leverage', 5))
+        task_buy_pct = float(task.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
+        ok, msg = _composite_start_task(task.get('name', '美股综合量化任务'),
+                                        float(task.get('total_fund', 10000)),
+                                        task.get('symbols') or [], int(task.get('interval', 30)),
+                                        task_buy_pct, api_key, api_secret, shared_trader, task_lev, testnet,
+                                        task_id=tid,
+                                        prioritize=bool(task.get('prioritize', False)),
+                                        share_count=int(task.get('share_count', 0) or 0))
+        return redirect(url_for('composite', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop_task":
+        ok, msg = _composite_stop_task(form.get("task_id"))
+        return redirect(url_for('composite', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "delete_task":
+        tid = form.get("task_id")
+        if tid in _composite_engines and _composite_engines[tid].status.get('running'):
+            return redirect(url_for('composite', _error='任务运行中，请先停止再删除'))
+        ok, msg = CompositeTrader.delete_task(tid)
+        return redirect(url_for('composite', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop":
+        stopped = 0
+        for tid in list(_composite_engines.keys()):
+            ok, _msg = _composite_stop_task(tid)
+            if ok:
+                stopped += 1
+        return redirect(url_for('composite', _error='' if stopped else '没有运行中的任务'))
+
+    # ---- 页面渲染 ----
+    tasks = _composite_tasks_view()
+    engines = _composite_running_engines()
+    if engines:
+        status = engines[0].get_status()
+        status['id'] = engines[0]._task_id
+        cur_task_id = status['id']
+    else:
+        status = None
+        cur_task_id = tasks[0]['id'] if tasks else None
+    # 初始日志：优先读任务磁盘全量日志（运行中/已停止任务通用），无任务则为空
+    log_lines = _composite_log_lines(cur_task_id) if cur_task_id else []
+    # 绑定 API Key 后：拉取合约账户可用余额，供前端「任务总资金」上限校验与展示
+    account_balance = None
+    if shared_trader:
+        try:
+            bal_list, bErr = shared_trader.get_balance()
+            if not bErr and bal_list:
+                usdt = next((b for b in bal_list if b.get('asset') == 'USDT'), None)
+                if usdt is not None:
+                    account_balance = float(usdt.get('free') or 0)
+        except Exception:
+            pass
+    return render_template("composite.html", error=error, message=message,
+                          running=bool(engines), status=status,
+                          symbols=_composite_symbol_list(), names=COMPOSITE_NAMES,
+                          strategy_options=STRATEGIES, timeframe_options=TIMEFRAME_OPTIONS,
+                          leverage=leverage, network=network, tasks=tasks,
+                          running_count=len(engines), cur_task_id=cur_task_id,
+                          log_lines=log_lines, api_key=api_key, api_secret=api_secret,
+                          account_balance=account_balance)
+
+
+@app.route("/composite/api/status")
+def composite_status():
+    """JSON 接口：返回综合任务列表 + 指定任务状态（供前端 AJAX 轮询/切换任务）"""
+    from flask import jsonify
+    tid = request.args.get('task_id')
+    tasks = _composite_tasks_view()
+    brief = [{'id': t.get('id'), 'name': t.get('name'), 'total_fund': t.get('total_fund'),
+              'interval': t.get('interval'), 'leverage': t.get('leverage'),
+              'symbols': t.get('symbols'), 'started_at': t.get('started_at'),
+              'is_running': t.get('is_running', False)} for t in tasks]
+    eng = None
+    if tid:
+        eng = _composite_engines.get(tid)
+    else:
+        engines = _composite_running_engines()
+        eng = engines[0] if engines else None
+    if eng:
+        try:
+            eng._refresh_positions_and_balance()
+        except Exception:
+            pass
+        cur = eng.get_status()
+        cur['id'] = eng._task_id
+        disk = _composite_log_lines(eng._task_id)
+        if disk:
+            cur['log'] = disk
+    else:
+        cur = {'running': False, 'log': ['未启动'], 'name': '—', 'total_fund': 0,
+               'buy_pct': DEFAULT_BUY_PCT, 'signal': '—', 'leverage': 5,
+               'buy_count': 0, 'sell_count': 0, 'account_balance': 0.0,
+               'last_loop_time': None, 'symbols': []}
+        if tid:
+            rec = next((t for t in tasks if t.get('id') == tid), None)
+            if rec:
+                # 补齐各币对展示字段，避免前端对已停止任务渲染出 NaN
+                total = float(rec.get('total_fund') or 0)
+                syms = []
+                for cfg in rec.get('symbols') or []:
+                    ratio = float(cfg.get('fund_ratio') or 0)
+                    if ratio > 1:
+                        ratio = ratio / 100.0
+                    allocated = round(total * ratio, 8)
+                    syms.append({
+                        **cfg, 'fund_ratio': ratio,
+                        'allocated_fund': allocated, 'buy_balance': allocated,
+                        'signal': '—', 'side': 'none', 'position': 0,
+                        'entry_price': 0.0, 'last_price': 0.0,
+                        'unrealized_pnl': 0.0, 'buy_count': 0, 'sell_count': 0,
+                    })
+                cur = {**rec, 'running': False, 'symbols': syms,
+                       'log': _composite_log_lines(tid) or ['（该任务暂无日志）']}
+    return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+@app.route("/composite/api/export")
+def composite_export():
+    """导出单个综合任务的配置或日志文件"""
+    tid = request.args.get('task_id', '')
+    typ = request.args.get('type', 'log')
+    rec = next((t for t in CompositeTrader.list_tasks() if t.get('id') == tid), None)
+    if not rec:
+        abort(404)
+    if typ == 'config':
+        content = json.dumps(rec, ensure_ascii=False, indent=2)
+        fname, mime = f'composite_config_{tid}.json', 'application/json'
+    else:
+        lines = _composite_log_lines(tid)
+        content = '\n'.join(lines) if lines else '（该任务暂无日志）'
+        fname, mime = f'composite_log_{tid}.log', 'text/plain'
     return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
                      download_name=fname, mimetype=mime)
 
@@ -1901,7 +2299,8 @@ def _spot_log_lines(task_id):
 
 
 def _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, indicator_params,
-                     step_pct, max_levels, api_key, api_secret, shared_trader):
+                     step_pct, max_levels, api_key, api_secret, shared_trader,
+                     take_profit_pct=0.0, stop_loss_pct=0.0, task_id=None):
     """启动一个现货量化任务（多实例并行；同币种已有运行任务则拒绝；币种不在币安现货市场则拒绝）"""
     for e in _auto_traders.values():
         if e.status.get('running') and e.status.get('symbol') == symbol:
@@ -1912,10 +2311,14 @@ def _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, in
     eng = AutoTrader(api_key, api_secret, trader=shared_trader)
     if mode == 'grid':
         ok, msg = eng.start(symbol, timeframe, {}, qty_usdt, interval,
-                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels)
+                            strategies=[], mode='grid', step_pct=step_pct, max_levels=max_levels,
+                            take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct,
+                            task_id=task_id)
     else:
         ok, msg = eng.start(symbol, timeframe, indicator_params, qty_usdt, interval,
-                            strategies=strategies, mode='standard')
+                            strategies=strategies, mode='standard',
+                            take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct,
+                            task_id=task_id)
     if ok:
         _auto_traders[eng._task_id] = eng
     return ok, msg
@@ -1984,18 +2387,22 @@ def auto():
         qty_usdt = _to_float(form.get("qty_usdt"), 1000)
         interval = _to_int(form.get("interval"), 30)
         mode = form.get("mode", "standard")
+        take_profit_pct = _to_float(form.get("take_profit_pct"), 0) / 100
+        stop_loss_pct = _to_float(form.get("stop_loss_pct"), 0) / 100
         if mode == 'grid':
             step_pct = _to_float(form.get("grid_step"), 1) / 100
             max_levels = _to_int(form.get("grid_max_levels"), 12)
             ok, msg = _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, [], {},
-                                       step_pct, max_levels, api_key, api_secret, shared_trader)
+                                       step_pct, max_levels, api_key, api_secret, shared_trader,
+                                       take_profit_pct, stop_loss_pct)
         else:
             selected_strategies = [v for v in STRATEGIES if form.get(f"strategy_{v.lower()}")]
             if not selected_strategies:
                 selected_strategies = ["RSI"]
             indicator_params = _build_indicators(form, selected_strategies)
             ok, msg = _spot_start_task(symbol, timeframe, qty_usdt, interval, mode, selected_strategies,
-                                       indicator_params, 0.01, 12, api_key, api_secret, shared_trader)
+                                       indicator_params, 0.01, 12, api_key, api_secret, shared_trader,
+                                       take_profit_pct, stop_loss_pct)
         # PRG：POST 处理完重定向到 GET，避免刷新页面重放 start 导致重复下单
         return redirect(url_for('auto', _error='' if ok else msg))
 
@@ -2007,16 +2414,20 @@ def auto():
             return redirect(url_for('auto', _error=f"任务不存在或已丢失: {tid}"))
         step_pct = float(task.get('grid_step', 0.01))
         max_levels = int(task.get('grid_max_levels', 12))
+        tpp = float(task.get('take_profit_pct', 0) or 0)
+        slp = float(task.get('stop_loss_pct', 0) or 0)
         if task.get('mode') == 'grid':
             ok, msg = _spot_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
                                        int(task.get('interval', 30)), 'grid', [], {},
-                                       step_pct, max_levels, api_key, api_secret, shared_trader)
+                                       step_pct, max_levels, api_key, api_secret, shared_trader,
+                                       tpp, slp, task_id=tid)
         else:
             names = task.get('strategies') or ["RSI"]
             ip = _strategy_params_from_names(names)
             ok, msg = _spot_start_task(task['symbol'], task['timeframe'], float(task.get('qty_usdt', 1000)),
                                        int(task.get('interval', 30)), 'standard', names, ip,
-                                       0.01, 12, api_key, api_secret, shared_trader)
+                                       0.01, 12, api_key, api_secret, shared_trader,
+                                       tpp, slp, task_id=tid)
         return redirect(url_for('auto', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop_task":
@@ -2057,6 +2468,17 @@ def auto():
         status = {'running': False, 'log': [], **saved} if saved else None
     running = bool(engines)
     cur_task_id = engines[0]._task_id if engines else (tasks[0]['id'] if tasks else None)
+    # 绑定 API Key 后：拉取现货账户可用 USDT 余额，供前端「每次买入金额」默认值
+    account_balance = None
+    if shared_trader:
+        try:
+            bal_list, bErr = shared_trader.get_balance()
+            if not bErr and bal_list:
+                usdt = next((b for b in bal_list if b.get('asset') == 'USDT'), None)
+                if usdt is not None:
+                    account_balance = float(usdt.get('free') or 0)
+        except Exception:
+            pass
     return render_template("auto.html", error=error, message=message, running=running,
                           status=status, symbols=spot_symbol_list(),
                           timeframe_options=TIMEFRAME_OPTIONS,
@@ -2064,7 +2486,8 @@ def auto():
                           tasks=tasks,
                           running_count=len(engines),
                           cur_task_id=cur_task_id,
-                          api_key=api_key, api_secret=api_secret)
+                          api_key=api_key, api_secret=api_secret,
+                          account_balance=account_balance)
 
 
 def _spot_fix_stale_running():

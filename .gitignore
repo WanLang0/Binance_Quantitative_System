@@ -4,11 +4,14 @@ __pycache__/
 venv/
 
 # 运行数据：用户库与密钥严禁提交；strategy_records.db（策略回测记录）随仓库分发
+users.db
 data/users.db
 data/secret_key
 data/secret.key
 data/auto_trader_state.json
 data/auto_futures_state.json
+data/composite_state.json
+data/composite_tasks.json
 data/spot_tasks.json
 data/futures_tasks.json
 data/x.html
@@ -18,7 +21,7 @@ data/*.db-wal
 data/*.db-shm
 
 # 环境配置（代理等，按机器不同）
-# .env
+.env
 
 # 回测结果产物
 results/
@@ -34,3 +37,4 @@ scripts/results/
 iShot_*.png
 *.log
 .DS_Store
+/index

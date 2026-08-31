@@ -60,11 +60,17 @@ class AutoTrader:
             'timeframe': '15m',
             'strategies': [],           # 已选的策略名称列表
             'mode': 'standard',         # 策略模式：standard(标准多策略OR)/grid(网格)
-            'qty_usdt': 1000,           # 每次买入金额
+            'qty_usdt': 1000,           # 每次买入金额（初始预算）
+            'buy_balance': 0.0,          # 当前可用买入金额（本金+累计盈利，复利滚动）
+            'buy_pct': 0.95,             # 可用买入金额的实际投入比例（95%）
+            'position_cost': 0.0,        # 当前持仓累计成本（卖出后据此计算已实现盈利）
             'interval': 30,             # 轮询间隔（秒）
             'position': 0.0,            # 当前持仓数量（标准/网格模式：总持仓）
             'avg_price': 0.0,           # 持仓均价（模拟，按最近买入价）
             'last_price': 0.0,          # 最近价格
+            'last_close': 0.0,          # 最近一根已收盘K线收盘价（市价单3%偏差校验基准）
+            'take_profit_pct': 0.0,     # 止盈比例（相对均价，0=不启用）
+            'stop_loss_pct': 0.0,       # 止损比例（相对均价，0=不启用）
             'signal': '等待',           # 最近信号（等待/买入/卖出/无）
             'real_position': 0.0,      # 账户真实持仓数量（总余额 total）
             'real_free_position': 0.0, # 账户真实可卖数量（free，部分被挂单占用）
@@ -162,12 +168,22 @@ class AutoTrader:
             'interval': self.status['interval'],
             'grid_step': self.status['grid'].get('step_pct', 0.01),
             'grid_max_levels': self.status['grid'].get('max_levels', 12),
+            'take_profit_pct': self.status['take_profit_pct'],
+            'stop_loss_pct': self.status['stop_loss_pct'],
             'status': 'running',
             'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         self._task_id = rec['id']
         tasks = self._read_tasks()
-        tasks.insert(0, rec)
+        # 复用旧 task_id（恢复任务）时更新原记录，否则插入新记录，避免恢复时残留旧任务
+        replaced = False
+        for i, t in enumerate(tasks):
+            if t.get('id') == rec['id']:
+                tasks[i] = rec
+                replaced = True
+                break
+        if not replaced:
+            tasks.insert(0, rec)
         tasks = tasks[:20]
         try:
             os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
@@ -234,8 +250,12 @@ class AutoTrader:
                 'strategies': self.status['strategies'],
                 'mode': self.status['mode'],
                 'qty_usdt': self.status['qty_usdt'],
-                'interval': self.status['interval'],
-                'position': self.status['position'],
+            'buy_balance': self.status['buy_balance'],
+            'position_cost': self.status['position_cost'],
+            'interval': self.status['interval'],
+            'take_profit_pct': self.status['take_profit_pct'],
+            'stop_loss_pct': self.status['stop_loss_pct'],
+            'position': self.status['position'],
                 'avg_price': self.status['avg_price'],
                 'grid': self.status['grid'],
                 'buy_count': self.status['buy_count'],
@@ -258,7 +278,11 @@ class AutoTrader:
             self.status['strategies'] = data.get('strategies', self.status['strategies'])
             self.status['mode'] = data.get('mode', self.status['mode'])
             self.status['qty_usdt'] = data.get('qty_usdt', self.status['qty_usdt'])
+            self.status['buy_balance'] = data.get('buy_balance', self.status['buy_balance'])
+            self.status['position_cost'] = data.get('position_cost', self.status['position_cost'])
             self.status['interval'] = data.get('interval', self.status['interval'])
+            self.status['take_profit_pct'] = data.get('take_profit_pct', self.status['take_profit_pct'])
+            self.status['stop_loss_pct'] = data.get('stop_loss_pct', self.status['stop_loss_pct'])
             self.status['position'] = data.get('position', self.status['position'])
             self.status['avg_price'] = data.get('avg_price', self.status['avg_price'])
             grid = data.get('grid', {})
@@ -297,6 +321,7 @@ class AutoTrader:
             if qty <= 0:
                 self.status['position'] = 0.0
                 self.status['avg_price'] = 0.0
+                self.status['position_cost'] = 0.0
                 if 'grid' in self.status:
                     self.status['grid']['levels'] = []
                     self.status['grid']['filled'] = 0
@@ -317,6 +342,9 @@ class AutoTrader:
         engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
         signals = engine.calculate_signals(df, indicator_params)
         sig = int(signals.iloc[-1]) if not signals.empty else 0
+        # 记录最近一根已收盘K线收盘价（供市价单3%偏差校验）
+        if not df.empty:
+            self.status['last_close'] = float(df['close'].iloc[-1])
         return sig, df, None
 
     # ---------- 网格交易 ----------
@@ -338,13 +366,20 @@ class AutoTrader:
         # 网格已满则不买入
         if len(levels) >= max_levels:
             return False, '网格已满'
-        quantity = qty_usdt / price
+        # 单格资金 = 当前复利池 buy_balance × 投入比例(95%)
+        buy_balance = self.status.get('buy_balance', 0.0) or 0.0
+        invest = buy_balance * self.status.get('buy_pct', 0.95)
+        quantity = invest / price
         if quantity <= 0:
             return False, '买入数量为0'
         # 按币安数量精度取整，确保记录数量与实际成交一致（防止卖出时数量超出持仓）
         quantity = self.trader.round_amount(symbol, quantity)
         if quantity <= 0:
             return False, '买入数量精度不足'
+        # 市价单价格保护：当前价与最近收盘价差≤3%
+        dev = self._check_deviation(symbol, price)
+        if dev:
+            return False, f'网格买入被拦截: {dev}'
         order, err = self.trader.place_order(symbol, 'buy', 'market', quantity)
         if err:
             self._log(f"网格买入失败: {err}")
@@ -365,6 +400,7 @@ class AutoTrader:
         grid['filled'] = len(levels)
         grid['total_invest'] = round(grid.get('total_invest', 0) + quantity * price, 2)
         self.status['position'] = round(self.status.get('position', 0) + quantity, 8)
+        self.status['position_cost'] = round((self.status.get('position_cost', 0.0) or 0.0) + quantity * price, 8)
         self.status['buy_count'] += 1
         self.status['last_trade'] = {'time': datetime.now().isoformat(), 'action': 'BUY',
                                      'symbol': symbol, 'price': price, 'quantity': quantity,
@@ -401,6 +437,12 @@ class AutoTrader:
                     if qty <= 0:
                         remains.append(lv)
                         continue
+                # 市价单价格保护：当前价与最近收盘价差≤3%
+                dev = self._check_deviation(symbol, price)
+                if dev:
+                    self._log(f"网格卖出被拦截: {dev}")
+                    remains.append(lv)
+                    continue
                 order, err = self.trader.place_order(symbol, 'sell', 'market', qty)
                 if err:
                     if 'insufficient balance' in str(err).lower():
@@ -413,10 +455,15 @@ class AutoTrader:
                     continue
                 self.status['sell_count'] += 1
                 profit = qty * price - qty * lv['buy_price']
+                # 盈利计入复利池：可用买入金额 = 原金额 + 本次已实现盈利
+                self.status['buy_balance'] = round((self.status.get('buy_balance', 0.0) or 0.0) + profit, 8)
+                cost_part = qty * lv['buy_price']  # 已卖出部分的持仓成本
+                self.status['position_cost'] = round((self.status.get('position_cost', 0.0) or 0.0) - cost_part, 8)
                 self.status['last_trade'] = {'time': datetime.now().isoformat(), 'action': 'SELL',
                                              'symbol': symbol, 'price': price, 'quantity': qty,
                                              'value_usdt': qty * price, 'profit': round(profit, 2), 'mode': 'grid'}
-                self._log(f"网格卖出: {qty:.6f} {symbol} @ {price} (盈利{profit:.2f}U)")
+                self._log(f"网格卖出: {qty:.6f} {symbol} @ {price} (盈利{profit:.2f}U, 可用买入金额→{self.status['buy_balance']:.2f}U)")
+                self._mail_trade(symbol, '卖出', '网格止盈', qty, price, extra=f"盈利 {profit:.2f}U")
                 sold_any = True
                 # 本格卖出后不再保留
             else:
@@ -439,9 +486,13 @@ class AutoTrader:
                     raise ValueError('无法获取价格')
                 self.status['last_price'] = price
                 self.status['signal'] = '网格'
+                # 刷新已收盘K线收盘价（供3%偏差校验）
+                self._refresh_last_close(symbol, self.status['timeframe'])
                 # 先尝试卖出盈利格，再尝试买入补格
                 self._grid_sell(symbol, price, step_pct)
                 self._grid_buy(symbol, price, qty_usdt, step_pct, max_levels)
+                # 止盈/止损监控（市价平仓）
+                self._check_tp_sl(symbol, price)
                 self._refresh_real_position(symbol)
                 self.status['monitor_loop'] += 1
                 self.status['consecutive_errors'] = 0
@@ -456,6 +507,105 @@ class AutoTrader:
             self._stop_event.wait(self.status['interval'] or 30)
 
     # ---------- 下单 ----------
+    def _refresh_last_close(self, symbol, timeframe):
+        """拉取最近一根**已收盘**K线收盘价（市价单3%偏差校验基准）。
+        标准模式在 _compute_signal 已更新；网格模式需在循环里单独获取。"""
+        try:
+            candles, err = self.trader.get_ohlcv(symbol, timeframe, limit=2)
+            if not err and candles:
+                self.status['last_close'] = float(candles[-1]['close'])
+                return self.status['last_close']
+        except Exception:
+            pass
+        return 0.0
+
+    def _check_deviation(self, symbol, price):
+        """市价单前校验：当前价与最近一根已收盘K线收盘价价差≤3%。
+        超限则拒绝下单并返回错误提示（防价格跳变/滑点失控）。
+        返回 None=允许下单；字符串=拦截原因。"""
+        if not price or price <= 0:
+            return None
+        close = self.status.get('last_close', 0.0) or 0.0
+        if close <= 0:
+            return None
+        dev = abs(price - close) / close
+        if dev > 0.03:
+            msg = f"{symbol} 当前价 {price:.6f} 距最近收盘 {close:.6f} 偏移 {dev*100:.2f}% > 3%，已拦截市价单"
+            self._log(f"⚠ {msg}")
+            if mailer.is_configured():
+                mailer.send_async(f"🛡️ 币安量化拦截(现货): 价格偏移超3%", msg)
+            self.status['last_error'] = f"价格偏移{dev*100:.2f}%>3%，拦截"
+            return f"当前价偏离上次收盘价 {dev*100:.2f}% > 3%"
+        return None
+
+    def _mail_trade(self, symbol, side, action, qty, price, extra=''):
+        """下单成功邮件通知（开仓/平仓/止盈/止损均提示）"""
+        if not mailer.is_configured():
+            return
+        body = (f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"品种: {symbol}\n方向: {side}\n操作: {action}\n"
+                f"数量: {qty}\n价格: {price}\n"
+                + (f"备注: {extra}\n" if extra else ""))
+        subject = f"💰 币安量化实盘成交({side}): {symbol} 近{price}"
+        mailer.send_async(subject, body)
+        self._log(f"已发送成交邮件: {symbol} {side} {action}")
+
+    def _check_tp_sl(self, symbol, price):
+        """止盈/止损监控：持仓均价达到设置的止盈/止损价则市价平仓获利/止损。"""
+        tp = self.status.get('take_profit_pct', 0.0) or 0.0
+        sl = self.status.get('stop_loss_pct', 0.0) or 0.0
+        if tp <= 0 and sl <= 0:
+            return
+        pos = self.status.get('position', 0.0) or 0.0
+        avg = self.status.get('avg_price', 0.0) or 0.0
+        if pos <= 0 or avg <= 0:
+            return
+        trigger = None
+        pct = 0.0
+        if tp > 0 and price >= avg * (1 + tp):
+            trigger, pct = '止盈', tp
+        elif sl > 0 and price <= avg * (1 - sl):
+            trigger, pct = '止损', sl
+        else:
+            return
+        self._log(f"{trigger}触发: {symbol} 现价 {price:.6f} 均价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
+        self._exit_position(symbol, trigger)
+
+    def _exit_position(self, symbol, reason):
+        """市价平掉全部现货持仓（止盈/止损/强制卖出共用）"""
+        qty = self.trader.round_amount(symbol, self.status.get('position', 0.0))
+        if qty <= 0:
+            self._log(f"{reason}: 卖出数量精度不足，跳过")
+            return
+        # 3% 偏差校验，超限则本轮跳过（下轮再测，避免在极端行情下盲目平仓）
+        price, _ = self.trader.get_ticker(symbol)
+        dev = self._check_deviation(symbol, price)
+        if dev:
+            self._log(f"{reason}被拦截(价格偏移): {dev}")
+            return
+        order, err = self.trader.place_order(symbol, 'sell', 'market', qty)
+        if err:
+            self._log(f"{reason}卖出失败: {err}")
+            self.status['last_error'] = f"{reason}卖出失败: {err}"
+            return
+        # 已实现盈利计入复利池，更新可用买入金额
+        sell_value = qty * (price or 0)
+        cost = self.status.get('position_cost', 0.0) or 0.0
+        profit = sell_value - cost
+        self.status['buy_balance'] = round((self.status.get('buy_balance', 0.0) or 0.0) + profit, 8)
+        self.status['position'] = 0
+        self.status['avg_price'] = 0.0
+        self.status['position_cost'] = 0.0
+        self.status['sell_count'] += 1
+        self.status['last_trade'] = {
+            'time': datetime.now().isoformat(), 'action': 'SELL', 'symbol': symbol,
+            'price': price, 'quantity': qty, 'value_usdt': sell_value,
+            'profit': round(profit, 2), 'reason': reason,
+        }
+        self._log(f"{reason}平仓: {qty:.6f} {symbol} @ {price} (盈利{profit:+.2f}U, 可用买入金额→{self.status['buy_balance']:.2f}U)")
+        self._mail_trade(symbol, '卖出', reason, qty, price, extra=f"平仓价 {price}")
+        self.save_state()
+
     def _apply_orders(self, symbol, qty_usdt, buy_pct=0.95):
         """根据信号执行买/卖。买入按 qty_usdt 金额（自动换算数量），卖出全部持仓。"""
         sig = self.status['signal']
@@ -464,7 +614,15 @@ class AutoTrader:
             if not price:
                 self.status['last_error'] = '无法获取价格，跳过买入'
                 return 'skip'
-            quantity = (qty_usdt * buy_pct) / price
+            # 市价单价格保护：当前价与最近收盘价差≤3%，超限拦截
+            dev = self._check_deviation(symbol, price)
+            if dev:
+                self.status['last_error'] = f'买入被拦截: {dev}'
+                return 'skip'
+            # 可用买入金额 = 当前复利池 buy_balance，按 buy_pct(95%) 实际投入
+            buy_balance = self.status.get('buy_balance', 0.0) or 0.0
+            invest = buy_balance * self.status.get('buy_pct', 0.95)
+            quantity = invest / price
             if quantity <= 0:
                 self.status['last_error'] = '买入数量为0，跳过'
                 return 'skip'
@@ -480,6 +638,7 @@ class AutoTrader:
                 return 'error'
             self.status['position'] = quantity
             self.status['avg_price'] = price
+            self.status['position_cost'] = round(quantity * price, 8)   # 记录持仓成本
             self.status['buy_count'] += 1
             self.status['last_trade'] = {
                 'time': datetime.now().isoformat(),
@@ -487,7 +646,8 @@ class AutoTrader:
                 'price': price, 'quantity': quantity,
                 'value_usdt': quantity * price,
             }
-            self._log(f"买入: {quantity:.6f} {symbol} @ {price}")
+            self._log(f"买入: {quantity:.6f} {symbol} @ {price} (投入{invest:.2f}U/可用{buy_balance:.2f}U)")
+            self._mail_trade(symbol, '买入', '开仓', quantity, price, extra=f"开仓价 {price}")
             self.save_state()
             return 'ok'
         elif sig == -1 and self.status['position'] > 0:
@@ -495,22 +655,34 @@ class AutoTrader:
             if quantity <= 0:
                 self.status['last_error'] = '卖出数量精度不足，跳过'
                 return 'skip'
+            # 市价单价格保护：当前价与最近收盘价差≤3%，超限拦截
+            price, _ = self.trader.get_ticker(symbol)
+            dev = self._check_deviation(symbol, price)
+            if dev:
+                self.status['last_error'] = f'卖出被拦截: {dev}'
+                return 'skip'
             order, err = self.trader.place_order(symbol, 'sell', 'market', quantity)
             if err:
                 self.status['last_error'] = f'卖出失败: {err}'
                 self._log(f"卖出失败: {err}")
                 return 'error'
-            price, _ = self.trader.get_ticker(symbol)
+            # 已实现盈利 = 卖出金额 − 持仓成本，计入复利池
+            sell_value = quantity * (price or 0)
+            cost = self.status.get('position_cost', 0.0) or 0.0
+            profit = sell_value - cost
+            self.status['buy_balance'] = round((self.status.get('buy_balance', 0.0) or 0.0) + profit, 8)
             self.status['position'] = 0
             self.status['avg_price'] = 0
+            self.status['position_cost'] = 0.0
             self.status['sell_count'] += 1
             self.status['last_trade'] = {
                 'time': datetime.now().isoformat(),
                 'action': 'SELL', 'symbol': symbol,
                 'price': price, 'quantity': quantity,
-                'value_usdt': quantity * (price or 0),
+                'value_usdt': sell_value, 'profit': round(profit, 2),
             }
-            self._log(f"卖出: {quantity:.6f} {symbol} @ {price}")
+            self._log(f"卖出: {quantity:.6f} {symbol} @ {price} (盈利{profit:+.2f}U, 可用买入金额→{self.status['buy_balance']:.2f}U)")
+            self._mail_trade(symbol, '卖出', '平仓(信号)', quantity, price, extra=f"平仓价 {price}")
             self.save_state()
             return 'ok'
         return 'idle'
@@ -565,6 +737,8 @@ class AutoTrader:
                     else:
                         self.status['signal'] = '观望'
                     self.status['last_price'] = price or self.status['last_price']
+                    # 止盈/止损监控（市价平仓，先于买卖信号执行）
+                    self._check_tp_sl(symbol, price or self.status['last_price'])
                     self._apply_orders(symbol, qty_usdt)
                     self._refresh_real_position(symbol)
                 self.status['monitor_loop'] += 1
@@ -579,13 +753,16 @@ class AutoTrader:
 
     # ---------- 启停 ----------
     def start(self, symbol, timeframe, indicator_params, qty_usdt=1000, interval=30, strategies=None,
-              mode='standard', step_pct=0.01, max_levels=12):
+              mode='standard', step_pct=0.01, max_levels=12,
+              take_profit_pct=0.0, stop_loss_pct=0.0, task_id=None):
         """启动自动交易线程
 
         Args:
             mode: 策略模式。standard=标准多策略OR；grid=网格交易
             step_pct: 网格每格涨跌幅（如 0.01=1%）
             max_levels: 网格最大买入格数
+            take_profit_pct: 止盈比例（相对持仓均价，0=不启用）
+            stop_loss_pct: 止损比例（相对持仓均价，0=不启用）
         """
         with self._lock:
             if self._running:
@@ -595,14 +772,19 @@ class AutoTrader:
             self.status['symbol'] = symbol
             self.status['timeframe'] = timeframe
             self.status['qty_usdt'] = qty_usdt
+            self.status['buy_balance'] = float(qty_usdt)  # 复利起点 = 初始预算（本金+累计盈利）
+            self.status['position_cost'] = 0.0
             self.status['interval'] = interval
             self.status['strategies'] = strategies or []
             self.status['mode'] = mode
             self.status['grid']['step_pct'] = step_pct
             self.status['grid']['max_levels'] = max_levels
+            self.status['take_profit_pct'] = float(take_profit_pct or 0)
+            self.status['stop_loss_pct'] = float(stop_loss_pct or 0)
             self._stop_event.clear()
             # 先生成任务ID与日志文件（在线程启动前，确保首条日志也能落盘）
-            self._task_id = datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}"
+            # 恢复任务时复用旧 task_id，任务列表不新增、日志续写
+            self._task_id = task_id or (datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}")
             self.log_file = os.path.join(LOG_DIR, f'spot_{self._task_id}.log')
             # 立刻标记为运行中（不依赖后台线程是否已执行到置位处，避免页面显示"未运行"）
             self._running = True

@@ -63,11 +63,19 @@
                 </div>
                 <div class="field">
                     <label>每次买入 (USDT)</label>
-                    <input type="number" name="qty_usdt" step="any" min="1" value="{{ status.qty_usdt if status and status.qty_usdt else 1000 }}">
+                    <input type="number" name="qty_usdt" step="any" min="1" value="{{ account_balance if account_balance and account_balance > 0 else (status.qty_usdt if status and status.qty_usdt else 1000) }}">
                 </div>
                 <div class="field">
                     <label>轮询间隔 (秒)</label>
                     <input type="number" name="interval" step="1" min="5" value="{{ status.interval if status and status.interval else 30 }}">
+                </div>
+                <div class="field">
+                    <label>止盈 %（相对持仓均价，0=不启用）</label>
+                    <input type="number" name="take_profit_pct" step="0.5" min="0" max="1000" value="{{ (status.take_profit_pct * 100) | round(1) if status and status.take_profit_pct else 0 }}">
+                </div>
+                <div class="field">
+                    <label>止损 %（相对持仓均价，0=不启用）</label>
+                    <input type="number" name="stop_loss_pct" step="0.5" min="0" max="1000" value="{{ (status.stop_loss_pct * 100) | round(1) if status and status.stop_loss_pct else 0 }}">
                 </div>
             </div>
 
@@ -109,12 +117,14 @@
             <div class="stat-box"><div class="lbl">周期</div><div class="val" id="st-tf">{{ status.timeframe }}</div></div>
             <div class="stat-box"><div class="lbl">模式</div><div class="val" id="st-mode">{{ '标准多策略' if status.mode == 'standard' else '网格交易' }}</div></div>
             <div class="stat-box"><div class="lbl">策略</div><div class="val" id="st-strategies">{{ status.strategies | join(' + ') if status.strategies else '—' }}</div></div>
-            <div class="stat-box"><div class="lbl">买入金额</div><div class="val" id="st-qty">{{ '%.0f' | format(status.qty_usdt) if status.qty_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+            <div class="stat-box"><div class="lbl">初始买入金额</div><div class="val" id="st-qty">{{ '%.0f' | format(status.qty_usdt) if status.qty_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+            <div class="stat-box"><div class="lbl">可用买入金额</div><div class="val" id="st-bb" style="color:#4caf50">{{ '%.2f' | format(status.buy_balance) if status.buy_balance else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
             <div class="stat-box"><div class="lbl">网格持仓</div><div class="val" id="st-grid">{{ status.grid.filled if status.grid else '—' }} <span style="font-size:.7rem">格</span></div></div>
             <div class="stat-box"><div class="lbl">当前信号</div><div class="val" id="st-signal">{{ status.signal }}</div></div>
             <div class="stat-box"><div class="lbl">最近价格</div><div class="val" id="st-price">{{ '%.4f' | format(status.last_price) if status.last_price else '—' }}</div></div>
             <div class="stat-box"><div class="lbl">持仓数量</div><div class="val" id="st-pos">{{ '%.8f' | format(status.position) if status.position else '0' }}</div></div>
             <div class="stat-box"><div class="lbl">持仓均价</div><div class="val" id="st-avg">{{ '%.4f' | format(status.avg_price) if status.avg_price else '—' }}</div></div>
+            <div class="stat-box"><div class="lbl">止盈/止损</div><div class="val" id="st-tpsl" style="font-size:.8rem">{% if status.take_profit_pct or status.stop_loss_pct %}止盈{{ '%.1f' | format(status.take_profit_pct * 100) if status.take_profit_pct else '无' }}%/止损{{ '%.1f' | format(status.stop_loss_pct * 100) if status.stop_loss_pct else '无' }}%{% else %}未启用{% endif %}</div></div>
             <div class="stat-box"><div class="lbl">账户余额(USDT)</div><div class="val" id="st-balance">{{ '%.2f' | format(status.account_balance) if status.account_balance else '—' }}</div></div>
             <div class="stat-box"><div class="lbl">真实持仓数量</div><div class="val" id="st-realpos">{{ '%.8f' | format(status.real_position) if status.real_position else '0' }}</div></div>
             <div class="stat-box"><div class="lbl">真实持仓市值</div><div class="val" id="st-realvalue">{{ '%.2f' | format(status.real_value_usdt) if status.real_value_usdt else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
@@ -132,7 +142,7 @@
         <h2>🗂️ 量化任务列表（{{ tasks | length }} 条，{{ running_count }} 个运行中）</h2>
         <div class="table-wrap">
         <table class="table">
-            <tr><th>启动时间</th><th>交易对</th><th>周期</th><th>模式</th><th>策略</th><th>买入金额</th><th>轮询间隔</th><th>状态</th><th>操作</th></tr>
+            <tr><th>启动时间</th><th>交易对</th><th>周期</th><th>模式</th><th>策略</th><th>买入金额</th><th>轮询间隔</th><th>止盈/止损</th><th>状态</th><th>操作</th></tr>
             {% for t in tasks %}
             <tr data-id="{{ t.id }}">
                 <td>{{ t.started_at }}</td>
@@ -142,6 +152,7 @@
                 <td>{{ t.strategies | join('+') if t.strategies else '—' }}</td>
                 <td>{{ t.qty_usdt }}U</td>
                 <td>{{ t.interval }}s</td>
+                <td>{% if t.take_profit_pct or t.stop_loss_pct %}止盈{{ '%.1f' | format(t.take_profit_pct * 100) if t.take_profit_pct else '无' }}%/止损{{ '%.1f' | format(t.stop_loss_pct * 100) if t.stop_loss_pct else '无' }}%{% else %}—{% endif %}</td>
                 <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
                 <td style="white-space:nowrap">
                     <form method="POST" action="/auto" style="display:inline">
@@ -243,6 +254,7 @@ function updateStatus(data) {
     var m = {
         'st-symbol': data.symbol || '—', 'st-tf': data.timeframe || '—',
         'st-qty': (data.qty_usdt != null) ? Number(data.qty_usdt).toFixed(0) + ' USDT' : '—',
+        'st-bb': (data.buy_balance != null) ? Number(data.buy_balance).toFixed(2) + ' USDT' : '—',
         'st-price': data.last_price ? Number(data.last_price).toFixed(4) : '—',
         'st-pos': data.position ? Number(data.position).toFixed(8) : '0',
         'st-avg': data.avg_price ? Number(data.avg_price).toFixed(4) : '—',
@@ -277,6 +289,15 @@ function updateStatus(data) {
     if (rp) rp.textContent = (data.real_position != null) ? Number(data.real_position).toFixed(8) : '0';
     var rv = document.getElementById('st-realvalue');
     if (rv) rv.textContent = (data.real_value_usdt != null) ? Number(data.real_value_usdt).toFixed(2) : '—';
+    // 止盈/止损比例
+    var tpsl = document.getElementById('st-tpsl');
+    if (tpsl) {
+        var tp = Number(data.take_profit_pct || 0);
+        var sl = Number(data.stop_loss_pct || 0);
+        tpsl.textContent = (tp > 0 || sl > 0)
+            ? '止盈' + (tp > 0 ? (tp * 100).toFixed(1) + '%' : '无') + '/止损' + (sl > 0 ? (sl * 100).toFixed(1) + '%' : '无')
+            : '未启用';
+    }
     // 信号颜色
     var sig = document.getElementById('st-signal');
     if (sig) {

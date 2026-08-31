@@ -304,3 +304,26 @@ class FuturesTrader:
         except (TypeError, ValueError):
             prec_int = 0
         return round(amount, prec_int)
+
+    def sign_tradfi_agreement(self):
+        """签署币安 TradFi-Perps（美股/商品等传统金融永续）协议，避免下单报 -4411。
+
+        一次性操作，对普通加密货币永续无影响。返回 (响应文本, 错误)。
+        """
+        import hmac
+        import hashlib
+        import urllib.request
+        base = 'https://testnet.binancefuture.com' if self.testnet else 'https://fapi.binance.com'
+        endpoint = '/fapi/v1/stock/contract'
+        timestamp = int(time.time() * 1000)
+        qs = f'timestamp={timestamp}'
+        signature = hmac.new(self.api_secret.encode('utf-8'), qs.encode('utf-8'),
+                             hashlib.sha256).hexdigest()
+        url = f'{base}{endpoint}?{qs}&signature={signature}'
+        req = urllib.request.Request(url, data=b'', method='POST')
+        req.add_header('X-MBX-APIKEY', self.api_key)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.read().decode('utf-8'), None
+        except Exception as e:
+            return None, str(e)

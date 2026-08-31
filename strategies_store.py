@@ -22,16 +22,58 @@ FIELDS = ['symbol', 'timeframe', 'strategy', 'mode', 'tpsl', 'ret', 'daily', 'mo
 SORTABLE = {'timeframe', 'ret', 'daily', 'monthly', 'trades', 'winrate', 'mdd', 'sharpe'}
 _TF_MIN = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
 
-# 美股代币（bStocks/美股永续）：按 symbol 基础币名归类，其余为虚拟货币
+# 美股代币（bStocks/美股永续 + Yahoo 渠道测试过的美股真实个股）：按 symbol 基础币名归类，其余为虚拟货币
 US_TOKENS = {'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'MU', 'MUU',
              'QQQ', 'TQQQ', 'MUB', 'MUUB', 'MUBD', 'SNDKB', 'SKHYB', 'NVDAB',
-             'UNITREE', 'CXMT', 'TREE'}
+             'UNITREE', 'CXMT', 'TREE',
+             'JPM', 'V', 'LLY', 'JNJ', 'BA', 'UPS', 'WMT', 'PG',
+             'XOM', 'CVX', 'LIN', 'FCX', 'PLD', 'AMT', 'NEE', 'DUK'}
+
+# 美股个股/币安映射代币所属板块（GICS 板块，中文）。QQQ/TQQQ 等指数 ETF 不在此列。
+US_SECTORS = {
+    # 资讯科技
+    'AAPL': '资讯科技', 'NVDA': '资讯科技', 'MSFT': '资讯科技', 'MU': '资讯科技',
+    # 资讯科技（币安 bStocks 映射代币：半导体/存储）
+    'MUU': '资讯科技', 'MUB': '资讯科技', 'MUUB': '资讯科技', 'MUBD': '资讯科技',
+    'SNDKB': '资讯科技', 'SKHYB': '资讯科技', 'NVDAB': '资讯科技', 'CXMT': '资讯科技',
+    # 通讯服务
+    'GOOGL': '通讯服务', 'META': '通讯服务',
+    # 非必需消费
+    'AMZN': '非必需消费', 'TSLA': '非必需消费',
+    # 金融
+    'JPM': '金融', 'V': '金融', 'TREE': '金融',
+    # 医疗保健
+    'LLY': '医疗保健', 'JNJ': '医疗保健',
+    # 工业
+    'BA': '工业', 'UPS': '工业', 'UNITREE': '工业',
+    # 必需消费
+    'WMT': '必需消费', 'PG': '必需消费',
+    # 能源
+    'XOM': '能源', 'CVX': '能源',
+    # 原材料
+    'LIN': '原材料', 'FCX': '原材料',
+    # 房地产
+    'PLD': '房地产', 'AMT': '房地产',
+    # 公用事业
+    'NEE': '公用事业', 'DUK': '公用事业',
+}
 
 
 def is_us_symbol(symbol):
     """symbol 如 'AAPL/USDT:USDT'、'AAPL~TSLA等7币'、'ETH/USDT' → 是否美股代币"""
     base = (symbol or '').split('/')[0].split('~')[0].upper()
     return base in US_TOKENS
+
+
+def us_sector(symbol):
+    """返回美股个股所属板块（中文）；非美股个股/未归类（ETF、币安映射代币）返回 None"""
+    base = (symbol or '').split('/')[0].split('~')[0].upper()
+    return US_SECTORS.get(base)
+
+
+# 美股板块清单（固定顺序，供前端筛选下拉/chips 使用）
+US_SECTOR_LIST = ['资讯科技', '通讯服务', '非必需消费', '金融', '医疗保健', '工业',
+                  '必需消费', '能源', '原材料', '房地产', '公用事业']
 
 
 def _num(v, field=''):
@@ -107,11 +149,12 @@ def list_top():
     return [dict(r) for r in rows]
 
 
-def list_history(page=1, per_page=15, q='', sort=None, order='desc', cat=''):
-    """历史测试记录（分页 + 搜索 + 数值排序 + 类别筛选），返回 (记录, 总数, 总页数)
+def list_history(page=1, per_page=15, q='', sort=None, order='desc', cat='', sector=''):
+    """历史测试记录（分页 + 搜索 + 数值排序 + 类别/板块筛选），返回 (记录, 总数, 总页数)
 
     q 在八个字段模糊匹配（含日期）；sort 为 SORTABLE 内字段时按数值语义排序（Python 侧解析）。
     cat: ''/'all'=全部, 'us'=美股代币, 'crypto'=虚拟货币。
+    sector: 美股板块名（US_SECTOR_LIST 内），进一步按所属板块过滤。
     """
     where = "is_top=0"
     params = []
@@ -120,14 +163,16 @@ def list_history(page=1, per_page=15, q='', sort=None, order='desc', cat=''):
         where += (" AND (symbol LIKE ? OR timeframe LIKE ? OR strategy LIKE ? OR mode LIKE ? "
                   "OR tpsl LIKE ? OR source LIKE ? OR note LIKE ? OR period LIKE ?)")
         params = [like] * 8
-    if cat in ('us', 'crypto'):
-        # SQLite 无原生按集合过滤，取回 Python 侧按 is_us_symbol 过滤（总量小，无性能问题）
-        pass
+    need_py_filter = cat in ('us', 'crypto') or sector
     with _conn() as c:
-        if cat in ('us', 'crypto'):
+        if need_py_filter:
             all_rows = c.execute(f"SELECT * FROM strategy_records WHERE {where} ORDER BY id DESC",
                                  params).fetchall()
-            all_rows = [dict(r) for r in all_rows if is_us_symbol(r['symbol']) == (cat == 'us')]
+            all_rows = [dict(r) for r in all_rows]
+            if cat in ('us', 'crypto'):
+                all_rows = [r for r in all_rows if is_us_symbol(r['symbol']) == (cat == 'us')]
+            if sector:
+                all_rows = [r for r in all_rows if us_sector(r['symbol']) == sector]
             total = len(all_rows)
             pages = max(1, (total + per_page - 1) // per_page)
             page = max(1, min(page, pages))
