@@ -180,11 +180,11 @@
         </div>
         {% if pages > 1 %}
         <div style="margin-top:10px;text-align:center">
-            {% set qs0 = ((('cat=' ~ cat) if cat else '') ~ (('&q=' ~ q|urlencode) if q else '')) %}
-            {% set qp = ('&' ~ qs0) if qs0 else '' %}
-            {% if page > 1 %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page - 1 }}{{ qp }}">← 上一页</a>{% endif %}
+            {% set qps = qp %}
+            {% if sort %}{% set qps = qps ~ '&sort=' ~ sort ~ '&order=' ~ order %}{% endif %}
+            {% if page > 1 %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page - 1 }}{{ qps }}">← 上一页</a>{% endif %}
             <span style="margin:0 10px;color:#7a8394">第 {{ page }} / {{ pages }} 页</span>
-            {% if page < pages %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page + 1 }}{{ qp }}">下一页 →</a>{% endif %}
+            {% if page < pages %}<a class="btn" style="padding:4px 14px" href="/strategies?page={{ page + 1 }}{{ qps }}">下一页 →</a>{% endif %}
         </div>
         {% endif %}
         {% else %}
