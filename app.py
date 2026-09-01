@@ -561,10 +561,24 @@ def download_trades():
     )
 
 
+# ==================== 美股代币 base 名（币安官方名；勿用旧映射名 MUB/MUUB/SNDKB/SKHYB/NVDAB） ====================
+# 综合量化 / 自动合约 / 自动现货 三者共用的美股代币单一数据源
+US_STOCK_BASES = [
+    # 核心美股龙头 + 存储代币
+    'NVDA', 'QQQ', 'TQQQ', 'MU', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA',
+    'MUU', 'SNDK', 'SKHYNIX', 'CXMT', 'TREE',
+    # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
+    'WDC', 'STX', 'APH', 'NOK', 'AVGO', 'LITE', 'TSM', 'ASML', 'HPE', 'CRM',
+    'EQIX', 'DLR', 'GDS', 'HWM', 'RTX', 'NOC', 'LMT', 'GILT', 'IRDM', 'ECHO', 'GSAT',
+    # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
+    'SONY', 'AXON', 'RKLB', 'TTE', 'PSX', 'SHEL', 'COP', 'NEM', 'FNV', 'GFI',
+    'MRK', 'ABBV', 'PFE', 'PEP', 'KO',
+]
+
 # ==================== 模拟现货交易 ====================
 
-DEMO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUU/USDT", "TQQQ/USDT", "QQQ/USDT",
-                "CXMT/USDT", "TREE/USDT"]
+DEMO_SYMBOLS = (["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT"]
+                + [f'{b}/USDT' for b in US_STOCK_BASES])
 # 现货 Demo 默认 API 密钥（已移除硬编码，请在页面手动填写或配置环境变量）
 DEFAULT_DEMO_API_KEY = ""
 DEFAULT_DEMO_API_SECRET = ""
@@ -608,10 +622,9 @@ def _prewarm_trader(trader):
 # ==================== 自动合约交易 ====================
 
 # 合约交易对列表（USDT永续；bStocks 永续需用完整符号 :USDT）
-FUTURES_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT",
-                   "TON/USDT", "NEAR/USDT", "AVAX/USDT", "XLM/USDT", "ICP/USDT", "LTC/USDT",
-                   "MU/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT",
-                   "CXMT/USDT:USDT", "TREE/USDT:USDT", "NVDA/USDT:USDT"]
+FUTURES_SYMBOLS = (["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT",
+                    "TON/USDT", "NEAR/USDT", "AVAX/USDT", "XLM/USDT", "ICP/USDT", "LTC/USDT"]
+                   + [f'{b}/USDT:USDT' for b in US_STOCK_BASES])
 # 合约交易器缓存与自动合约引擎
 _futures_traders = {}
 # 合约自动引擎（多实例：task_id -> AutoFutures，支持多任务并行运行）
@@ -1737,24 +1750,7 @@ def futures_export():
 _composite_engines = {}
 
 # 综合量化可选的币对（美股代币优先；含静态 + 历史测试过的美股币 + 细分行业板块龙头股）
-COMPOSITE_SYMBOLS = ["NVDA/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT", "MU/USDT:USDT",
-                     "AAPL/USDT:USDT", "MSFT/USDT:USDT", "GOOGL/USDT:USDT", "AMZN/USDT:USDT",
-                     "META/USDT:USDT", "TSLA/USDT:USDT", "MUU/USDT:USDT",
-                     "SNDK/USDT:USDT", "SKHYNIX/USDT:USDT",
-                     "CXMT/USDT:USDT", "TREE/USDT:USDT",
-                     # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
-                     "WDC/USDT:USDT", "STX/USDT:USDT", "APH/USDT:USDT", "NOK/USDT:USDT",
-                     "AVGO/USDT:USDT", "LITE/USDT:USDT", "TSM/USDT:USDT", "ASML/USDT:USDT",
-                     "HPE/USDT:USDT", "CRM/USDT:USDT", "EQIX/USDT:USDT", "DLR/USDT:USDT",
-                     "GDS/USDT:USDT", "HWM/USDT:USDT", "RTX/USDT:USDT", "NOC/USDT:USDT",
-                     "LMT/USDT:USDT", "GILT/USDT:USDT", "IRDM/USDT:USDT", "ECHO/USDT:USDT",
-                     "GSAT/USDT:USDT",
-                     # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
-                     "SONY/USDT:USDT", "AXON/USDT:USDT", "RKLB/USDT:USDT",
-                     "TTE/USDT:USDT", "PSX/USDT:USDT", "SHEL/USDT:USDT", "COP/USDT:USDT",
-                     "NEM/USDT:USDT", "FNV/USDT:USDT", "GFI/USDT:USDT",
-                     "MRK/USDT:USDT", "ABBV/USDT:USDT", "PFE/USDT:USDT",
-                     "PEP/USDT:USDT", "KO/USDT:USDT"]
+COMPOSITE_SYMBOLS = [f'{b}/USDT:USDT' for b in US_STOCK_BASES]
 
 # 币对展示名称映射
 COMPOSITE_NAMES = {
@@ -2669,4 +2665,4 @@ def auto_export():
 if __name__ == "__main__":
     # threaded=True：让 Flask 并发处理请求。否则单个长耗时网络请求（如市场概览/信号计算）
     # 会占住唯一工作线程，导致其它请求（状态轮询/启动/停止）全部排队阻塞。
-    app.run(debug=True, host="0.0.0.0", port=8502, threaded=True)
+    app.run(debug=True, host="0.0.0.0", port=8888, threaded=True)
