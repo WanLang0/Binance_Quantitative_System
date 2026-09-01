@@ -34,6 +34,18 @@
 .sym-short { grid-column: 1 / -1; flex-direction: row !important; align-items: center; gap: 6px !important; cursor: pointer; color: var(--text) !important; }
 .sym-short input { width: 15px !important; height: 15px; }
 
+/* 多策略组合选择 */
+.sym-strategy { grid-column: 1 / -1; }
+.strategy-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.strat-chip {
+    display: flex; align-items: center; gap: 3px; flex-direction: row !important;
+    cursor: pointer; font-size: .76rem; color: var(--text) !important;
+    border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 8px;
+    background: var(--panel-alt);
+}
+.strat-chip input { width: auto !important; }
+.strat-chip:has(input:checked) { border-color: var(--primary); color: var(--primary) !important; background: var(--primary-soft); }
+
 /* 常用币对快捷添加 */
 .preset-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 8px; }
 .preset-chip {
@@ -143,8 +155,16 @@ td.short, td.neg { color: var(--sell); }
                         <div class="sym-name-row"><span class="sym-name-tag"></span></div>
                         <input type="hidden" name="cs_name" value="">
                         <div class="sym-card-grid">
-                            <label>策略
-                                <select name="cs_strategy">{% for s in strategy_options %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+                            <label class="sym-strategy">策略（多选=组合，需全部满足才触发）
+                                <div class="strategy-chips">
+                                    {% for s in strategy_options %}
+                                    <label class="strat-chip">
+                                        <input type="checkbox" class="cs-strat-chk" value="{{ s }}" onchange="updateStrategies(this)">
+                                        {{ s }}
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" name="cs_strategies" value="EMA">
                             </label>
                             <label>时间周期
                                 <select name="cs_timeframe">{% for label, value in timeframe_options.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
@@ -182,7 +202,7 @@ td.short, td.neg { color: var(--sell); }
                 <span id="run-tag" class="run-tag {% if running_count %}on{% endif %}">
                     {% if running_count %}● {{ running_count }} 个任务运行中{% else %}○ 未运行{% endif %}
                 </span>
-                <p class="info-note" style="font-size:.8rem">每个币对可从历史回测选最优策略（如 NVDA→EMA、QQQ→双均线）。买点开多、卖点平多；勾选「允许做空」时卖点在空仓开空。多币对同时买点按权重分别下单，互不占用。</p>
+                <p class="info-note" style="font-size:.8rem">每个币对可单选或<b>多选策略组合</b>（如 FCX→RSI+MACD，需全部满足才触发）。买点开多、卖点平多；勾选「允许做空」时卖点在空仓开空；止盈/止损留空表示不启用（仅做多持有）。多币对同时买点按权重分别下单，互不占用。</p>
             </form>
         </div>
     </aside>
@@ -324,6 +344,7 @@ td.short, td.neg { color: var(--sell); }
 // ---- 交易对可搜索下拉（模糊匹配，不区分大小写） ----
 var SYM_ALL = {{ symbols | tojson }};
 var NAMES = {{ names | tojson }};
+var BEST = {{ best_params | tojson }};
 var ACCOUNT_BALANCE = {{ account_balance if account_balance is not none else 'null' }};
 
 var PRESETS = [
@@ -364,6 +385,27 @@ function setSymName(card, symbol) {
     if (nameInput) nameInput.value = nm;
 }
 
+// 选择币种后，自动把参数填充为该币种的最优策略（策略组合/周期/止盈止损/是否做空）
+function applyBestParams(card, symbol) {
+    var base = symbol.split('/')[0].toUpperCase();
+    var bp = BEST[base];
+    if (!bp) return;
+    card.querySelectorAll('.cs-strat-chk').forEach(function (c) {
+        c.checked = (bp.strategies.indexOf(c.value) >= 0);
+    });
+    updateStrategies(card);
+    var tf = card.querySelector('select[name="cs_timeframe"]');
+    if (tf && bp.timeframe) tf.value = bp.timeframe;
+    var tp = card.querySelector('input[name="cs_take_profit"]');
+    if (tp) tp.value = (bp.take_profit > 0) ? bp.take_profit : '';
+    var sl = card.querySelector('input[name="cs_stop_loss"]');
+    if (sl) sl.value = (bp.stop_loss > 0) ? bp.stop_loss : '';
+    var chk = card.querySelector('.cs-short-chk');
+    if (chk) chk.checked = !!bp.allow_short;
+    var hs = card.querySelector('input[name="cs_allow_short"]');
+    if (hs) hs.value = bp.allow_short ? '1' : '0';
+}
+
 function bindSymClick(combo) {
     var list = combo.querySelector('.sym-list');
     list.addEventListener('click', function (e) {
@@ -373,6 +415,7 @@ function bindSymClick(combo) {
         var inp = combo.querySelector('.sym-inp');
         inp.value = opt.dataset.v;
         setSymName(card, opt.dataset.v);
+        applyBestParams(card, opt.dataset.v);
         list.style.display = 'none';
     });
 }
@@ -407,14 +450,17 @@ function addSymRow(symbol) {
     var inp = row.querySelector('.sym-inp');
     inp.value = symbol || '';
     if (symbol) setSymName(row, symbol);
-    var strategySel = row.querySelector('select[name="cs_strategy"]');
-    if (strategySel) strategySel.value = 'EMA';
+    // 默认勾选 EMA（单策略）；用户可再勾选其他策略组合（AND 逻辑）
+    row.querySelectorAll('.cs-strat-chk').forEach(function (c) { c.checked = (c.value === 'EMA'); });
+    updateStrategies(row);
     var tfSel = row.querySelector('select[name="cs_timeframe"]');
     if (tfSel) tfSel.value = '1h';
     var chk = row.querySelector('.cs-short-chk');
     if (chk) chk.checked = false;
     var hs = row.querySelector('input[name="cs_allow_short"]');
     if (hs) hs.value = '0';
+    // 选择币种时自动填充该币种最优策略参数（覆盖默认 EMA/1h）
+    if (symbol) applyBestParams(row, symbol);
     container.appendChild(row);
     bindSymClick(row.querySelector('.sym-combo'));
     renumberRows();
@@ -428,6 +474,17 @@ function removeSymRow(btn) {
     renumberRows();
     updateRatioTotal();
     updateShareHint();
+}
+
+function updateStrategies(ctx) {
+    // 汇总币对卡内勾选的策略 → 写入隐藏 input（逗号分隔，供表单提交）
+    var card = ctx.closest ? ctx.closest('.sym-card') : ctx;
+    if (!card) return;
+    var selected = [];
+    card.querySelectorAll('.cs-strat-chk:checked').forEach(function (c) { selected.push(c.value); });
+    if (!selected.length) selected = ['EMA'];
+    var hid = card.querySelector('input[name="cs_strategies"]');
+    if (hid) hid.value = selected.join(',');
 }
 
 function clearSymbols() {

@@ -183,7 +183,7 @@ TIMEFRAME_OPTIONS = {
 }
 
 # 策略指标选项
-STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD"]
+STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉"]
 
 # 固定交易对列表（symbol, 显示名称）
 SYMBOL_LIST = [
@@ -191,11 +191,11 @@ SYMBOL_LIST = [
     ("ETH/USDT", "ETH"),
     ("XRP/USDT", "XRP"),
     ("BNB/USDT", "BNB"),
-    ("MUUB/USDT", "MUUB - Direxion MU Bull 2X ETF (bStocks)"),
-    ("SNDKB/USDT", "SNDKB - SanDisk (bStocks)"),
-    ("SKHYB/USDT", "SKHYB - SK Hynix (bStocks)"),
-    ("MUB/USDT", "MUB - Micron Technology (bStocks)"),
-    ("NVDAB/USDT", "NVDAB - NVIDIA (bStocks)"),
+    ("MUU/USDT", "MUU - Direxion MU Bull 2X ETF"),
+    ("SNDK/USDT", "SNDK - SanDisk"),
+    ("SKHYNIX/USDT", "SKHYNIX - SK Hynix"),
+    ("MU/USDT", "MU - Micron Technology"),
+    ("NVDA/USDT", "NVDA - NVIDIA"),
 ]
 
 # 展示指标（不参与交易，仅展示）
@@ -563,7 +563,7 @@ def download_trades():
 
 # ==================== 模拟现货交易 ====================
 
-DEMO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUUB/USDT", "TQQQ/USDT", "QQQ/USDT",
+DEMO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "MUU/USDT", "TQQQ/USDT", "QQQ/USDT",
                 "CXMT/USDT", "TREE/USDT"]
 # 现货 Demo 默认 API 密钥（已移除硬编码，请在页面手动填写或配置环境变量）
 DEFAULT_DEMO_API_KEY = ""
@@ -682,6 +682,8 @@ def _futures_display_data(auto_futures, symbol, ttl=8):
 
 def _symbols_from_history():
     """从策略记录库提取历史测试过的真实交易对（过滤汇总行如'DOGE~XLM等10山寨'），返回 base 币名集合"""
+    # 旧 bStocks 代币名 → 币安官方名，避免历史记录旧名进入交易下拉导致下单失败
+    _BS_ALIAS = {'MUB': 'MU', 'MUUB': 'MUU', 'SNDKB': 'SNDK', 'SKHYB': 'SKHYNIX', 'NVDAB': 'NVDA'}
     bases = set()
     try:
         import re
@@ -691,7 +693,7 @@ def _symbols_from_history():
         for r in rows:
             m = pat.match((r[0] or '').strip().upper())
             if m:
-                bases.add(m.group(1))
+                bases.add(_BS_ALIAS.get(m.group(1), m.group(1)))
     except Exception:
         pass
     return bases
@@ -1734,19 +1736,44 @@ def futures_export():
 # 综合量化引擎注册表（多实例并行）
 _composite_engines = {}
 
-# 综合量化可选的币对（美股代币优先；含静态 + 历史测试过的美股币）
+# 综合量化可选的币对（美股代币优先；含静态 + 历史测试过的美股币 + 细分行业板块龙头股）
 COMPOSITE_SYMBOLS = ["NVDA/USDT:USDT", "QQQ/USDT:USDT", "TQQQ/USDT:USDT", "MU/USDT:USDT",
                      "AAPL/USDT:USDT", "MSFT/USDT:USDT", "GOOGL/USDT:USDT", "AMZN/USDT:USDT",
-                     "META/USDT:USDT", "TSLA/USDT:USDT", "MUB/USDT:USDT", "MUUB/USDT:USDT",
-                     "SNDKB/USDT:USDT", "SKHYB/USDT:USDT", "NVDAB/USDT:USDT",
-                     "CXMT/USDT:USDT", "TREE/USDT:USDT"]
+                     "META/USDT:USDT", "TSLA/USDT:USDT", "MUU/USDT:USDT",
+                     "SNDK/USDT:USDT", "SKHYNIX/USDT:USDT",
+                     "CXMT/USDT:USDT", "TREE/USDT:USDT",
+                     # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
+                     "WDC/USDT:USDT", "STX/USDT:USDT", "APH/USDT:USDT", "NOK/USDT:USDT",
+                     "AVGO/USDT:USDT", "LITE/USDT:USDT", "TSM/USDT:USDT", "ASML/USDT:USDT",
+                     "HPE/USDT:USDT", "CRM/USDT:USDT", "EQIX/USDT:USDT", "DLR/USDT:USDT",
+                     "GDS/USDT:USDT", "HWM/USDT:USDT", "RTX/USDT:USDT", "NOC/USDT:USDT",
+                     "LMT/USDT:USDT", "GILT/USDT:USDT", "IRDM/USDT:USDT", "ECHO/USDT:USDT",
+                     "GSAT/USDT:USDT",
+                     # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
+                     "SONY/USDT:USDT", "AXON/USDT:USDT", "RKLB/USDT:USDT",
+                     "TTE/USDT:USDT", "PSX/USDT:USDT", "SHEL/USDT:USDT", "COP/USDT:USDT",
+                     "NEM/USDT:USDT", "FNV/USDT:USDT", "GFI/USDT:USDT",
+                     "MRK/USDT:USDT", "ABBV/USDT:USDT", "PFE/USDT:USDT",
+                     "PEP/USDT:USDT", "KO/USDT:USDT"]
 
 # 币对展示名称映射
 COMPOSITE_NAMES = {
     'NVDA': '英伟达', 'QQQ': '纳指100', 'TQQQ': '纳指3倍做多', 'MU': '美光', 'AAPL': '苹果',
     'MSFT': '微软', 'GOOGL': '谷歌', 'AMZN': '亚马逊', 'META': 'Meta', 'TSLA': '特斯拉',
-    'MUB': '美光(bStocks)', 'MUUB': '美光2倍(bStocks)', 'SNDKB': '闪迪(bStocks)',
-    'SKHYB': 'SK海力士(bStocks)', 'NVDAB': '英伟达(bStocks)', 'CXMT': '长鑫存储', 'TREE': 'Tree',
+    'MUU': '美光2倍做多', 'SNDK': '闪迪', 'SKHYNIX': 'SK海力士',
+    'CXMT': '长鑫存储', 'TREE': 'Tree',
+    # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
+    'WDC': '西部数据', 'STX': '希捷科技', 'APH': '安费诺', 'NOK': '诺基亚',
+    'AVGO': '博通', 'LITE': 'Lumentum', 'TSM': '台积电', 'ASML': '阿斯麦',
+    'HPE': '慧与', 'CRM': '赛富时', 'EQIX': '易昆尼克斯', 'DLR': '数字房地产信托',
+    'GDS': '万国数据', 'HWM': 'Howmet Aerospace', 'RTX': '雷神技术',
+    'NOC': '诺斯罗普·格鲁曼', 'LMT': '洛克希德马丁', 'GILT': '吉来特卫星网络',
+    'IRDM': '铱星通讯', 'ECHO': '回声星通信', 'GSAT': '全球星',
+    # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
+    'SONY': '索尼', 'AXON': 'Axon Enterprise', 'RKLB': 'Rocket Lab',
+    'TTE': 'TotalEnergies', 'PSX': 'Phillips 66', 'SHEL': '壳牌', 'COP': '康菲石油',
+    'NEM': '纽蒙特', 'FNV': 'Franco-Nevada', 'GFI': '金田',
+    'MRK': '默沙东', 'ABBV': '艾伯维', 'PFE': '辉瑞', 'PEP': '百事', 'KO': '可口可乐',
 }
 
 
@@ -1760,6 +1787,76 @@ def _composite_symbol_list():
         if s not in out:
             out.append(s)
     return out
+
+
+# 策略记录库策略名 → 综合量化前端可选项（研究库用「双均线」，前端/后端用「双均线交叉」）
+_COMPOSITE_STRAT_MAP = {'RSI': 'RSI', 'KDJ': 'KDJ', 'MACD': 'MACD', 'EMA': 'EMA',
+                        '布林带': '布林带', '双均线': '双均线交叉', '双均线交叉': '双均线交叉'}
+
+
+def _map_composite_strategy(part):
+    """把策略记录中的策略名（可能为描述性文本，如 KDJ(9,3,3) 买20/卖80）映射为前端可选项"""
+    part = (part or '').strip()
+    if part in _COMPOSITE_STRAT_MAP:
+        return _COMPOSITE_STRAT_MAP[part]
+    for k, v in _COMPOSITE_STRAT_MAP.items():
+        if k in part:
+            return v
+    return part
+
+
+def _parse_tpsl(v):
+    """解析止盈止损文本：'8%/5%' → (8.0, 5.0)；'不设'/'任意' → (0.0, 0.0)"""
+    v = (v or '').replace('%', '').strip()
+    if '/' not in v:
+        return 0.0, 0.0
+    try:
+        a, b = v.split('/', 1)
+        return float(a.strip()), float(b.strip())
+    except ValueError:
+        return 0.0, 0.0
+
+
+def _composite_best_params():
+    """每个美股 base 币名 → 最优策略参数（选择币种后前端自动填充）。
+
+    从策略记录库对每个 base 币名取收益最高的一条记录，映射为
+    {strategies:[...], timeframe, take_profit, stop_loss, allow_short}。
+    """
+    result = {}
+    try:
+        with _store._conn() as c:
+            rows = c.execute("SELECT symbol, timeframe, strategy, mode, tpsl, ret "
+                             "FROM strategy_records").fetchall()
+    except Exception:
+        return result
+    best = {}  # base -> (ret_num, row)
+    for r in rows:
+        sym = (r['symbol'] or '').strip()
+        base = sym.split('/')[0].split('~')[0].upper()
+        if not base or not _store.is_us_symbol(base):
+            continue
+        ret_num = _store._num(r['ret'])
+        prev = best.get(base)
+        if prev is None or ret_num > prev[0]:
+            best[base] = (ret_num, r)
+    for base, (_, r) in best.items():
+        strategies = []
+        for part in (r['strategy'] or '').split('+'):
+            mapped = _map_composite_strategy(part)
+            if mapped and mapped not in strategies:
+                strategies.append(mapped)
+        if not strategies:
+            strategies = ['EMA']
+        tp, sl = _parse_tpsl(r['tpsl'])
+        result[base] = {
+            'strategies': strategies,
+            'timeframe': r['timeframe'] or '1h',
+            'take_profit': tp,
+            'stop_loss': sl,
+            'allow_short': '双向' in (r['mode'] or ''),
+        }
+    return result
 
 
 def _composite_running_engines():
@@ -1865,6 +1962,7 @@ def composite():
         return render_template("composite.html", error="请输入合约 API 密钥",
                               message=None, running=False, status=None,
                               symbols=_composite_symbol_list(), names=COMPOSITE_NAMES,
+                              best_params=_composite_best_params(),
                               strategy_options=STRATEGIES, timeframe_options=TIMEFRAME_OPTIONS,
                               leverage=leverage, network=network,
                               tasks=None, running_count=0, cur_task_id=None, log_lines=[],
@@ -1912,10 +2010,10 @@ def composite():
         buy_pct = _to_float(form.get("buy_pct"), 95) / 100
         prioritize = form.get("prioritize") == "1"
         share_count = _to_int(form.get("share_count"), 0)
-        # 解析每个币对的配置：symbol / strategy / timeframe / fund_ratio / 止盈止损 / allow_short
+        # 解析每个币对的配置：symbol / strategies(多策略组合) / timeframe / fund_ratio / 止盈止损 / allow_short
         symbol_configs = []
         raw_syms = form.getlist("cs_symbol")
-        raw_strategies = form.getlist("cs_strategy")
+        raw_strategies = form.getlist("cs_strategies")
         raw_timeframes = form.getlist("cs_timeframe")
         raw_ratios = form.getlist("cs_ratio")
         raw_tps = form.getlist("cs_take_profit")
@@ -1926,10 +2024,12 @@ def composite():
             if not sym:
                 continue
             base = sym.split('/')[0]
+            strategies = [x.strip() for x in (raw_strategies[i] if i < len(raw_strategies) else '').split(',') if x.strip()] or ['EMA']
             symbol_configs.append({
                 'symbol': sym,
                 'name': COMPOSITE_NAMES.get(base, base),
-                'strategy': raw_strategies[i] if i < len(raw_strategies) else 'EMA',
+                'strategy': '+'.join(strategies),
+                'strategies': strategies,
                 'timeframe': raw_timeframes[i] if i < len(raw_timeframes) else '1h',
                 'fund_ratio': _to_float(raw_ratios[i], 0) if i < len(raw_ratios) else 0,
                 'take_profit_pct': _to_float(raw_tps[i], 0) / 100 if i < len(raw_tps) else 0,
@@ -2011,6 +2111,7 @@ def composite():
     return render_template("composite.html", error=error, message=message,
                           running=bool(engines), status=status,
                           symbols=_composite_symbol_list(), names=COMPOSITE_NAMES,
+                          best_params=_composite_best_params(),
                           strategy_options=STRATEGIES, timeframe_options=TIMEFRAME_OPTIONS,
                           leverage=leverage, network=network, tasks=tasks,
                           running_count=len(engines), cur_task_id=cur_task_id,

@@ -60,6 +60,14 @@ def strategy_params(name):
     return p
 
 
+def strategy_params_multi(names):
+    """按策略名列表合并指标参数（多策略 AND 逻辑，与 app._strategy_params_from_names 一致）"""
+    p = {}
+    for n in (names or []):
+        p.update(strategy_params(n))
+    return p
+
+
 class CompositeTrader:
     """美股综合量化引擎（多币种 + 独立策略 + 资金比例分配，独立后台线程）"""
 
@@ -154,6 +162,7 @@ class CompositeTrader:
             'share_count': self.status.get('share_count', 0),
             'symbols': [{
                 'symbol': s['symbol'], 'name': s['name'], 'strategy': s['strategy'],
+                'strategies': s.get('strategies') or [s['strategy']],
                 'timeframe': s['timeframe'], 'fund_ratio': s['fund_ratio'],
                 'long_only': s.get('long_only', True),
                 'allow_short': s.get('allow_short', False),
@@ -223,6 +232,7 @@ class CompositeTrader:
                 'available_shares': self.status.get('available_shares', 0),
                 'symbols': [{
                     'symbol': s['symbol'], 'name': s['name'], 'strategy': s['strategy'],
+                    'strategies': s.get('strategies') or [s['strategy']],
                     'timeframe': s['timeframe'], 'fund_ratio': s['fund_ratio'],
                     'allocated_fund': s['allocated_fund'], 'buy_balance': s['buy_balance'],
                     'buy_pct': s['buy_pct'],
@@ -304,6 +314,17 @@ class CompositeTrader:
         unit = (total_fund / n) if (prioritize and n > 0) else 0.0
         for cfg in valid_cfgs:
             sym = (cfg.get('symbol') or '').strip()
+            # 策略列表：支持多策略组合（AND 逻辑），兼容旧单策略字段 strategy
+            strategies = list(cfg.get('strategies') or [])
+            if not strategies:
+                st = cfg.get('strategy')
+                if isinstance(st, (list, tuple)):
+                    strategies = list(st)
+                elif st:
+                    strategies = [str(st).strip()]
+            strategies = [x for x in strategies if x]
+            if not strategies:
+                strategies = ['EMA']
             if prioritize:
                 ratio = 1.0 / n if n > 0 else 0.0
                 allocated = round(unit, 8)
@@ -317,7 +338,8 @@ class CompositeTrader:
             symbols.append({
                 'symbol': sym,
                 'name': cfg.get('name') or sym.split('/')[0],
-                'strategy': cfg.get('strategy') or 'EMA',
+                'strategy': '+'.join(strategies),
+                'strategies': strategies,
                 'timeframe': cfg.get('timeframe') or '1h',
                 'fund_ratio': ratio,
                 'allocated_fund': allocated,
@@ -450,9 +472,11 @@ class CompositeTrader:
 
     # ---------- 信号计算 ----------
     def _compute_signal(self, s):
-        """拉取该币对K线 → 计算指标 → 返回当前根信号（1=做多, -1=做空/平多, 0=无）"""
+        """拉取该币对K线 → 计算指标 → 返回当前根信号（1=做多, -1=做空/平多, 0=无）
+        多策略 AND 逻辑：所有选中策略都满足才触发（单策略时与 OR 等价）。"""
         sym, timeframe = s['symbol'], s['timeframe']
-        indicator_params = strategy_params(s['strategy'])
+        strategies = s.get('strategies') or ([s['strategy']] if s.get('strategy') else ['EMA'])
+        indicator_params = strategy_params_multi(strategies)
         candles, err = self.trader.get_ohlcv(sym, timeframe, limit=200)
         if err or not candles:
             return 0, err
@@ -460,7 +484,7 @@ class CompositeTrader:
         df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
         df = df.set_index('timestamp')
         df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
-        engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
+        engine = BacktestEngine(timeframe=timeframe, signal_mode='and')
         signals = engine.calculate_signals(df, indicator_params)
         sig = int(signals.iloc[-1]) if not signals.empty else 0
         if not df.empty:

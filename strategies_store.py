@@ -23,19 +23,27 @@ SORTABLE = {'timeframe', 'ret', 'daily', 'monthly', 'trades', 'winrate', 'mdd', 
 _TF_MIN = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
 
 # 美股代币（bStocks/美股永续 + Yahoo 渠道测试过的美股真实个股）：按 symbol 基础币名归类，其余为虚拟货币
-US_TOKENS = {'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'MU', 'MUU',
+US_TOKENS = {'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'MU', 'MUU', 'SNDK', 'SKHYNIX',
              'QQQ', 'TQQQ', 'MUB', 'MUUB', 'MUBD', 'SNDKB', 'SKHYB', 'NVDAB',
              'UNITREE', 'CXMT', 'TREE',
              'JPM', 'V', 'LLY', 'JNJ', 'BA', 'UPS', 'WMT', 'PG',
-             'XOM', 'CVX', 'LIN', 'FCX', 'PLD', 'AMT', 'NEE', 'DUK'}
+             'XOM', 'CVX', 'LIN', 'FCX', 'PLD', 'AMT', 'NEE', 'DUK',
+             # 细分行业板块龙头（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
+             'WDC', 'STX', 'APH', 'NOK', 'AVGO', 'LITE', 'TSM', 'ASML', 'HPE', 'CRM',
+             'EQIX', 'DLR', 'GDS', 'HWM', 'RTX', 'NOC', 'LMT', 'GILT', 'IRDM', 'ECHO', 'GSAT',
+             # 细分行业板块龙头（机器人/军工/石油/天然气/黄金/生物医药/消费）
+             'SONY', 'AXON', 'RKLB', 'TTE', 'PSX', 'SHEL', 'COP', 'NEM', 'FNV', 'GFI',
+             'MRK', 'ABBV', 'PFE', 'PEP', 'KO'}
 
 # 美股个股/币安映射代币所属板块（GICS 板块，中文）。QQQ/TQQQ 等指数 ETF 不在此列。
 US_SECTORS = {
     # 资讯科技
-    'AAPL': '资讯科技', 'NVDA': '资讯科技', 'MSFT': '资讯科技', 'MU': '资讯科技',
-    # 资讯科技（币安 bStocks 映射代币：半导体/存储）
-    'MUU': '资讯科技', 'MUB': '资讯科技', 'MUUB': '资讯科技', 'MUBD': '资讯科技',
-    'SNDKB': '资讯科技', 'SKHYB': '资讯科技', 'NVDAB': '资讯科技', 'CXMT': '资讯科技',
+    'AAPL': '资讯科技', 'NVDA': '资讯科技', 'MSFT': '资讯科技',
+    # 存储（美光/闪迪/SK海力士/长鑫存储，含 bStocks 映射代币）
+    'MU': '存储', 'MUU': '存储', 'MUB': '存储', 'MUUB': '存储', 'MUBD': '存储',
+    'SNDKB': '存储', 'SKHYB': '存储', 'SNDK': '存储', 'SKHYNIX': '存储', 'CXMT': '存储',
+    # AI芯片（英伟达 bStocks 映射代币）
+    'NVDAB': 'AI芯片',
     # 通讯服务
     'GOOGL': '通讯服务', 'META': '通讯服务',
     # 非必需消费
@@ -56,6 +64,24 @@ US_SECTORS = {
     'PLD': '房地产', 'AMT': '房地产',
     # 公用事业
     'NEE': '公用事业', 'DUK': '公用事业',
+    # 细分行业板块（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
+    'WDC': '存储', 'STX': '存储',
+    'APH': '光通信', 'NOK': '光通信', 'LITE': '光通信',
+    'AVGO': 'AI芯片',
+    'TSM': '半导体', 'ASML': '半导体',
+    'HPE': '云计算', 'CRM': '云计算',
+    'EQIX': '数据中心', 'DLR': '数据中心', 'GDS': '数据中心',
+    'HWM': '航天', 'RTX': '航天', 'NOC': '航天', 'LMT': '航天',
+    'GILT': '卫星通信', 'IRDM': '卫星通信', 'ECHO': '卫星通信', 'GSAT': '卫星通信',
+    # 细分行业板块（机器人/军工/石油/天然气/黄金/生物医药）
+    'SONY': '机器人',
+    'AXON': '军工', 'RKLB': '军工',
+    'TTE': '石油', 'PSX': '石油', 'SHEL': '石油',
+    'COP': '天然气',
+    'NEM': '黄金', 'FNV': '黄金', 'GFI': '黄金',
+    'MRK': '生物医药', 'ABBV': '生物医药', 'PFE': '生物医药',
+    # 消费（并入必需消费，与 WMT/PG 同板块）
+    'PEP': '必需消费', 'KO': '必需消费',
 }
 
 
@@ -73,7 +99,9 @@ def us_sector(symbol):
 
 # 美股板块清单（固定顺序，供前端筛选下拉/chips 使用）
 US_SECTOR_LIST = ['资讯科技', '通讯服务', '非必需消费', '金融', '医疗保健', '工业',
-                  '必需消费', '能源', '原材料', '房地产', '公用事业']
+                  '必需消费', '能源', '原材料', '房地产', '公用事业',
+                  '存储', '光通信', 'AI芯片', '半导体', '云计算', '数据中心', '航天', '卫星通信',
+                  '机器人', '军工', '石油', '天然气', '黄金', '生物医药']
 
 
 def _num(v, field=''):
