@@ -573,6 +573,14 @@ US_STOCK_BASES = [
     # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
     'SONY', 'AXON', 'RKLB', 'TTE', 'PSX', 'SHEL', 'COP', 'NEM', 'FNV', 'GFI',
     'MRK', 'ABBV', 'PFE', 'PEP', 'KO',
+    # 2026-09 增量回测一轮（Yahoo 1h，存储/光通信/AI芯片/云计算/数据中心/航天/卫星通信/机器人/军工/石油/天然气/黄金/生物医药/消费）
+    'RMBS', 'SIMO', 'MRVL', 'GLW', 'COHR', 'CIEN', 'ALAB', 'CRDO',
+    'AMD', 'INTC', 'LRCX', 'AMAT', 'TXN', 'ORCL', 'BABA', 'IBM', 'NOW',
+    'MCHP', 'SMCI', 'GE', 'ASTS', 'SATL', 'TSAT', 'VSAT', 'STM', 'CGNX',
+    'GD', 'TDG', 'MPC', 'CNQ', 'VLO', 'WMB', 'KMI', 'TRGP', 'OKE', 'OXY', 'DVN',
+    'AEM', 'WPM', 'AU', 'KGC', 'RGLD', 'CDE',
+    'AMGN', 'TMO', 'ABT', 'GILD', 'NVO',
+    'COST', 'HD', 'DIS', 'MCD', 'TJX',
 ]
 
 # ==================== 模拟现货交易 ====================
@@ -893,6 +901,7 @@ def futures():
                               timeframe_options=TIMEFRAME_OPTIONS, strategies=STRATEGIES,
                               leverage=leverage, api_key=api_key, api_secret=api_secret, network=network,
                               tasks=None, running_count=0, cur_task_id=None,
+                              best_params=_composite_best_params(),
                               alert_email=(_auth.get_email_config(session.get('user', '')) or {}).get('email'),
                               mark_price=None, positions=None, open_orders=None, account_balance=None)
 
@@ -1073,6 +1082,7 @@ def futures():
                           tasks=tasks,
                           running_count=len(engines),
                           cur_task_id=cur_task_id,
+                          best_params=_composite_best_params(),
                           api_key=api_key, api_secret=api_secret)
 
 
@@ -1799,6 +1809,21 @@ COMPOSITE_NAMES = {
     'TTE': 'TotalEnergies', 'PSX': 'Phillips 66', 'SHEL': '壳牌', 'COP': '康菲石油',
     'NEM': '纽蒙特', 'FNV': 'Franco-Nevada', 'GFI': '金田',
     'MRK': '默沙东', 'ABBV': '艾伯维', 'PFE': '辉瑞', 'PEP': '百事', 'KO': '可口可乐',
+    # 2026-09 增量回测一轮（Yahoo 1h）
+    'RMBS': 'Rambus', 'SIMO': '慧荣科技',
+    'MRVL': '迈威尔科技', 'GLW': '康宁', 'COHR': 'Coherent', 'CIEN': 'Ciena科技',
+    'ALAB': 'Astera Labs', 'CRDO': 'Credo',
+    'AMD': '超威半导体', 'INTC': '英特尔', 'LRCX': '拉姆研究', 'AMAT': '应用材料', 'TXN': '德州仪器',
+    'ORCL': '甲骨文', 'BABA': '阿里巴巴', 'IBM': 'IBM', 'NOW': '赛富时',
+    'MCHP': '微芯科技', 'SMCI': '超微电脑', 'GE': 'GE航空航天', 'ASTS': 'AST SpaceMobile',
+    'SATL': 'Satellogic', 'TSAT': 'Telesat', 'VSAT': '卫讯公司',
+    'STM': '意法半导体', 'CGNX': '康耐视', 'GD': '通用动力', 'TDG': 'TransDigm',
+    'MPC': '马拉松原油', 'CNQ': '加拿大自然资源', 'VLO': '瓦莱罗能源', 'WMB': '威廉姆斯',
+    'KMI': '金德摩根', 'TRGP': 'Targa Resources', 'OKE': '欧尼克', 'OXY': '西方石油', 'DVN': '戴文能源',
+    'AEM': '伊格尔矿业', 'WPM': '惠顿贵金属', 'AU': 'AngloGold', 'KGC': '金罗斯黄金',
+    'RGLD': '皇家黄金', 'CDE': '科尔黛伦矿业',
+    'AMGN': '安进', 'TMO': '赛默飞世尔', 'ABT': '雅培', 'GILD': '吉利德科学', 'NVO': '诺和诺德',
+    'COST': '开市客', 'HD': '家得宝', 'DIS': '迪士尼', 'MCD': '麦当劳', 'TJX': 'TJX',
 }
 
 
@@ -2479,6 +2504,7 @@ def auto():
                               message=None, running=False, status=None, symbols=spot_symbol_list(),
                               timeframe_options=TIMEFRAME_OPTIONS, strategies=STRATEGIES,
                               tasks=None, running_count=0, cur_task_id=None,
+                              best_params=_composite_best_params(),
                               api_key=api_key, api_secret=api_secret)
 
     # 复用缓存 DemoTrader，避免每次启动任务都重建 ccxt 触发 load_markets 拖慢
@@ -2613,6 +2639,7 @@ def auto():
                           tasks=tasks,
                           running_count=len(engines),
                           cur_task_id=cur_task_id,
+                          best_params=_composite_best_params(),
                           api_key=api_key, api_secret=api_secret,
                           account_balance=account_balance)
 

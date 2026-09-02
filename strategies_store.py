@@ -33,7 +33,15 @@ US_TOKENS = {'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'MU', 'MUU
              'EQIX', 'DLR', 'GDS', 'HWM', 'RTX', 'NOC', 'LMT', 'GILT', 'IRDM', 'ECHO', 'GSAT',
              # 细分行业板块龙头（机器人/军工/石油/天然气/黄金/生物医药/消费）
              'SONY', 'AXON', 'RKLB', 'TTE', 'PSX', 'SHEL', 'COP', 'NEM', 'FNV', 'GFI',
-             'MRK', 'ABBV', 'PFE', 'PEP', 'KO'}
+             'MRK', 'ABBV', 'PFE', 'PEP', 'KO',
+             # 2026-09 增量回测一轮（Yahoo 1h，存储/光通信/AI芯片/云计算/数据中心/航天/卫星通信/机器人/军工/石油/天然气/黄金/生物医药/消费）
+             'RMBS', 'SIMO', 'MRVL', 'GLW', 'COHR', 'CIEN', 'ALAB', 'CRDO',
+             'AMD', 'INTC', 'LRCX', 'AMAT', 'TXN', 'ORCL', 'BABA', 'IBM', 'NOW',
+             'MCHP', 'SMCI', 'GE', 'ASTS', 'SATL', 'TSAT', 'VSAT', 'STM', 'CGNX',
+             'GD', 'TDG', 'MPC', 'CNQ', 'VLO', 'WMB', 'KMI', 'TRGP', 'OKE', 'OXY', 'DVN',
+             'AEM', 'WPM', 'AU', 'KGC', 'RGLD', 'CDE',
+             'AMGN', 'TMO', 'ABT', 'GILD', 'NVO',
+             'COST', 'HD', 'DIS', 'MCD', 'TJX'}
 
 # 美股个股/币安映射代币所属板块（GICS 板块，中文）。QQQ/TQQQ 等指数 ETF 不在此列。
 US_SECTORS = {
@@ -82,6 +90,22 @@ US_SECTORS = {
     'MRK': '生物医药', 'ABBV': '生物医药', 'PFE': '生物医药',
     # 消费（并入必需消费，与 WMT/PG 同板块）
     'PEP': '必需消费', 'KO': '必需消费',
+    # 2026-09 增量回测一轮（Yahoo 1h）新增标的板块
+    'RMBS': '存储', 'SIMO': '存储',
+    'MRVL': '光通信', 'GLW': '光通信', 'COHR': '光通信', 'CIEN': '光通信',
+    'ALAB': '光通信', 'CRDO': '光通信',
+    'AMD': 'AI芯片', 'INTC': 'AI芯片', 'LRCX': 'AI芯片', 'AMAT': 'AI芯片', 'TXN': 'AI芯片',
+    'ORCL': '云计算', 'BABA': '云计算', 'IBM': '云计算', 'NOW': '云计算',
+    'MCHP': '数据中心', 'SMCI': '数据中心',
+    'GE': '航天', 'ASTS': '航天',
+    'SATL': '卫星通信', 'TSAT': '卫星通信', 'VSAT': '卫星通信',
+    'STM': '机器人', 'CGNX': '机器人',
+    'GD': '军工', 'TDG': '军工',
+    'MPC': '石油', 'CNQ': '石油', 'VLO': '石油', 'WMB': '石油',
+    'KMI': '天然气', 'TRGP': '天然气', 'OKE': '天然气', 'OXY': '天然气', 'DVN': '天然气',
+    'AEM': '黄金', 'WPM': '黄金', 'AU': '黄金', 'KGC': '黄金', 'RGLD': '黄金', 'CDE': '黄金',
+    'AMGN': '生物医药', 'TMO': '生物医药', 'ABT': '生物医药', 'GILD': '生物医药', 'NVO': '生物医药',
+    'COST': '必需消费', 'HD': '必需消费', 'DIS': '非必需消费', 'MCD': '非必需消费', 'TJX': '非必需消费',
 }
 
 

@@ -244,6 +244,7 @@
 <script>
 // ---- 交易对可搜索下拉（模糊匹配，不区分大小写） ----
 var SYM_ALL = {{ symbols | tojson }};
+var BEST = {{ best_params | tojson }};
 var symInput = document.getElementById('sym-input');
 var symList = document.getElementById('sym-list');
 function symFilter() {
@@ -254,14 +255,39 @@ function symFilter() {
         : '<div class="sym-empty">无匹配交易对</div>';
     symList.style.display = 'block';
 }
+// 选择币种后，自动把参数填充为该币种的最优策略（策略组合/周期/止盈止损/仅做多）
+function applyBestParams(symbol) {
+    var base = (symbol || '').split('/')[0].toUpperCase();
+    var bp = BEST[base];
+    if (!bp) return;
+    var stratNames = (bp.strategies || []).map(function (s) { return String(s).toUpperCase(); });
+    document.querySelectorAll('#standard-strategies input[name^="strategy_"]').forEach(function (c) {
+        var stratName = c.name.replace('strategy_', '').toUpperCase();
+        c.checked = stratNames.indexOf(stratName) >= 0;
+    });
+    var tfSel = document.querySelector('select[name="timeframe"]');
+    if (tfSel && bp.timeframe) tfSel.value = bp.timeframe;
+    var tp = document.querySelector('input[name="take_profit_pct"]');
+    if (tp) tp.value = (bp.take_profit > 0) ? bp.take_profit : '';
+    var sl = document.querySelector('input[name="stop_loss_pct"]');
+    if (sl) sl.value = (bp.stop_loss > 0) ? bp.stop_loss : '';
+    var lo = document.querySelector('input[name="long_only"]');
+    if (lo) lo.checked = !bp.allow_short;
+}
 symList.addEventListener('click', function (e) {
     var opt = e.target.closest('.sym-opt');
     if (!opt) return;
     symInput.value = opt.dataset.v;
+    applyBestParams(opt.dataset.v);
     symList.style.display = 'none';
 });
 document.addEventListener('click', function (e) {
     if (!e.target.closest('.sym-combo')) symList.style.display = 'none';
+});
+// 手动输入/已运行任务切换到该币种时同样回填最优策略
+symInput.addEventListener('input', function () {
+    var v = symInput.value.trim();
+    if (v) applyBestParams(v);
 });
 </script>
 <script>
