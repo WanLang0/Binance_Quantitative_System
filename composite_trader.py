@@ -364,6 +364,7 @@ class CompositeTrader:
                 'last_trade': None,
                 'last_error': None,
                 'shares': 0,                        # 优先匹配：当前占用的份额数
+                'share_cap': round(unit, 8) if prioritize else 0.0,  # 优先匹配：一份份额的资金额度，开仓金额硬上限
             })
         # 优先匹配：写入份额池总量与可用数（关闭时清零）
         self.status['prioritize'] = bool(prioritize)
@@ -372,8 +373,15 @@ class CompositeTrader:
         return symbols
 
     def _inv(self, s):
-        """币对当前实际投入金额 = 复利池 × 安全系数(95%)"""
-        return (s.get('buy_balance') or 0.0) * (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
+        """币对当前实际投入金额 = 复利池 × 安全系数(95%)。
+        优先匹配模式下，开仓金额受『一份份额额度 × 安全系数』硬性封顶，避免复利池滚大后
+        名义价值超过该杠杆下允许的最大持仓而触发币安 -2027。"""
+        amount = (s.get('buy_balance') or 0.0) * (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
+        if self.status.get('prioritize'):
+            cap = (s.get('share_cap') or 0.0) * (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
+            if cap > 0:
+                amount = min(amount, cap)
+        return amount
 
     # ---------- 量化优先匹配：份额授予/回收 ----------
     def _grant_share(self, s):
@@ -427,18 +435,25 @@ class CompositeTrader:
     def _refresh_positions_and_balance(self):
         """一次性刷新全部币对真实持仓方向/张数/均价/未实现盈亏/强平价 与账户 USDT 余额"""
         try:
-            bal_list, _ = self.trader.get_balance()
-            if bal_list:
+            bal_list, berr = self.trader.get_balance()
+            if berr:
+                self._log(f"刷新账户余额失败(保留上次余额): {berr}")
+            elif bal_list:
                 usdt_asset = next((b for b in bal_list if b['asset'] == 'USDT'), None)
                 self.status['account_balance'] = round(float(usdt_asset['free']) if usdt_asset else 0.0, 2)
         except Exception:
             pass
-        # 批量拉所有持仓（一次请求）
+        # 批量拉所有持仓（一次请求）；接口失败时本轮直接跳过持仓同步，
+        # 避免把"API异常返回空"误判为"持仓已被外部平仓"造成误告警与状态误清
         positions = []
         try:
-            positions, _ = self.trader.get_positions()
-        except Exception:
-            positions = []
+            positions, perr = self.trader.get_positions()
+            if perr:
+                self._log(f"刷新持仓失败(本轮跳过持仓同步): {perr}")
+                return
+        except Exception as e:
+            self._log(f"刷新持仓异常(本轮跳过持仓同步): {e}")
+            return
         pos_by_symbol = {}
         for p in positions:
             pos_by_symbol[p.get('symbol')] = p
@@ -463,8 +478,12 @@ class CompositeTrader:
                 s['liquidation_price'] = 0.0
                 s['margin'] = 0.0
             else:
+                # 接管外部已有持仓（非本任务开仓，如手动开的仓/上次任务遗留）时记录一次，便于排查
+                if s.get('side') == 'none' and pos.get('contracts', 0) > 0:
+                    self._log(f"同步到外部已有持仓({sym} {pos['contracts']}张)，已接管监控")
                 s['position'] = pos['contracts']
-                s['side'] = pos.get('side', 'long')
+                # ccxt 在对冲模式/测试网下可能返回 side=None，兜底按多头处理，避免 None 参与信号分支判断
+                s['side'] = pos.get('side') or 'long'
                 s['entry_price'] = pos.get('entry_price', 0.0) or 0.0
                 s['unrealized_pnl'] = pos.get('unrealized_pnl', 0.0) or 0.0
                 s['liquidation_price'] = pos.get('liquidation_price', 0.0) or 0.0

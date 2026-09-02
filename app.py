@@ -841,7 +841,7 @@ def futures():
     api_key = (form.get("api_key") or session.get("futures_api_key", DEFAULT_FUTURES_API_KEY)).strip()
     api_secret = (form.get("api_secret") or session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET)).strip()
     leverage = _to_int(form.get("leverage"), session.get("futures_leverage", FUTURES_LEVERAGE))
-    # 网络切换：testnet(默认)/mainnet(主网真实资金)。测试网无 TQQQ 等美股永续
+    # 网络切换：testnet(默认)/mainnet(主网真实资金)。币种是否在当前网络存在交由 _market_check 精准校验
     network = form.get("network") or session.get("futures_network", "testnet")
     testnet = network != "mainnet"
     error = None
@@ -916,9 +916,7 @@ def futures():
         stop_pct = _to_float(form.get("stop_pct"), 5) / 100  # 断线保护止损比例
         take_profit_pct = _to_float(form.get("take_profit_pct"), 0) / 100
         stop_loss_pct = _to_float(form.get("stop_loss_pct"), 0) / 100
-        # 测试网只有主流币永续，无 TQQQ 等美股合约
-        if testnet and ":USDT:USDT" in symbol:
-            return redirect(url_for('futures', _error=f"测试网无 {symbol} 合约，请把网络切换为「主网」或选择币种合约"))
+        # 币种是否在当前所选网络存在且可交易，交由 _fut_start_task 内的 _market_check 精准校验
         if mode == 'grid':
             step_pct = _to_float(form.get("grid_step"), 1) / 100
             max_levels = _to_int(form.get("grid_max_levels"), 12)
@@ -944,8 +942,7 @@ def futures():
         task = next((t for t in AutoFutures.list_tasks() if t.get('id') == tid), None)
         if not task:
             return redirect(url_for('futures', _error=f"任务不存在或已丢失: {tid}"))
-        if testnet and ":USDT:USDT" in task['symbol']:
-            return redirect(url_for('futures', _error=f"测试网无 {task['symbol']} 合约，请把网络切换为「主网」后恢复"))
+        # 币种是否在当前所选网络存在且可交易，交由 _composite/_fut_start_task 内的 _market_check 精准校验
         task_lev = int(task.get('leverage', 5))
         sp = float(task.get('stop_pct', 0) or 0)
         tpp = float(task.get('take_profit_pct', 0) or 0)
@@ -2033,10 +2030,7 @@ def composite():
                 'allow_short': (raw_short[i] == '1') if i < len(raw_short) else False,
                 'long_only': (raw_short[i] != '1') if i < len(raw_short) else True,
             })
-        if testnet:
-            for cfg in symbol_configs:
-                if ":USDT:USDT" in cfg['symbol']:
-                    return redirect(url_for('composite', _error=f"测试网无 {cfg['symbol']} 合约，请把网络切换为「主网」"))
+        # 币种是否在当前所选网络存在且可交易，交由 _composite_start_task 内的 _market_check 精准校验
         ok, msg = _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,
                                         api_key, api_secret, shared_trader, leverage, testnet,
                                         prioritize=prioritize, share_count=share_count)
@@ -2047,10 +2041,7 @@ def composite():
         task = next((t for t in CompositeTrader.list_tasks() if t.get('id') == tid), None)
         if not task:
             return redirect(url_for('composite', _error=f"任务不存在或已丢失: {tid}"))
-        if testnet:
-            for cfg in task.get('symbols') or []:
-                if ":USDT:USDT" in cfg.get('symbol', ''):
-                    return redirect(url_for('composite', _error=f"测试网无 {cfg.get('symbol')} 合约，请把网络切换为「主网」后恢复"))
+        # 币种是否在当前所选网络存在且可交易，交由 _composite_start_task 内的 _market_check 精准校验
         task_lev = int(task.get('leverage', 5))
         task_buy_pct = float(task.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
         ok, msg = _composite_start_task(task.get('name', '美股综合量化任务'),

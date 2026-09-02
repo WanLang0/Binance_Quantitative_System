@@ -271,12 +271,17 @@ class AutoFutures:
             prev_pos = self.status.get('position', 0)
             prev_side = self.status.get('side', 'none')
             # 余额
-            bal_list, _ = self.trader.get_balance()
-            if bal_list:
+            bal_list, berr = self.trader.get_balance()
+            if berr:
+                self._log(f"刷新账户余额失败(保留上次余额): {berr}")
+            elif bal_list:
                 usdt_asset = next((b for b in bal_list if b['asset'] == 'USDT'), None)
                 self.status['account_balance'] = round(float(usdt_asset['free']) if usdt_asset else 0.0, 2)
-            # 持仓
-            positions, _ = self.trader.get_positions(symbol)
+            # 持仓：接口失败时本轮跳过，避免"API异常返回空"被误判为"持仓已被外部平仓"
+            positions, perr = self.trader.get_positions(symbol)
+            if perr:
+                self._log(f"刷新持仓失败(本轮跳过持仓同步): {perr}")
+                return
             pos = next((p for p in positions if p.get('symbol') == symbol), None)
             if not pos or pos.get('contracts', 0) <= 0:
                 # 外部平仓检测：引擎认为有仓但交易所已无仓（多为止损保护单触发）
