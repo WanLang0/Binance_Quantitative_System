@@ -747,6 +747,31 @@ def _market_check(trader, symbol, market_label):
         return f"{symbol} 不在币安{market_label}市场，无法启动（{e}）"
 
 
+def _check_avail_balance(trader, required_usdt, testnet, label):
+    """启动前校验合约账户可用余额是否足够（仅主网真实资金需严格校验；测试网虚拟余额不阻断）。
+
+    返回 None=通过，字符串=错误提示（启动前拦截）。
+    required_usdt: 任务需要占用的资金（合约任务=qty_usdt，综合任务=total_fund）。
+    """
+    if trader is None:
+        return None
+    if testnet:
+        # 测试网为虚拟余额，即使不足也不阻断，避免误报（币安测试网会不定期重置/不足）
+        return None
+    try:
+        bal_list, err = trader.get_balance()
+        if err:
+            return None  # 余额查询失败不阻断，交由下单时币安的真实校验兜底
+        usdt = next((b for b in bal_list if b.get('asset') == 'USDT'), None)
+        avail = float(usdt.get('free', 0)) if usdt else 0.0
+        if avail < float(required_usdt or 0):
+            return (f"主网可用余额不足：当前可用 {avail:.2f} USDT，"
+                    f"任务需占用 {float(required_usdt):.2f} USDT（含杠杆占用），请先充值或调低任务资金")
+        return None
+    except Exception:
+        return None
+
+
 # ==================== 自动合约：多实例任务管理 ====================
 
 def _fut_running_engines():
@@ -805,11 +830,18 @@ def _fut_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, ind
     mkt_err = _market_check(shared_trader, symbol, '合约')
     if mkt_err:
         return False, mkt_err
-    # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）；失败不阻断
+    # 主网真实资金：启动前校验可用余额是否足够（测试网虚拟余额不校验，避免误报）
+    bal_err = _check_avail_balance(shared_trader, float(qty_usdt), testnet, '自动合约')
+    if bal_err:
+        return False, bal_err
+    # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）。返回 False 表示明确拒绝(如未开合约权限)
     try:
-        shared_trader.sign_tradfi_agreement()
-    except Exception:
-        pass
+        _, signed = shared_trader.sign_tradfi_agreement()
+    except Exception as e:
+        signed = True  # 调用异常不阻断，交由下单时 -4411 自动补签兜底
+        print(f"[合约启动] TradFi 协议签署调用异常(不阻断): {e}")
+    if signed is False:
+        return False, "TradFi-Perps 协议签署被拒绝：请确认已开通合约权限、API Key 已加入 IP 白名单后重试"
     eng = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
     if mode == 'grid':
         ok, msg = eng.start(symbol, timeframe, {}, qty_usdt, interval,
@@ -1910,11 +1942,18 @@ def _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,
             mkt_err = _market_check(shared_trader, sym, '合约')
             if mkt_err:
                 return False, mkt_err
-        # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）；失败不阻断
+        # 主网真实资金：启动前校验可用余额是否足够（测试网虚拟余额不校验，避免误报）
+        bal_err = _check_avail_balance(shared_trader, float(total_fund), testnet, '综合量化')
+        if bal_err:
+            return False, bal_err
+        # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）。返回 False 表示明确拒绝(如未开合约权限)
         try:
-            shared_trader.sign_tradfi_agreement()
-        except Exception:
-            pass
+            _, signed = shared_trader.sign_tradfi_agreement()
+        except Exception as e:
+            signed = True  # 调用异常不阻断，交由下单时 -4411 自动补签兜底
+            print(f"[综合启动] TradFi 协议签署调用异常(不阻断): {e}")
+        if signed is False:
+            return False, "TradFi-Perps 协议签署被拒绝：请确认已开通合约权限、API Key 已加入 IP 白名单后重试"
     eng = CompositeTrader(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
     ok, msg = eng.start(name, total_fund, symbol_configs, interval, buy_pct, task_id=task_id,
                         prioritize=prioritize, share_count=share_count)

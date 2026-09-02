@@ -194,7 +194,19 @@ class FuturesTrader:
                 order = self.exchange.create_order(symbol, 'market', side, quantity, None, params)
             return order, None
         except Exception as e:
-            return None, str(e)
+            # 美股代币永续：若提示未签署 TradFi 协议(-4411)，自动补签一次并重试，避免首单失败
+            msg = str(e)
+            if '-4411' in msg:
+                try:
+                    self.sign_tradfi_agreement()
+                    if order_type == 'limit' and price:
+                        order = self.exchange.create_order(symbol, 'limit', side, quantity, price, params)
+                    else:
+                        order = self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+                    return order, None
+                except Exception as e2:
+                    return None, str(e2)
+            return None, msg
 
     def cancel_order(self, order_id, symbol):
         try:
@@ -308,11 +320,15 @@ class FuturesTrader:
     def sign_tradfi_agreement(self):
         """签署币安 TradFi-Perps（美股/商品等传统金融永续）协议，避免下单报 -4411。
 
-        一次性操作，对普通加密货币永续无影响。返回 (响应文本, 错误)。
+        一次性操作，对普通加密货币永续无影响。
+        返回 (响应, 是否可交易)。bool 表示「该校验可放行」：
+          已签署/签署成功 → True；网络失败暂时无法判断 → True（不阻断，交由下单时兜底补签）；
+          明确拒绝（如无权限）→ False。
         """
         import hmac
         import hashlib
         import urllib.request
+        import urllib.error
         base = 'https://testnet.binancefuture.com' if self.testnet else 'https://fapi.binance.com'
         endpoint = '/fapi/v1/stock/contract'
         timestamp = int(time.time() * 1000)
@@ -324,6 +340,17 @@ class FuturesTrader:
         req.add_header('X-MBX-APIKEY', self.api_key)
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.read().decode('utf-8'), None
+                return resp.read().decode('utf-8'), True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', 'ignore')
+            msg = (body or str(e)).lower()
+            # 已签署过视为放行（币安对重复签署返回 -4099 / "already signed" / "user has signed" 等）
+            if '-4099' in msg or 'already signed' in msg or 'user has signed' in msg or 'already_sign' in msg:
+                return body, True
+            if e.code in (400, 401, 403):
+                # 权限/鉴权问题：明确不可交易（如未开通合约权限、IP 未白名单）
+                return body, False
+            # 其余网络/服务错误：暂时无法判断，不阻断（下单时 -4411 会自动补签兜底）
+            return body, True
         except Exception as e:
-            return None, str(e)
+            return None, True
