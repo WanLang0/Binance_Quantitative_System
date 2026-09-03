@@ -348,11 +348,13 @@ function updateStatus(data) {
         side.textContent = (s === 'long') ? '做多' : (s === 'short') ? '做空' : '空仓';
         side.className = 'val ' + s;
     }
-    // 未实现盈亏
+    // 未实现盈亏（含收益率%：盈亏/保证金）
     var upnl = document.getElementById('st-upnl');
     if (upnl) {
         var u = Number(data.unrealized_pnl);
-        upnl.textContent = data.unrealized_pnl != null ? (u >= 0 ? '+ ' : '- ') + Math.abs(u).toFixed(2) : '—';
+        var pct = Number(data.pnl_pct);
+        var pctTxt = (Number(data.position) > 0 && data.pnl_pct != null) ? ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)' : '';
+        upnl.textContent = data.unrealized_pnl != null ? (u >= 0 ? '+ ' : '- ') + Math.abs(u).toFixed(2) + pctTxt : '—';
     }
     var sig = document.getElementById('st-signal');
     if (sig) {

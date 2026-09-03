@@ -844,11 +844,12 @@ def _fut_start_task(symbol, timeframe, qty_usdt, interval, mode, strategies, ind
         return False, bal_err
     # 交易美股代币永续前签署 TradFi-Perps 协议（避免下单报 -4411）。返回 False 表示明确拒绝(如未开合约权限)
     try:
-        _, signed = shared_trader.sign_tradfi_agreement()
+        resp_body, signed = shared_trader.sign_tradfi_agreement()
     except Exception as e:
-        signed = True  # 调用异常不阻断，交由下单时 -4411 自动补签兜底
+        resp_body, signed = None, True  # 调用异常不阻断，交由下单时 -4411 自动补签兜底
         print(f"[合约启动] TradFi 协议签署调用异常(不阻断): {e}")
     if signed is False:
+        print(f"[合约启动] TradFi 协议签署被拒，交易所原始返回: {resp_body}")
         return False, "TradFi-Perps 协议签署被拒绝：请确认已开通合约权限、API Key 已加入 IP 白名单后重试"
     eng = AutoFutures(api_key, api_secret, trader=shared_trader, leverage=leverage, testnet=testnet)
     if mode == 'grid':
@@ -2217,7 +2218,7 @@ def composite_status():
                         'allocated_fund': allocated, 'buy_balance': allocated,
                         'signal': '—', 'side': 'none', 'position': 0,
                         'entry_price': 0.0, 'last_price': 0.0,
-                        'unrealized_pnl': 0.0, 'buy_count': 0, 'sell_count': 0,
+                        'unrealized_pnl': 0.0, 'pnl_pct': 0.0, 'buy_count': 0, 'sell_count': 0,
                     })
                 cur = {**rec, 'running': False, 'symbols': syms,
                        'log': _composite_log_lines(tid) or ['（该任务暂无日志）']}

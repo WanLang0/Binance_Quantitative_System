@@ -347,6 +347,9 @@ class FuturesTrader:
             # 已签署过视为放行（币安对重复签署返回 -4099 / "already signed" / "user has signed" 等）
             if '-4099' in msg or 'already signed' in msg or 'user has signed' in msg or 'already_sign' in msg:
                 return body, True
+            # 时间戳偏移(-1021)属临时时钟问题，非权限拒绝，不阻断启动
+            if '-1021' in msg:
+                return body, True
             if e.code in (400, 401, 403):
                 # 权限/鉴权问题：明确不可交易（如未开通合约权限、IP 未白名单）
                 return body, False

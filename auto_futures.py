@@ -78,6 +78,7 @@ class AutoFutures:
             'last_price': 0.0,          # 最近价格
             'signal': '等待',           # 最近信号
             'unrealized_pnl': 0.0,      # 未实现盈亏（USDT）
+            'pnl_pct': 0.0,             # 未实现盈亏收益率%（盈亏/保证金）
             'liquidation_price': 0.0,   # 强平价
             'margin': 0.0,              # 占用保证金
             'account_balance': 0.0,     # 账户可用 USDT 余额
@@ -306,8 +307,17 @@ class AutoFutures:
                 self.status['side'] = pos.get('side', 'long')
                 self.status['entry_price'] = pos.get('entry_price', 0.0) or 0.0
                 self.status['unrealized_pnl'] = pos.get('unrealized_pnl', 0.0) or 0.0
+                _mgn = pos.get('margin', 0.0) or 0.0
+                # 收益率% = 未实现盈亏 / 投入保证金；投入保证金 = 开仓名义价值 / 杠杆
+                # 开仓名义价值 = 开仓均价 × 张数 × 合约面值(contract_size)。不能用交易所返回的 margin，
+                # 在美股/股票类合约上该值异常偏大(≈全账户余额)，会把收益率严重稀释失真
+                _csize = pos.get('contract_size', 1) or 1
+                _lev = pos.get('leverage', self.leverage) or self.leverage
+                _cost = (self.status.get('entry_price', 0.0) or 0.0) * self.status.get('position', 0) * _csize
+                _base = (_cost / _lev) if _lev > 0 else 0.0
+                self.status['pnl_pct'] = round(self.status['unrealized_pnl'] / _base * 100, 2) if _base > 0 else 0.0
                 self.status['liquidation_price'] = pos.get('liquidation_price', 0.0) or 0.0
-                self.status['margin'] = pos.get('margin', 0.0) or 0.0
+                self.status['margin'] = _mgn
                 # 保护单自愈：有持仓但保护单缺失（如服务重启/挂单被撤）时自动补挂
                 if (self.status.get('stop_pct', 0) > 0 and not self.status.get('stop_order_id')
                         and self.status.get('running') and self.status.get('mode') == 'standard'):

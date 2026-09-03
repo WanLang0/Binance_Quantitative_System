@@ -357,6 +357,7 @@ class CompositeTrader:
                 'last_close': 0.0,
                 'signal': '等待',
                 'unrealized_pnl': 0.0,
+                'pnl_pct': 0.0,
                 'liquidation_price': 0.0,
                 'margin': 0.0,
                 'buy_count': 0,
@@ -486,8 +487,17 @@ class CompositeTrader:
                 s['side'] = pos.get('side') or 'long'
                 s['entry_price'] = pos.get('entry_price', 0.0) or 0.0
                 s['unrealized_pnl'] = pos.get('unrealized_pnl', 0.0) or 0.0
+                _mgn = pos.get('margin', 0.0) or 0.0
+                # 收益率% = 未实现盈亏 / 投入保证金；投入保证金 = 开仓名义价值 / 杠杆
+                # 开仓名义价值 = 开仓均价 × 张数 × 合约面值(contract_size)。不能用交易所返回的 margin，
+                # 在美股/股票类合约上该值异常偏大(≈全账户余额)，会把收益率严重稀释失真
+                _csize = pos.get('contract_size', 1) or 1
+                _lev = pos.get('leverage', self.leverage) or self.leverage
+                _cost = (s.get('entry_price', 0.0) or 0.0) * s.get('position', 0) * _csize
+                _base = (_cost / _lev) if _lev > 0 else 0.0
+                s['pnl_pct'] = round(s['unrealized_pnl'] / _base * 100, 2) if _base > 0 else 0.0
                 s['liquidation_price'] = pos.get('liquidation_price', 0.0) or 0.0
-                s['margin'] = pos.get('margin', 0.0) or 0.0
+                s['margin'] = _mgn
 
     # ---------- 信号计算 ----------
     def _compute_signal(self, s):

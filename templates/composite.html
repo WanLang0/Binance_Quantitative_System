@@ -639,7 +639,11 @@ function updateStatus(data) {
         if (cells[9]) { cells[9].textContent = sideText(s.side); cells[9].className = (s.side === 'long' ? 'pos' : (s.side === 'short' ? 'neg' : 'muted')); }
         if (cells[10]) cells[10].textContent = s.position || 0;
         if (cells[11]) cells[11].textContent = s.entry_price ? Number(s.entry_price).toFixed(4) : '—';
-        if (cells[12]) cells[12].textContent = (s.unrealized_pnl != null ? (Number(s.unrealized_pnl) >= 0 ? '+' : '') + Number(s.unrealized_pnl).toFixed(2) : '0.00') + 'U';
+        if (cells[12]) {
+            var pv = s.unrealized_pnl != null ? Number(s.unrealized_pnl) : 0;
+            var pp = s.pnl_pct != null ? Number(s.pnl_pct) : 0;
+            cells[12].textContent = (pv >= 0 ? '+' : '') + pv.toFixed(2) + 'U' + (Number(s.position) > 0 ? ' (' + (pp >= 0 ? '+' : '') + pp.toFixed(1) + '%)' : '');
+        }
         if (cells[13]) cells[13].textContent = (s.buy_count || 0) + '/' + (s.sell_count || 0);
     });
 
