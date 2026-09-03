@@ -23,6 +23,7 @@ import pandas as pd
 
 from indicators import TechnicalIndicators
 from backtest_engine import BacktestEngine
+from divergence_signals import compute_divergence_signals, find_divergence_name
 from futures_trader import FuturesTrader
 import mailer
 
@@ -57,6 +58,9 @@ def strategy_params(name):
     elif n == "双均线交叉":
         p.update({"ma_cross": True, "ma_cross_short": 10, "ma_cross_long": 30,
                   "ma_cross_periods": [10, 30]})
+    elif n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能"):
+        # 固定组合背离策略：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+        p.update({"macd": True, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9})
     return p
 
 
@@ -502,7 +506,9 @@ class CompositeTrader:
     # ---------- 信号计算 ----------
     def _compute_signal(self, s):
         """拉取该币对K线 → 计算指标 → 返回当前根信号（1=做多, -1=做空/平多, 0=无）
-        多策略 AND 逻辑：所有选中策略都满足才触发（单策略时与 OR 等价）。"""
+        多策略 AND 逻辑：所有选中策略都满足才触发（单策略时与 OR 等价）。
+        固定组合背离策略（macd+背离 / macd+背离+量能 / macd+背离+均线+量能）
+        走 divergence_signals 专用信号构造，与回测口径一致。"""
         sym, timeframe = s['symbol'], s['timeframe']
         strategies = s.get('strategies') or ([s['strategy']] if s.get('strategy') else ['EMA'])
         indicator_params = strategy_params_multi(strategies)
@@ -512,10 +518,20 @@ class CompositeTrader:
         df = pd.DataFrame(candles)
         df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
         df = df.set_index('timestamp')
-        df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
-        engine = BacktestEngine(timeframe=timeframe, signal_mode='and')
-        signals = engine.calculate_signals(df, indicator_params)
-        sig = int(signals.iloc[-1]) if not signals.empty else 0
+        # 固定组合背离策略：使用专用信号构造（与回测一致）
+        div_name = find_divergence_name(strategies)
+        if div_name:
+            dfd, signals = compute_divergence_signals(df, div_name)
+            if signals is None or signals.empty:
+                if not df.empty:
+                    s['last_close'] = float(df['close'].iloc[-1])
+                return 0, None
+            sig = int(signals.iloc[-1])
+        else:
+            df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
+            engine = BacktestEngine(timeframe=timeframe, signal_mode='and')
+            signals = engine.calculate_signals(df, indicator_params)
+            sig = int(signals.iloc[-1]) if not signals.empty else 0
         if not df.empty:
             s['last_close'] = float(df['close'].iloc[-1])
         return sig, None
@@ -548,14 +564,34 @@ class CompositeTrader:
         return None
 
     def _mail_trade(self, s, side, action, qty, price, extra=''):
-        """下单成功邮件通知"""
+        """下单成功邮件通知，包含任务名称与账户信息"""
         if not mailer.is_configured():
             return
-        body = (f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"品种: {s['symbol']}\n方向: {side}\n操作: {action}\n"
-                f"数量: {qty}\n价格: {price}\n"
-                + (f"备注: {extra}\n" if extra else ""))
-        subject = f"💰 币安量化实盘成交({side}): {s['symbol']} 近{price}"
+        st = self.status
+        task_id = self._task_id or '—'
+        task_name = st.get('name') or '—'
+        strategies = (s.get('strategy') or '、'.join(s.get('strategies') or []) or '—')
+        tf = s.get('timeframe') or '?'
+        sym_name = s.get('name') or s['symbol'].split('/')[0]
+        pos = s.get('position', 0) or 0
+        auth = s.get('leverage', self.leverage)
+        acct = st.get('account_balance', 0.0) or 0.0
+        alloc = s.get('allocated_fund', 0.0) or 0.0
+        buy_bal = s.get('buy_balance', 0.0) or 0.0
+        note = (f"备注: {extra}\n") if extra else ""
+        body = (
+            f"📋 量化任务: {task_name}（综合量化-{task_id}）\n"
+            f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"──────────── 交易明细 ────────────\n"
+            f"品种: {s['symbol']}（{sym_name}）\n周期: {tf}\n策略: {strategies}\n"
+            f"方向: {side}\n操作: {action}\n数量: {qty}\n价格: {price}\n"
+            f"{note}"
+            f"──────────── 账户信息 ────────────\n"
+            f"任务账户可用余额: {acct:.2f} USDT\n杠杆: {auth}x\n本币对分配资金: {alloc:.2f} USDT\n"
+            f"本币对复利资金: {buy_bal:.2f} USDT\n当前持仓张数: {pos}\n"
+            f"任务累计买入/卖出: {st.get('buy_count', 0)}/{st.get('sell_count', 0)} 次"
+        )
+        subject = f"💰 币安量化成交(综合|{task_id}|{side}): {s['symbol']} 近{price}"
         mailer.send_async(subject, body)
         self._log(f"已发送成交邮件: {s['symbol']} {side} {action}")
 

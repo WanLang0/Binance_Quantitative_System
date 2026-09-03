@@ -16,6 +16,7 @@ import pandas as pd
 from indicators import TechnicalIndicators
 from backtest_engine import BacktestEngine
 from futures_trader import FuturesTrader
+from divergence_signals import compute_divergence_signals, find_divergence_name
 import mailer
 
 
@@ -327,7 +328,7 @@ class AutoFutures:
             self.status['last_error'] = f"刷新持仓失败: {e}"
 
     # ---------- 信号计算 ----------
-    def _compute_signal(self, symbol, timeframe, indicator_params):
+    def _compute_signal(self, symbol, timeframe, indicator_params, strategies=None):
         """拉取K线 → 计算指标 → 返回当前根信号（1=做多, -1=做空/平多, 0=无）"""
         candles, err = self.trader.get_ohlcv(symbol, timeframe, limit=200)
         if err or not candles:
@@ -335,10 +336,20 @@ class AutoFutures:
         df = pd.DataFrame(candles)
         df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
         df = df.set_index('timestamp')
-        df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
-        engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
-        signals = engine.calculate_signals(df, indicator_params)
-        sig = int(signals.iloc[-1]) if not signals.empty else 0
+        # 固定组合背离策略：走专用信号构造（与回测口径严格一致）
+        div_name = find_divergence_name(strategies)
+        if div_name:
+            dfd, signals = compute_divergence_signals(df, div_name)
+            if signals is None or signals.empty:
+                if not df.empty:
+                    self.status['last_close'] = float(df['close'].iloc[-1])
+                return 0, df, None
+            sig = int(signals.iloc[-1])
+        else:
+            df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
+            engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
+            signals = engine.calculate_signals(df, indicator_params)
+            sig = int(signals.iloc[-1]) if not signals.empty else 0
         # 记录最近一根已收盘K线收盘价（供市价单3%偏差校验）
         if not df.empty:
             self.status['last_close'] = float(df['close'].iloc[-1])
@@ -377,14 +388,37 @@ class AutoFutures:
         return None
 
     def _mail_trade(self, symbol, side, action, qty, price, extra=''):
-        """下单成功邮件通知（开仓/平仓/止盈/止损均提示）"""
+        """下单成功邮件通知（开仓/平仓/止盈/止损均提示），包含任务名称与账户信息"""
         if not mailer.is_configured():
             return
-        body = (f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"品种: {symbol}\n方向: {side}\n操作: {action}\n"
-                f"数量: {qty}\n价格: {price}\n"
-                + (f"备注: {extra}\n" if extra else ""))
-        subject = f"💰 币安量化实盘成交({side}): {symbol} 近{price}"
+        st = self.status
+        mode = '网格' if st.get('mode') == 'grid' else '标准多策略(OR)'
+        tf = st.get('timeframe') or '?'
+        strategies = ' + '.join(st.get('strategies') or []) or '—'
+        task_id = self._task_id or '—'
+        lev = st.get('leverage', self.leverage) or self.leverage
+        buy_bal = st.get('buy_balance', 0.0) or 0.0
+        acct = st.get('account_balance', 0.0) or 0.0
+        pos = st.get('position', 0) or 0
+        avg = st.get('entry_price', 0.0) or 0.0
+        upnl = st.get('unrealized_pnl', 0.0) or 0.0
+        pnl_pct = st.get('pnl_pct', 0.0) or 0.0
+        mgn = st.get('margin', 0.0) or 0.0
+        note = (f"备注: {extra}\n") if extra else ""
+        body = (
+            f"📋 量化任务: 自动合约-{task_id}（{mode}）\n"
+            f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"──────────── 交易明细 ────────────\n"
+            f"品种: {symbol}\n周期: {tf}\n策略: {strategies}\n"
+            f"方向: {side}\n操作: {action}\n数量: {qty} 张\n价格: {price}\n"
+            f"{note}"
+            f"──────────── 账户信息 ────────────\n"
+            f"账户可用余额: {acct:.2f} USDT\n复利可用买入资金: {buy_bal:.2f} USDT\n"
+            f"杠杆: {lev}x\n当前持仓: {pos} 张（开仓均价 {avg:.6f}）\n"
+            f"未实现盈亏: {upnl:+.2f} USDT（{pnl_pct:+.2f}%）\n占用保证金: {mgn:.2f} USDT\n"
+            f"任务累计买入/卖出: {st.get('buy_count', 0)}/{st.get('sell_count', 0)} 次"
+        )
+        subject = f"💰 币安量化成交(合约|{task_id}|{side}): {symbol} 近{price}"
         mailer.send_async(subject, body)
         self._log(f"已发送成交邮件: {symbol} {side} {action}")
 
@@ -831,7 +865,7 @@ class AutoFutures:
 
         while not self._stop_event.is_set():
             try:
-                sig, df, err = self._compute_signal(symbol, timeframe, indicator_params)
+                sig, df, err = self._compute_signal(symbol, timeframe, indicator_params, self.status.get('strategies'))
                 if err:
                     self.status['last_error'] = err
                     self.status['consecutive_errors'] = self.status.get('consecutive_errors', 0) + 1

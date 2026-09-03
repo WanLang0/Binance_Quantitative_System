@@ -14,6 +14,7 @@ import pandas as pd
 
 from indicators import TechnicalIndicators
 from backtest_engine import BacktestEngine
+from divergence_signals import compute_divergence_signals, find_divergence_name, any_divergence_variant
 from demo_trader import DemoTrader
 import mailer
 
@@ -329,19 +330,31 @@ class AutoTrader:
             self.status['last_error'] = f"刷新持仓失败: {e}"
 
     # ---------- 信号计算 ----------
-    def _compute_signal(self, symbol, timeframe, indicator_params):
-        """拉取最近K线 → 计算指标 → 返回当前根信号（1=买入, -1=卖出, 0=无）"""
+    def _compute_signal(self, symbol, timeframe, indicator_params, strategies=None):
+        """拉取最近K线 → 计算指标 → 返回当前根信号（1=买入, -1=卖出, 0=无）
+
+        固定组合背离策略（macd+背离 / macd+背离+量能 / macd+背离+均线+量能）
+        走 divergence_signals 专用信号构造，与回测口径一致；其余策略走 BacktestEngine。
+        """
         candles, err = self.trader.get_ohlcv(symbol, timeframe, limit=200)
         if err or not candles:
             return 0, None, err
         df = pd.DataFrame(candles)
         df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
         df = df.set_index('timestamp')
-        df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
-        # 调用回测引擎的信号逻辑（OR：任一策略满足即触发）
-        engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
-        signals = engine.calculate_signals(df, indicator_params)
-        sig = int(signals.iloc[-1]) if not signals.empty else 0
+        # 固定组合背离策略：使用专用信号构造（与回测一致）
+        div_name = find_divergence_name(strategies)
+        if div_name:
+            dfd, signals = compute_divergence_signals(df, div_name)
+            if signals is None or signals.empty:
+                return 0, df, None
+            sig = int(signals.iloc[-1])
+        else:
+            df = TechnicalIndicators.calculate_all_indicators(df, indicator_params)
+            # 调用回测引擎的信号逻辑（OR：任一策略满足即触发）
+            engine = BacktestEngine(timeframe=timeframe, signal_mode='or')
+            signals = engine.calculate_signals(df, indicator_params)
+            sig = int(signals.iloc[-1]) if not signals.empty else 0
         # 记录最近一根已收盘K线收盘价（供市价单3%偏差校验）
         if not df.empty:
             self.status['last_close'] = float(df['close'].iloc[-1])
@@ -539,14 +552,33 @@ class AutoTrader:
         return None
 
     def _mail_trade(self, symbol, side, action, qty, price, extra=''):
-        """下单成功邮件通知（开仓/平仓/止盈/止损均提示）"""
+        """下单成功邮件通知（开仓/平仓/止盈/止损均提示），包含任务名称与账户信息"""
         if not mailer.is_configured():
             return
-        body = (f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"品种: {symbol}\n方向: {side}\n操作: {action}\n"
-                f"数量: {qty}\n价格: {price}\n"
-                + (f"备注: {extra}\n" if extra else ""))
-        subject = f"💰 币安量化实盘成交({side}): {symbol} 近{price}"
+        st = self.status
+        mode = '网格' if st.get('mode') == 'grid' else '标准多策略(OR)'
+        tf = st.get('timeframe') or '?'
+        strategies = ' + '.join(st.get('strategies') or []) or '—'
+        pos = st.get('position', 0.0) or 0.0
+        avg = st.get('avg_price', 0.0) or 0.0
+        acct = st.get('account_balance', 0.0) or 0.0
+        buy_bal = st.get('buy_balance', 0.0) or 0.0
+        real_val = st.get('real_value_usdt', 0.0) or 0.0
+        task_id = self._task_id or '—'
+        note = (f"备注: {extra}\n") if extra else ""
+        body = (
+            f"📋 量化任务: 自动现货-{task_id}（{mode}）\n"
+            f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"──────────── 交易明细 ────────────\n"
+            f"品种: {symbol}\n周期: {tf}\n策略: {strategies}\n"
+            f"方向: {side}\n操作: {action}\n数量: {qty}\n价格: {price}\n"
+            f"{note}"
+            f"──────────── 账户信息 ────────────\n"
+            f"账户可用余额: {acct:.2f} USDT\n复利可用买入资金: {buy_bal:.2f} USDT\n"
+            f"当前持仓: {pos}（均价 {avg:.6f}）\n持仓市值: {real_val:.2f} USDT\n"
+            f"累计买入/卖出: {st.get('buy_count', 0)}/{st.get('sell_count', 0)} 次"
+        )
+        subject = f"💰 币安量化成交(现货|{task_id}|{side}): {symbol} 近{price}"
         mailer.send_async(subject, body)
         self._log(f"已发送成交邮件: {symbol} {side} {action}")
 
@@ -716,7 +748,8 @@ class AutoTrader:
         self._log(f"自动交易已启动: {symbol} {timeframe} [{mode_label}], 每次买入 {qty_usdt} USDT, 间隔 {interval}s")
         while not self._stop_event.is_set():
             try:
-                sig, df, err = self._compute_signal(symbol, timeframe, indicator_params)
+                sig, df, err = self._compute_signal(symbol, timeframe, indicator_params,
+                                                    strategies=self.status.get('strategies'))
                 if err:
                     # 网络/数据异常：记录并按次数尝试重连，期间不丢失持仓状态
                     self.status['last_error'] = err

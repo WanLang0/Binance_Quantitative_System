@@ -183,7 +183,8 @@ TIMEFRAME_OPTIONS = {
 }
 
 # 策略指标选项
-STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉"]
+STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉",
+              "macd+背离", "macd+背离+量能", "macd+背离+均线+量能"]
 
 # 固定交易对列表（symbol, 显示名称）
 SYMBOL_LIST = [
@@ -257,6 +258,13 @@ def _build_indicators(form, selected_strategies):
         indicators['ma_cross_long'] = _to_int(form.get('ma_cross_long'), 30)
         indicators['ma_cross_periods'] = [indicators['ma_cross_short'], indicators['ma_cross_long']]
 
+    if any(n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能") for n in selected_strategies):
+        # 固定组合背离策略：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+        indicators['macd'] = True
+        indicators['macd_fast'] = _to_int(form.get('macd_fast'), 12)
+        indicators['macd_slow'] = _to_int(form.get('macd_slow'), 26)
+        indicators['macd_signal'] = _to_int(form.get('macd_signal'), 9)
+
     # 展示指标（仅图表展示，不参与交易）
     if form.get('sma_show'):
         indicators['sma'] = True
@@ -290,6 +298,9 @@ def _strategy_params_from_names(names):
         elif n == "双均线交叉":
             p.update({"ma_cross": True, "ma_cross_short": 10, "ma_cross_long": 30,
                       "ma_cross_periods": [10, 30]})
+        elif n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能"):
+            # 固定组合背离策略：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+            p.update({"macd": True, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9})
     return p
 
 
@@ -561,27 +572,56 @@ def download_trades():
     )
 
 
-# ==================== 美股代币 base 名（币安官方名；勿用旧映射名 MUB/MUUB/SNDKB/SKHYB/NVDAB） ====================
-# 综合量化 / 自动合约 / 自动现货 三者共用的美股代币单一数据源
+# ==================== 美股代币 base 名 ====================
+# 综合量化 / 自动合约 / 自动现货 三者共用的美股代币单一数据源。
+# 2026-09-03 经币安正式主网 API (fapi.binance.com /fapi/v1/exchangeInfo) 全量实测：
+# 以下 93 只为交易型永续合约（contractType=TRADIFI_PERPETUAL, underlyingType=EQUITY）真实上市且
+# status=TRADING 可直接交易。已移除混入的加密币 CVX/STX/TREE（实为 COIN 类型），纠正 STX→STXX(希捷)，
+# 新增道琼斯/纳指100 中币安可交易的 20 只指数成分股，并补充半导体/存储主题个股2倍杠杆ETF
+# （SOXL 半导体3x、NVDL 英伟达2x、TSLL 特斯拉2x、MVLL 迈威尔2x、SNXX 闪迪2x），及
+# 黄金/石油/银行/新能源/生物医药五大板块大市值标的（GDX/XLE/BRKB/BX/HOOD/SOFI/COIN/BE/GEV/VST/RIVN/MRNA/HIMS/TEM/BNC/XBI）。
+# 2026-09 移除 FLNC/HD：2024/2025/2026 三段回测中 MACD+背离系策略持续亏损（FLNC 9测7亏且回撤-80%，
+# HD 低波动9测8亏），不适配该策略族。
+# 注：谷歌(GGLL)/亚马逊(AMZZ)/微软(MSFL)/苹果(AAPB) 的 2倍杠杆币安全线均未上市。
+# 其余美股（APH/RTX/AMGN/XOM 等 70+ 只）币安合约没有上市，已从本清单与数据库中清除，
+# 避免下拉选择后启动报 "binanceusdm does not have market symbol XXX" 错误。
 US_STOCK_BASES = [
-    # 核心美股龙头 + 存储代币
-    'NVDA', 'QQQ', 'TQQQ', 'MU', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA',
-    'MUU', 'SNDK', 'SKHYNIX', 'CXMT', 'TREE',
-    # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
-    'WDC', 'STX', 'APH', 'NOK', 'AVGO', 'LITE', 'TSM', 'ASML', 'HPE', 'CRM',
-    'EQIX', 'DLR', 'GDS', 'HWM', 'RTX', 'NOC', 'LMT', 'GILT', 'IRDM', 'ECHO', 'GSAT',
-    # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
-    'SONY', 'AXON', 'RKLB', 'TTE', 'PSX', 'SHEL', 'COP', 'NEM', 'FNV', 'GFI',
-    'MRK', 'ABBV', 'PFE', 'PEP', 'KO',
-    # 2026-09 增量回测一轮（Yahoo 1h，存储/光通信/AI芯片/云计算/数据中心/航天/卫星通信/机器人/军工/石油/天然气/黄金/生物医药/消费）
-    'RMBS', 'SIMO', 'MRVL', 'GLW', 'COHR', 'CIEN', 'ALAB', 'CRDO',
-    'AMD', 'INTC', 'LRCX', 'AMAT', 'TXN', 'ORCL', 'BABA', 'IBM', 'NOW',
-    'MCHP', 'SMCI', 'GE', 'ASTS', 'SATL', 'TSAT', 'VSAT', 'STM', 'CGNX',
-    'GD', 'TDG', 'MPC', 'CNQ', 'VLO', 'WMB', 'KMI', 'TRGP', 'OKE', 'OXY', 'DVN',
-    'AEM', 'WPM', 'AU', 'KGC', 'RGLD', 'CDE',
-    'AMGN', 'TMO', 'ABT', 'GILD', 'NVO',
-    'COST', 'HD', 'DIS', 'MCD', 'TJX',
+    # 核心美股龙头
+    'NVDA', 'QQQ', 'TQQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA',
+    # 存储
+    'MU', 'MUU', 'SNDK', 'SNXX', 'SKHYNIX', 'CXMT', 'WDC', 'STXX',
+    # 光通信
+    'NOK', 'LITE', 'MRVL', 'GLW', 'COHR', 'CIEN', 'ALAB', 'CRDO',
+    # AI芯片 / 半导体
+    'AVGO', 'AMD', 'INTC', 'LRCX', 'AMAT', 'TXN', 'TSM', 'ASML',
+    # 云计算 / 数据中心 / 软件
+    'HPE', 'CRM', 'ORCL', 'BABA', 'IBM', 'NOW', 'SMCI',
+    'CRWD', 'DDOG', 'PANW', 'PLTR', 'SHOP', 'TEAM', 'ADBE', 'APP', 'MSTR', 'NBIS', 'CRWV', 'PYPL',
+    # 半导体杠杆ETF（纳指/半导体主题做多）
+    'SOXL', 'NVDL', 'TSLL', 'MVLL',
+    # 航天 / 卫星 / 机器人
+    'ASTS', 'RKLB', 'SONY', 'UNITREE',
+    # 金融
+    'JPM', 'V', 'GS', 'BRKB', 'BX', 'HOOD', 'SOFI', 'COIN',
+    # 医疗保健 / 生物医药
+    'LLY', 'MRK', 'NVO', 'MRNA', 'HIMS', 'TEM', 'BNC', 'XBI',
+    # 黄金 / 石油（币安仅支持指数ETF）
+    'GDX', 'XLE',
+    # 新能源
+    'BE', 'GEV', 'VST', 'RIVN',
+    # 工业
+    'CAT',
+    # 消费 / 通讯 / 互联网
+    'COST', 'DIS', 'WMT', 'KO',
+    'NFLX', 'QCOM', 'KLAC', 'TER', 'TTWO', 'CSCO',
 ]
+
+# 美股代币白名单集合（USDT 永续真实可交易），供历史记录兜底过滤使用
+_US_PERP_SET = set(US_STOCK_BASES)
+
+def _binance_us_perp_active(base):
+    """判断某美股代币是否在币安合约(USDT永续)真实上市可交易"""
+    return base in _US_PERP_SET
 
 # ==================== 模拟现货交易 ====================
 
@@ -629,7 +669,7 @@ def _prewarm_trader(trader):
 
 # ==================== 自动合约交易 ====================
 
-# 合约交易对列表（USDT永续；bStocks 永续需用完整符号 :USDT）
+# 合约交易对列表（USDT永续；美股永续需用完整符号 :USDT）
 FUTURES_SYMBOLS = (["BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT",
                     "TON/USDT", "NEAR/USDT", "AVAX/USDT", "XLM/USDT", "ICP/USDT", "LTC/USDT"]
                    + [f'{b}/USDT:USDT' for b in US_STOCK_BASES])
@@ -721,9 +761,12 @@ def _symbols_from_history():
 
 
 def spot_symbol_list():
-    """现货下拉：静态列表 + 历史测试过的币（统一 X/USDT 格式）"""
+    """现货下拉：静态列表 + 历史测试过的币（统一 X/USDT 格式）。
+    美股代币仅保留币安真实上市的标的，避免历史回测过的非上市美股进入下拉导致启动失败"""
     out = list(DEMO_SYMBOLS)
     for b in sorted(_symbols_from_history()):
+        if _store.is_us_symbol(f'{b}/USDT') and not _binance_us_perp_active(b):
+            continue  # 美股但币安未上市 → 跳过
         s = f'{b}/USDT'
         if s not in out:
             out.append(s)
@@ -731,9 +774,12 @@ def spot_symbol_list():
 
 
 def futures_symbol_list():
-    """合约下拉：静态列表 + 历史测试过的币（bStocks 用 X/USDT:USDT，加密用 X/USDT）"""
+    """合约下拉：静态列表 + 历史测试过的币（bStocks 用 X/USDT:USDT，加密用 X/USDT）
+    美股代币仅保留币安合约白名单内的标的，避免历史测试过的非上市美股进入下拉导致启动失败"""
     out = list(FUTURES_SYMBOLS)
     for b in sorted(_symbols_from_history()):
+        if _store.is_us_symbol(f'{b}/USDT') and not _binance_us_perp_active(b):
+            continue  # 美股但不在币安合约白名单 → 跳过（如 APH/RTX/AMGN 等）
         s = f'{b}/USDT:USDT' if _store.is_us_symbol(f'{b}/USDT') else f'{b}/USDT'
         if s not in out:
             out.append(s)
@@ -1789,51 +1835,60 @@ def futures_export():
 # 综合量化引擎注册表（多实例并行）
 _composite_engines = {}
 
-# 综合量化可选的币对（美股代币优先；含静态 + 历史测试过的美股币 + 细分行业板块龙头股）
+# 综合量化可选的币对（美股代币优先；仅含币安合约真实上市的美股永续）
 COMPOSITE_SYMBOLS = [f'{b}/USDT:USDT' for b in US_STOCK_BASES]
 
-# 币对展示名称映射
+# 币对展示名称映射（仅币安合约真实上市的 95 只美股永续）
 COMPOSITE_NAMES = {
-    'NVDA': '英伟达', 'QQQ': '纳指100', 'TQQQ': '纳指3倍做多', 'MU': '美光', 'AAPL': '苹果',
+    # 核心龙头
+    'NVDA': '英伟达', 'QQQ': '纳指100', 'TQQQ': '纳指3倍做多', 'AAPL': '苹果',
     'MSFT': '微软', 'GOOGL': '谷歌', 'AMZN': '亚马逊', 'META': 'Meta', 'TSLA': '特斯拉',
-    'MUU': '美光2倍做多', 'SNDK': '闪迪', 'SKHYNIX': 'SK海力士',
-    'CXMT': '长鑫存储', 'TREE': 'Tree',
-    # 细分行业板块龙头股（存储/光通信/AI芯片/半导体/云计算/数据中心/航天/卫星通信）
-    'WDC': '西部数据', 'STX': '希捷科技', 'APH': '安费诺', 'NOK': '诺基亚',
-    'AVGO': '博通', 'LITE': 'Lumentum', 'TSM': '台积电', 'ASML': '阿斯麦',
-    'HPE': '慧与', 'CRM': '赛富时', 'EQIX': '易昆尼克斯', 'DLR': '数字房地产信托',
-    'GDS': '万国数据', 'HWM': 'Howmet Aerospace', 'RTX': '雷神技术',
-    'NOC': '诺斯罗普·格鲁曼', 'LMT': '洛克希德马丁', 'GILT': '吉来特卫星网络',
-    'IRDM': '铱星通讯', 'ECHO': '回声星通信', 'GSAT': '全球星',
-    # 细分行业板块龙头股（机器人/军工/石油/天然气/黄金/生物医药/消费）
-    'SONY': '索尼', 'AXON': 'Axon Enterprise', 'RKLB': 'Rocket Lab',
-    'TTE': 'TotalEnergies', 'PSX': 'Phillips 66', 'SHEL': '壳牌', 'COP': '康菲石油',
-    'NEM': '纽蒙特', 'FNV': 'Franco-Nevada', 'GFI': '金田',
-    'MRK': '默沙东', 'ABBV': '艾伯维', 'PFE': '辉瑞', 'PEP': '百事', 'KO': '可口可乐',
-    # 2026-09 增量回测一轮（Yahoo 1h）
-    'RMBS': 'Rambus', 'SIMO': '慧荣科技',
-    'MRVL': '迈威尔科技', 'GLW': '康宁', 'COHR': 'Coherent', 'CIEN': 'Ciena科技',
-    'ALAB': 'Astera Labs', 'CRDO': 'Credo',
-    'AMD': '超威半导体', 'INTC': '英特尔', 'LRCX': '拉姆研究', 'AMAT': '应用材料', 'TXN': '德州仪器',
-    'ORCL': '甲骨文', 'BABA': '阿里巴巴', 'IBM': 'IBM', 'NOW': '赛富时',
-    'MCHP': '微芯科技', 'SMCI': '超微电脑', 'GE': 'GE航空航天', 'ASTS': 'AST SpaceMobile',
-    'SATL': 'Satellogic', 'TSAT': 'Telesat', 'VSAT': '卫讯公司',
-    'STM': '意法半导体', 'CGNX': '康耐视', 'GD': '通用动力', 'TDG': 'TransDigm',
-    'MPC': '马拉松原油', 'CNQ': '加拿大自然资源', 'VLO': '瓦莱罗能源', 'WMB': '威廉姆斯',
-    'KMI': '金德摩根', 'TRGP': 'Targa Resources', 'OKE': '欧尼克', 'OXY': '西方石油', 'DVN': '戴文能源',
-    'AEM': '伊格尔矿业', 'WPM': '惠顿贵金属', 'AU': 'AngloGold', 'KGC': '金罗斯黄金',
-    'RGLD': '皇家黄金', 'CDE': '科尔黛伦矿业',
-    'AMGN': '安进', 'TMO': '赛默飞世尔', 'ABT': '雅培', 'GILD': '吉利德科学', 'NVO': '诺和诺德',
-    'COST': '开市客', 'HD': '家得宝', 'DIS': '迪士尼', 'MCD': '麦当劳', 'TJX': 'TJX',
+    # 存储
+    'MU': '美光', 'MUU': '美光2倍做多', 'SNDK': '闪迪', 'SNXX': '闪迪2倍做多', 'SKHYNIX': 'SK海力士',
+    'CXMT': '长鑫存储', 'WDC': '西部数据', 'STXX': '希捷科技',
+    # 光通信
+    'NOK': '诺基亚', 'LITE': 'Lumentum', 'MRVL': '迈威尔科技', 'GLW': '康宁',
+    'COHR': 'Coherent', 'CIEN': 'Ciena科技', 'ALAB': 'Astera Labs', 'CRDO': 'Credo',
+    # AI芯片 / 半导体
+    'AVGO': '博通', 'AMD': '超威半导体', 'INTC': '英特尔', 'LRCX': '拉姆研究',
+    'AMAT': '应用材料', 'TXN': '德州仪器', 'TSM': '台积电', 'ASML': '阿斯麦',
+    # 云计算 / 数据中心
+    'HPE': '慧与', 'CRM': '赛富时', 'ORCL': '甲骨文', 'BABA': '阿里巴巴',
+    'IBM': 'IBM', 'NOW': 'ServiceNow', 'SMCI': '超微电脑',
+    'CRWD': 'CrowdStrike', 'DDOG': 'Datadog', 'PANW': 'Palo Alto', 'PLTR': 'Palantir',
+    'SHOP': 'Shopify', 'TEAM': 'Atlassian', 'ADBE': 'Adobe', 'APP': 'AppLovin',
+    'MSTR': 'MicroStrategy', 'NBIS': 'Nebius', 'CRWV': 'CoreWeave', 'PYPL': 'PayPal',
+    # 半导体杠杆ETF（纳指/半导体主题做多）
+    'SOXL': '半导体3倍做多', 'NVDL': '英伟达2倍做多', 'TSLL': '特斯拉2倍做多', 'MVLL': '迈威尔2倍做多',
+    # 航天 / 卫星 / 机器人
+    'ASTS': 'AST SpaceMobile', 'RKLB': 'Rocket Lab', 'SONY': '索尼', 'UNITREE': '宇树科技',
+    # 金融 / 银行
+    'JPM': '摩根大通', 'V': 'Visa', 'GS': '高盛', 'BRKB': '伯克希尔-B', 'BX': '黑石',
+    'HOOD': 'Robinhood', 'SOFI': 'SoFi', 'COIN': 'Coinbase',
+    # 医疗保健 / 生物医药
+    'LLY': '礼来', 'MRK': '默沙东', 'NVO': '诺和诺德', 'MRNA': 'Moderna', 'HIMS': 'Hims & Hers',
+    'TEM': 'Tempus AI', 'BNC': 'Bannix', 'XBI': '生物科技ETF',
+    # 黄金 / 石油（指数ETF）
+    'GDX': '黄金矿业ETF', 'XLE': '能源精选ETF',
+    # 新能源
+    'BE': 'Bloom Energy', 'GEV': 'GE Vernova', 'VST': 'Vistra', 'RIVN': 'Rivian',
+    # 工业
+    'CAT': '卡特彼勒',
+    # 消费
+    'COST': '开市客', 'DIS': '迪士尼', 'WMT': '沃尔玛', 'KO': '可口可乐',
+    'NFLX': '奈飞', 'QCOM': '高通', 'KLAC': 'KLA', 'TER': '泰瑞达', 'TTWO': 'Take-Two', 'CSCO': '思科',
 }
 
 
 def _composite_symbol_list():
-    """综合量化下拉：美股代币列表 + 历史测试过的美股币"""
+    """综合量化下拉：美股代币列表 + 历史测试过的美股币。
+    美股代币仅保留币安合约白名单内的标的，避免历史测试过的非上市美股进入下拉导致启动失败"""
     out = list(COMPOSITE_SYMBOLS)
     for b in sorted(_symbols_from_history()):
         if not _store.is_us_symbol(f'{b}/USDT'):
             continue
+        if not _binance_us_perp_active(b):
+            continue  # 美股但不在币安合约白名单 → 跳过（如 APH/RTX/AMGN 等）
         s = f'{b}/USDT:USDT'
         if s not in out:
             out.append(s)
@@ -1842,7 +1897,9 @@ def _composite_symbol_list():
 
 # 策略记录库策略名 → 综合量化前端可选项（研究库用「双均线」，前端/后端用「双均线交叉」）
 _COMPOSITE_STRAT_MAP = {'RSI': 'RSI', 'KDJ': 'KDJ', 'MACD': 'MACD', 'EMA': 'EMA',
-                        '布林带': '布林带', '双均线': '双均线交叉', '双均线交叉': '双均线交叉'}
+                        '布林带': '布林带', '双均线': '双均线交叉', '双均线交叉': '双均线交叉',
+                        'macd+背离': 'macd+背离', 'macd+背离+量能': 'macd+背离+量能',
+                        'macd+背离+均线+量能': 'macd+背离+均线+量能'}
 
 
 def _map_composite_strategy(part):

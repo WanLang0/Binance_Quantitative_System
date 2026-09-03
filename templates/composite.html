@@ -132,15 +132,27 @@ td.short, td.neg { color: var(--sell); }
                     </label>
                     <div id="prioritize-opts" style="display:none;margin-top:6px">
                         <label>份额数 n
-                            <input type="number" name="share_count" id="share-count" step="1" min="1" value="" placeholder="默认=币对数">
+                            <input type="number" name="share_count" id="share-count" step="1" min="1" value="" placeholder="默认=币对数" oninput="onShareChange()">
                         </label>
-                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；股票触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。</div>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；股票触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。n = 最多同时持有的支数。</div>
+                        <div id="share-hint" style="font-size:.78rem;color:var(--primary);margin-top:4px"></div>
                     </div>
                     <input type="hidden" name="prioritize" id="prioritize" value="0">
                 </div>
 
                 <div class="group-label">币对配置（点击快捷添加）</div>
                 <div class="preset-chips" id="preset-chips"></div>
+
+                <div class="field" style="margin-top:4px">
+                    <label>统一策略（新增/重置所有币对时应用，可留空）</label>
+                    <select id="uniform-strategy" onchange="setUniformStrategy(this.value)">
+                        <option value="">（不统一应用）</option>
+                        {% for s in strategy_options %}
+                        <option value="{{ s }}">{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                    <div style="font-size:.78rem;color:var(--muted);margin-top:4px">选择策略后立即应用到当前所有币对；此后点击「＋添加币对」「全部美股」的新币对也会自动套用该策略。已存在币对可随时点「应用统一策略」重新覆盖。</div>
+                </div>
 
                 <div id="sym-rows">
                     <div class="sym-card" id="sym-card-tpl" style="display:none">
@@ -189,6 +201,8 @@ td.short, td.neg { color: var(--sell); }
 
                 <div class="side-actions">
                     <button type="button" class="btn btn-ghost btn-sm" onclick="addSymRow()">＋ 添加币对</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="addAllUS()">✔ 全部美股</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="applyUniformStrategy(true)">🎯 应用统一策略</button>
                     <button type="button" class="btn btn-ghost btn-sm" id="even-weights-btn" onclick="evenWeights()">⚖ 均分权重</button>
                     <button type="button" class="btn btn-ghost btn-sm" onclick="clearSymbols()">清空</button>
                 </div>
@@ -460,7 +474,11 @@ function addSymRow(symbol) {
     var hs = row.querySelector('input[name="cs_allow_short"]');
     if (hs) hs.value = '0';
     // 选择币种时自动填充该币种最优策略参数（覆盖默认 EMA/1h）
-    if (symbol) applyBestParams(row, symbol);
+    if (symbol) {
+        applyBestParams(row, symbol);
+        // 若设置了「统一策略」，则以统一策略覆盖该币种的最优策略
+        applyUniformToCard(row);
+    }
     container.appendChild(row);
     bindSymClick(row.querySelector('.sym-combo'));
     renumberRows();
@@ -495,6 +513,12 @@ function clearSymbols() {
 }
 
 function evenWeights() {
+    // 优先匹配模式下权重已失效（资金按份额分配），提示用户改用份额设置
+    var pchk = document.getElementById('prioritize-chk');
+    if (pchk && pchk.checked) {
+        alert('已开启量化优先匹配：资金按份额均分，个股权重已失效。请在「份额数 n」设置占用份数。');
+        return;
+    }
     var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
     var valid = cards.filter(function (c) { return c.querySelector('.sym-inp').value.trim(); });
     if (!valid.length) return;
@@ -512,6 +536,70 @@ function renderPresets() {
     wrap.innerHTML = PRESETS.map(function (p) {
         return '<button type="button" class="preset-chip" onclick="addSymRow(\'' + p[0] + '\')">' + p[0].split('/')[0] + '</button>';
     }).join('');
+}
+
+// ---- 统一策略快捷功能 ----
+function getUniformStrategy() {
+    var sel = document.getElementById('uniform-strategy');
+    return sel ? sel.value : '';
+}
+
+// 下拉框选择策略即生效：选择后立即把该策略应用到当前所有已添加的币对
+function setUniformStrategy(val) {
+    if (val) {
+        applyUniformStrategy();
+    }
+}
+
+// 将一个币对卡的策略重置为「统一策略」（仅勾选该单一策略）
+function resetCardStrategy(card) {
+    var uni = getUniformStrategy();
+    if (!uni) return;
+    card.querySelectorAll('.cs-strat-chk').forEach(function (c) {
+        c.checked = (c.value === uni);
+    });
+    updateStrategies(card);
+}
+
+// 新增币对/全部美股时，若设置了统一策略则在选择币种后重置策略
+function applyUniformToCard(card) {
+    var inp = card.querySelector('.sym-inp');
+    if (inp && inp.value.trim()) resetCardStrategy(card);
+}
+
+// 添加全部美股代币（去重后按 SYM_ALL 一次添加）
+function addAllUS() {
+    // 逐个添加：SYM_ALL 已含全部币安合约上市的美股永续代币
+    SYM_ALL.forEach(function (s) {
+        // 仅添加 USDT:USDT 永续美股代币（过滤掉数字货币如 BTC/USDT 等）
+        addSymRow(s);
+    });
+    // 优先匹配时资金按份额分配，权重已失效（不写入误导性的均分权重）；
+    // 默认模式才均分权重（合计=100%）
+    var pchk = document.getElementById('prioritize-chk');
+    if (!(pchk && pchk.checked)) {
+        evenWeights();
+    }
+    // 应用统一策略到所有新加币对
+    applyUniformStrategy();
+}
+
+// 将「统一策略」应用到当前所有已添加的币对。
+// 未选择统一策略时静默跳过（不打断「全部美股」快捷添加）；仅当用户手动点击按钮且未选策略时才提示。
+function applyUniformStrategy(manual) {
+    var uni = getUniformStrategy();
+    if (!uni) {
+        if (manual) alert('请先在「统一策略」下拉框选择一个策略');
+        return;
+    }
+    var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
+    if (!cards.length) {
+        if (manual) alert('请先添加币对');
+        return;
+    }
+    cards.forEach(function (c) {
+        if (c.querySelector('.sym-inp').value.trim()) resetCardStrategy(c);
+    });
 }
 
 function updateRatioTotal() {
@@ -555,6 +643,16 @@ function updateShareHint() {
     var n = document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)').length;
     sc.placeholder = '默认 ' + n + '（=币对数）';
     sc.max = n > 0 ? n : 1;
+}
+
+// 份额输入改动时的提示说明
+function onShareChange() {
+    var sc = document.getElementById('share-count');
+    var hint = document.getElementById('share-hint');
+    if (!sc || !hint) return;
+    var n = parseInt(sc.value, 10);
+    if (!n || n < 1) { hint.textContent = ''; return; }
+    hint.textContent = '总资金均分为 ' + n + ' 份，触发买点先到先得，最多同时持有 ' + n + ' 支，卖出一支释放份额后再买下一支。';
 }
 
 document.addEventListener('input', function (e) {
