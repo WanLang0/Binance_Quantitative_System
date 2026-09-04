@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-美股综合量化交易引擎
-一个综合任务 = 同时监控/交易多个美股币对，每个币对可独立配置策略与资金权重。
+综合量化交易引擎（美股 / 虚拟币双市场共用，market='us'|'crypto'）
+一个综合任务 = 同时监控/交易多个币对，每个币对可独立配置策略与资金权重。
 
 核心能力：
 - 多币种批量拉取实时数据（get_tickers 一次获取全部）
@@ -40,6 +40,41 @@ ALERT_THRESHOLD = 3
 DEFAULT_BUY_PCT = 0.95
 
 
+# ---------- 市场维度（us=美股综合量化 / crypto=虚拟币综合量化）----------
+# 两套综合量化共用同一引擎逻辑，仅任务/状态/告警/日志文件与默认文案按市场分开
+def market_label(market):
+    """市场显示名：美股综合量化 / 虚拟币综合量化"""
+    return '虚拟币综合量化' if market == 'crypto' else '美股综合量化'
+
+
+def default_task_name(market):
+    """任务默认名：美股综合量化任务 / 虚拟币综合量化任务"""
+    return '虚拟币综合量化任务' if market == 'crypto' else '美股综合量化任务'
+
+
+def state_file(market='us'):
+    """运行状态快照文件（按市场分开）"""
+    name = 'crypto_composite_state.json' if market == 'crypto' else 'composite_state.json'
+    return os.path.join('data', name)
+
+
+def tasks_file(market='us'):
+    """任务历史列表文件（按市场分开）"""
+    name = 'crypto_composite_tasks.json' if market == 'crypto' else 'composite_tasks.json'
+    return os.path.join('data', name)
+
+
+def alerts_file(market='us'):
+    """告警落盘文件（按市场分开）"""
+    name = 'crypto_composite_alerts.log' if market == 'crypto' else 'composite_alerts.log'
+    return os.path.join('data', name)
+
+
+def log_prefix(market='us'):
+    """任务日志文件名前缀（按市场分开）"""
+    return 'crypto_composite_' if market == 'crypto' else 'composite_'
+
+
 # 策略名 → 指标参数（与 app._strategy_params_from_names 保持一致）
 def strategy_params(name):
     p = {}
@@ -73,14 +108,16 @@ def strategy_params_multi(names):
 
 
 class CompositeTrader:
-    """美股综合量化引擎（多币种 + 独立策略 + 资金比例分配，独立后台线程）"""
+    """综合量化引擎（多币种 + 独立策略 + 资金比例分配，独立后台线程；market: us=美股 / crypto=虚拟币）"""
 
-    def __init__(self, api_key='', api_secret='', proxy=None, trader=None, leverage=5, testnet=True):
+    def __init__(self, api_key='', api_secret='', proxy=None, trader=None, leverage=1, testnet=True,
+                 market='us'):
         self.api_key = api_key
         self.api_secret = api_secret
         self.proxy = proxy
         self.leverage = leverage
         self.testnet = testnet
+        self.market = market or 'us'   # 市场维度：决定任务/日志文件与默认文案
         # 可复用外部已建好的合约交易器
         self.trader = trader or FuturesTrader(api_key, api_secret, proxy, testnet, leverage)
         self._thread = None
@@ -94,12 +131,12 @@ class CompositeTrader:
     # ---------- 状态管理 ----------
     @property
     def state_file(self):
-        return STATE_FILE
+        return state_file(self.market)
 
     def reset_status(self):
         self.status = {
             'running': False,
-            'name': '美股综合量化任务',
+            'name': default_task_name(self.market),
             'total_fund': 10000,        # 任务总可用资金（USDT）
             'buy_pct': DEFAULT_BUY_PCT,  # 买入安全系数（实际投入 = 计算值 × 0.95）
             'interval': 30,              # 轮询间隔（秒）
@@ -146,7 +183,7 @@ class CompositeTrader:
         self._log(f"⚠ 告警: {msg}")
         try:
             os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-            with open(os.path.join('data', 'composite_alerts.log'), 'a', encoding='utf-8') as f:
+            with open(alerts_file(self.market), 'a', encoding='utf-8') as f:
                 f.write(line + "\n")
         except Exception:
             pass
@@ -176,7 +213,7 @@ class CompositeTrader:
             'status': 'running',
             'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
-        tasks = self._read_tasks()
+        tasks = self._read_tasks(self.market)
         # 复用旧 task_id（恢复任务）时更新原记录，否则插入新记录，避免恢复时残留旧任务
         replaced = False
         for i, t in enumerate(tasks):
@@ -188,8 +225,8 @@ class CompositeTrader:
             tasks.insert(0, rec)
         tasks = tasks[:20]
         try:
-            os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(tasks_file(self.market)), exist_ok=True)
+            with open(tasks_file(self.market), 'w', encoding='utf-8') as f:
                 json.dump(tasks, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -199,24 +236,25 @@ class CompositeTrader:
         tid = getattr(self, '_task_id', None)
         if not tid:
             return
-        tasks = self._read_tasks()
+        tasks = self._read_tasks(self.market)
         for t in tasks:
             if t.get('id') == tid:
                 t['status'] = task_status
                 t['last_active'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 break
         try:
-            os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(tasks_file(self.market)), exist_ok=True)
+            with open(tasks_file(self.market), 'w', encoding='utf-8') as f:
                 json.dump(tasks, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
     @staticmethod
-    def _read_tasks():
+    def _read_tasks(market='us'):
         try:
-            if os.path.exists(TASKS_FILE):
-                with open(TASKS_FILE, 'r', encoding='utf-8') as f:
+            tf = tasks_file(market)
+            if os.path.exists(tf):
+                with open(tf, 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception:
             pass
@@ -823,7 +861,7 @@ class CompositeTrader:
         self.status['started_at'] = datetime.now().isoformat()
         n_sym = len(self.status['symbols'])
         names = ', '.join(f"{s['symbol']}({s['strategy']},{s['fund_ratio']*100:.0f}%)" for s in self.status['symbols'])
-        self._log(f"美股综合量化已启动: {self.status['name']} 共{n_sym}个币对, 总资金{self.status['total_fund']}U, "
+        self._log(f"{market_label(self.market)}已启动: {self.status['name']} 共{n_sym}个币对, 总资金{self.status['total_fund']}U, "
                   f"杠杆{self.leverage}x, 间隔{self.status['interval']}s, 安全系数{self.status['buy_pct']*100:.0f}%")
         self._log(f"资金分配: {names}")
         if self.status.get('prioritize'):
@@ -916,7 +954,7 @@ class CompositeTrader:
             if self._running:
                 return False, '已在运行中'
             self.reset_status()
-            self.status['name'] = (name or '美股综合量化任务').strip()
+            self.status['name'] = (name or default_task_name(self.market)).strip()
             self.status['total_fund'] = float(total_fund or 0)
             self.status['buy_pct'] = float(buy_pct or DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT
             self.status['interval'] = max(5, int(interval or 30))
@@ -929,10 +967,14 @@ class CompositeTrader:
                 return False, '请至少选择一个币对'
             if sum(s['fund_ratio'] for s in self.status['symbols']) <= 0:
                 return False, '请为各币对设置资金权重(>0)'
+            # 恢复任务(task_id 复用)时：从磁盘读回复利本金/持仓/份额等累积状态，
+            # 使复利不因重启而重置。全新启动(task_id=None)不读，保持初始资金。
+            if task_id:
+                self.load_state()
             self._stop_event.clear()
             # 恢复任务时复用旧 task_id，任务列表不新增、日志续写
             self._task_id = task_id or (datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}")
-            self.log_file = os.path.join(LOG_DIR, f'composite_{self._task_id}.log')
+            self.log_file = os.path.join(LOG_DIR, f'{log_prefix(self.market)}{self._task_id}.log')
             self._running = True
             self.status['running'] = True
             self.status['started_at'] = datetime.now().isoformat()
@@ -949,24 +991,24 @@ class CompositeTrader:
             self._stop_event.set()
             self._running = False
             self.status['running'] = False
-        self._log("美股综合量化已停止")
+        self._log(f"{market_label(self.market)}已停止")
         self._update_task_status('stopped')
         self.save_state()
         return True, '已停止'
 
     @staticmethod
-    def list_tasks():
-        return CompositeTrader._read_tasks()
+    def list_tasks(market='us'):
+        return CompositeTrader._read_tasks(market)
 
     @staticmethod
-    def delete_task(task_id):
-        tasks = CompositeTrader._read_tasks()
+    def delete_task(task_id, market='us'):
+        tasks = CompositeTrader._read_tasks(market)
         remains = [t for t in tasks if t.get('id') != task_id]
         if len(remains) == len(tasks):
             return False, f"任务不存在: {task_id}"
         try:
-            os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-            with open(TASKS_FILE, 'w', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(tasks_file(market)), exist_ok=True)
+            with open(tasks_file(market), 'w', encoding='utf-8') as f:
                 json.dump(remains, f, ensure_ascii=False, indent=2)
             return True, '已删除'
         except Exception as e:

@@ -33,7 +33,7 @@ ALERT_THRESHOLD = 3
 class AutoFutures:
     """实时自动合约交易引擎（单交易对，独立后台线程）"""
 
-    def __init__(self, api_key='', api_secret='', proxy=None, trader=None, leverage=5, testnet=True):
+    def __init__(self, api_key='', api_secret='', proxy=None, trader=None, leverage=1, testnet=True):
         self.api_key = api_key
         self.api_secret = api_secret
         self.proxy = proxy

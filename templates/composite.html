@@ -1,7 +1,7 @@
-{% set active_page = 'composite' %}
+{% set active_page = nav_key|default('composite') %}
 {% extends "base.html" %}
 
-{% block title %}美股综合量化交易系统{% endblock %}
+{% block title %}{{ page_title|default('美股综合量化交易系统') }}{% endblock %}
 
 {% block head %}
 <style>
@@ -69,7 +69,7 @@ td.short, td.neg { color: var(--sell); }
 {% block body %}
 <div class="app">
     <aside class="sidebar composite-sidebar">
-        <div class="brand">🧩 美股综合量化</div>
+        <div class="brand">
 
         {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
         {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
@@ -77,7 +77,7 @@ td.short, td.neg { color: var(--sell); }
         <!-- 合约 API 密钥 -->
         <div class="form-group">
             <div class="group-label">🔑 合约 API 密钥</div>
-            <form method="POST" action="/composite" id="key-form">
+            <form method="POST" action="{{ api_base|default('/composite') }}" id="key-form">
                 <div class="field">
                     <label>API Key</label>
                     <input type="text" name="api_key" value="{{ api_key or '' }}" placeholder="合约 API Key" autocomplete="off">
@@ -95,20 +95,20 @@ td.short, td.neg { color: var(--sell); }
                 </div>
                 <div class="field">
                     <label>杠杆倍数</label>
-                    <input type="number" name="leverage" step="1" min="1" max="50" value="{{ leverage or 5 }}">
+                    <input type="number" name="leverage" step="1" min="1" max="50" value="{{ leverage or 1 }}">
                 </div>
                 <button type="submit" name="save_keys" value="1" class="btn btn-primary btn-block">保存密钥</button>
-                <p class="info-note">通过币安<b> USDT 永续合约</b>交易美股代币（QQQ/TQQQ/NVDA/MU 等）。<b>主网默认</b>（美股永续仅主网有）；测试网只能选币种合约。</p>
+                <p class="info-note">{% if nav_key == 'crypto_composite' %}通过币安<b> USDT 永续合约</b>交易主流加密币（市值前20回测标的 BTC/ETH/HYPE 等 24 只）。<b>主网默认</b>，可用测试网模拟；请确保已开通合约权限、API Key 已加入 IP 白名单。{% else %}通过币安<b> USDT 永续合约</b>交易美股代币（QQQ/TQQQ/NVDA/MU 等）。<b>主网默认</b>（美股永续仅主网有）；测试网只能选币种合约。{% endif %}</p>
             </form>
         </div>
 
         <!-- 综合任务配置 -->
         <div class="form-group">
             <div class="group-label">⚙️ 综合任务配置</div>
-            <form method="POST" action="/composite" id="task-form">
+            <form method="POST" action="{{ api_base|default('/composite') }}" id="task-form">
                 <div class="field">
                     <label>任务名称</label>
-                    <input type="text" name="name" value="美股七姐妹综合" placeholder="如：美股七姐妹综合">
+                    <input type="text" name="name" value="{{ task_name_default|default('美股七姐妹综合') }}" placeholder="如：{{ task_name_default|default('美股七姐妹综合') }}">
                 </div>
                 <div class="field">
                     <label>任务总资金 (USDT)</label>
@@ -134,7 +134,7 @@ td.short, td.neg { color: var(--sell); }
                         <label>份额数 n
                             <input type="number" name="share_count" id="share-count" step="1" min="1" value="" placeholder="默认=币对数" oninput="onShareChange()">
                         </label>
-                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；股票触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。n = 最多同时持有的支数。</div>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；标的触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。n = 最多同时持有的支数。</div>
                         <div id="share-hint" style="font-size:.78rem;color:var(--primary);margin-top:4px"></div>
                     </div>
                     <input type="hidden" name="prioritize" id="prioritize" value="0">
@@ -151,7 +151,15 @@ td.short, td.neg { color: var(--sell); }
                         <option value="{{ s }}">{{ s }}</option>
                         {% endfor %}
                     </select>
-                    <div style="font-size:.78rem;color:var(--muted);margin-top:4px">选择策略后立即应用到当前所有币对；此后点击「＋添加币对」「全部美股」的新币对也会自动套用该策略。已存在币对可随时点「应用统一策略」重新覆盖。</div>
+                    <div style="font-size:.78rem;color:var(--muted);margin-top:4px">选择策略后立即应用到当前所有币对；此后点击「＋添加币对」「{{ all_btn_name }}」的新币对也会自动套用该策略。已存在币对可随时点「应用统一策略」重新覆盖。</div>
+                </div>
+
+                <div class="side-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="addSymRow()">＋ 添加币对</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="addAllSymbols()">✔ {{ all_btn_name }}</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="applyUniformStrategy(true)">🎯 应用统一策略</button>
+                    <button type="button" class="btn btn-ghost btn-sm" id="even-weights-btn" onclick="evenWeights()">⚖ 均分权重</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="clearSymbols()">清空</button>
                 </div>
 
                 <div id="sym-rows">
@@ -197,14 +205,6 @@ td.short, td.neg { color: var(--sell); }
                         </div>
                         <input type="hidden" name="cs_allow_short" value="0">
                     </div>
-                </div>
-
-                <div class="side-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="addSymRow()">＋ 添加币对</button>
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="addAllUS()">✔ 全部美股</button>
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="applyUniformStrategy(true)">🎯 应用统一策略</button>
-                    <button type="button" class="btn btn-ghost btn-sm" id="even-weights-btn" onclick="evenWeights()">⚖ 均分权重</button>
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="clearSymbols()">清空</button>
                 </div>
                 <p class="info-note" id="ratio-total">资金权重合计：<b>0%</b>（分配金额 = 任务总资金 × 权重%，实际买入再 × 95% 安全系数）</p>
 
@@ -314,8 +314,8 @@ td.short, td.neg { color: var(--sell); }
                                     {% if t.is_running %}disabled{% endif %}
                                     onclick="return confirm('确定删除该综合任务记录？删除后不可恢复。')">删除</button>
                         </form>
-                        <a class="btn" style="padding:3px 10px" href="/composite/api/export?task_id={{ t.id }}&type=config">导出配置</a>
-                        <a class="btn" style="padding:3px 10px" href="/composite/api/export?task_id={{ t.id }}&type=log">导出日志</a>
+                        <a class="btn" style="padding:3px 10px" href="{{ api_base|default('/composite') }}/api/export?task_id={{ t.id }}&type=config">导出配置</a>
+                        <a class="btn" style="padding:3px 10px" href="{{ api_base|default('/composite') }}/api/export?task_id={{ t.id }}&type=log">导出日志</a>
                     </td>
                 </tr>
                 {% endfor %}
@@ -361,11 +361,7 @@ var NAMES = {{ names | tojson }};
 var BEST = {{ best_params | tojson }};
 var ACCOUNT_BALANCE = {{ account_balance if account_balance is not none else 'null' }};
 
-var PRESETS = [
-    ['NVDA/USDT:USDT', '英伟达'], ['QQQ/USDT:USDT', '纳指100'], ['TQQQ/USDT:USDT', '纳指3倍做多'],
-    ['MU/USDT:USDT', '美光'], ['AAPL/USDT:USDT', '苹果'], ['MSFT/USDT:USDT', '微软'],
-    ['GOOGL/USDT:USDT', '谷歌'], ['AMZN/USDT:USDT', '亚马逊'], ['META/USDT:USDT', 'Meta'], ['TSLA/USDT:USDT', '特斯拉']
-];
+var PRESETS = {{ presets | tojson }};
 
 function checkFund() {
     var inp = document.getElementById('total-fund');
@@ -516,7 +512,7 @@ function evenWeights() {
     // 优先匹配模式下权重已失效（资金按份额分配），提示用户改用份额设置
     var pchk = document.getElementById('prioritize-chk');
     if (pchk && pchk.checked) {
-        alert('已开启量化优先匹配：资金按份额均分，个股权重已失效。请在「份额数 n」设置占用份数。');
+        alert('已开启量化优先匹配：资金按份额均分，单币权重已失效。请在「份额数 n」设置占用份数。');
         return;
     }
     var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
@@ -561,17 +557,15 @@ function resetCardStrategy(card) {
     updateStrategies(card);
 }
 
-// 新增币对/全部美股时，若设置了统一策略则在选择币种后重置策略
+// 新增币对/一键全部添加时，若设置了统一策略则在选择币种后重置策略
 function applyUniformToCard(card) {
     var inp = card.querySelector('.sym-inp');
     if (inp && inp.value.trim()) resetCardStrategy(card);
 }
 
-// 添加全部美股代币（去重后按 SYM_ALL 一次添加）
-function addAllUS() {
-    // 逐个添加：SYM_ALL 已含全部币安合约上市的美股永续代币
+// 一键添加全部可选币对（美股页=全部美股代币；虚拟币页=全部主流币，去重后按 SYM_ALL 一次添加）
+function addAllSymbols() {
     SYM_ALL.forEach(function (s) {
-        // 仅添加 USDT:USDT 永续美股代币（过滤掉数字货币如 BTC/USDT 等）
         addSymRow(s);
     });
     // 优先匹配时资金按份额分配，权重已失效（不写入误导性的均分权重）；
@@ -585,7 +579,7 @@ function addAllUS() {
 }
 
 // 将「统一策略」应用到当前所有已添加的币对。
-// 未选择统一策略时静默跳过（不打断「全部美股」快捷添加）；仅当用户手动点击按钮且未选策略时才提示。
+// 未选择统一策略时静默跳过（不打断「一键全部添加」快捷添加）；仅当用户手动点击按钮且未选策略时才提示。
 function applyUniformStrategy(manual) {
     var uni = getUniformStrategy();
     if (!uni) {
@@ -607,7 +601,7 @@ function updateRatioTotal() {
     if (!el) return;
     var chk = document.getElementById('prioritize-chk');
     if (chk && chk.checked) {
-        el.innerHTML = '⚡ 优先匹配已开启：总资金将均分为 n 份份额，个股权重比例已失效。';
+        el.innerHTML = '⚡ 优先匹配已开启：总资金将均分为 n 份份额，单币权重比例已失效。';
         return;
     }
     var total = 0;
@@ -661,8 +655,8 @@ document.addEventListener('input', function (e) {
 
 document.addEventListener('DOMContentLoaded', function () {
     renderPresets();
-    addSymRow('NVDA/USDT:USDT');
-    addSymRow('QQQ/USDT:USDT');
+    var DEFAULT_SYMS = {{ default_syms | tojson }};
+    DEFAULT_SYMS.forEach(function (s) { addSymRow(s); });
 });
 </script>
 <script>

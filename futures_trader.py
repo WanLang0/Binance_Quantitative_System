@@ -17,7 +17,7 @@ import time
 class FuturesTrader:
     """币安 USDT 永续合约交易引擎（默认测试网 testnet，可切换真实合约）"""
 
-    def __init__(self, api_key='', api_secret='', proxy=None, testnet=True, leverage=5):
+    def __init__(self, api_key='', api_secret='', proxy=None, testnet=True, leverage=1):
         self.api_key = api_key
         self.api_secret = api_secret
         self.proxy = proxy
