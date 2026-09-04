@@ -2154,6 +2154,8 @@ _COMPOSITE_CTX = {
             'nav_key': 'crypto_composite', 'api_base': '/crypto-composite',
             'page_title': '虚拟币综合量化交易系统', 'brand': '🧩 虚拟币综合量化',
             'all_btn_name': '全部主流币', 'task_name_default': '主流币综合',
+            # 「全部主流币」按钮只加市值前20回测标的；下拉仍含其他主流币+历史测试币供手动选
+            'add_all_symbols': CRYPTO_COMPOSITE_SYMBOLS[:20],
             'presets': [['BTC/USDT', '比特币'], ['ETH/USDT', '以太坊'], ['BNB/USDT', '币安币'],
                         ['XRP/USDT', '瑞波币'], ['SOL/USDT', 'Solana'], ['TRX/USDT', '波场'],
                         ['HYPE/USDT', 'Hyperliquid'], ['ZEC/USDT', 'Zcash'], ['DOGE/USDT', '狗狗币'],

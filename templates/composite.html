@@ -112,7 +112,7 @@ td.short, td.neg { color: var(--sell); }
                 </div>
                 <div class="field">
                     <label>任务总资金 (USDT)</label>
-                    <input type="number" name="total_fund" id="total-fund" step="any" min="100" value="{{ ('%.2f' | format(account_balance)) if account_balance and account_balance > 0 else '10000' }}"{% if account_balance and account_balance > 0 %} max="{{ account_balance }}" data-balance="{{ account_balance }}"{% endif %}>
+                    <input type="number" name="total_fund" id="total-fund" step="any" min="100" value="{{ ('%.2f' | format(account_balance * 0.95)) if account_balance and account_balance > 0 else '10000' }}"{% if account_balance and account_balance > 0 %} max="{{ account_balance }}" data-balance="{{ account_balance }}"{% endif %}>
                     {% if account_balance and account_balance > 0 %}
                     <div style="margin-top:4px;font-size:.78rem;color:var(--muted)">账户可用余额 <b style="color:var(--text)">{{ '%.2f' | format(account_balance) }} USDT</b>，总资金不可超过</div>
                     {% endif %}
@@ -144,14 +144,35 @@ td.short, td.neg { color: var(--sell); }
                 <div class="preset-chips" id="preset-chips"></div>
 
                 <div class="field" style="margin-top:4px">
-                    <label>统一策略（新增/重置所有币对时应用，可留空）</label>
+                    <label>统一策略（新增/重置所有币对时应用，均可留空不调整）</label>
                     <select id="uniform-strategy" onchange="setUniformStrategy(this.value)">
                         <option value="">（不统一应用）</option>
                         {% for s in strategy_options %}
                         <option value="{{ s }}">{{ s }}</option>
                         {% endfor %}
                     </select>
-                    <div style="font-size:.78rem;color:var(--muted);margin-top:4px">选择策略后立即应用到当前所有币对；此后点击「＋添加币对」「{{ all_btn_name }}」的新币对也会自动套用该策略。已存在币对可随时点「应用统一策略」重新覆盖。</div>
+                    <div class="sym-card-grid" style="margin-top:6px">
+                        <label>时间周期
+                            <select id="uniform-timeframe">
+                                <option value="">（不调整）</option>
+                                {% for label, value in timeframe_options.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+                            </select>
+                        </label>
+                        <label>止盈 %
+                            <input type="number" id="uniform-tp" step="0.5" min="0" placeholder="留空不调整">
+                        </label>
+                        <label>止损 %
+                            <input type="number" id="uniform-sl" step="0.5" min="0" placeholder="留空不调整">
+                        </label>
+                        <label>方向
+                            <select id="uniform-short">
+                                <option value="">（不调整）</option>
+                                <option value="0">仅做多</option>
+                                <option value="1">允许做空</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div style="font-size:.78rem;color:var(--muted);margin-top:4px">选择策略后立即应用到当前所有币对；此后「＋添加币对」「{{ all_btn_name }}」的新币对也会自动套用。时间周期/止盈/止损/方向设置了才覆盖（留空不调整），点「应用统一策略」一键应用到全部币对。</div>
                 </div>
 
                 <div class="side-actions">
@@ -301,7 +322,7 @@ td.short, td.neg { color: var(--sell); }
                     <td>{{ t.leverage }}x</td>
                     <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
                     <td style="white-space:nowrap">
-                        <form method="POST" action="/composite" style="display:inline">
+                        <form method="POST" action="{{ api_base|default('/composite') }}" style="display:inline">
                             <input type="hidden" name="task_id" value="{{ t.id }}">
                             <button type="button" class="btn" style="padding:3px 10px" onclick="selectTask('{{ t.id }}')">查看</button>
                             {% if t.is_running %}
@@ -357,9 +378,12 @@ td.short, td.neg { color: var(--sell); }
 <script>
 // ---- 交易对可搜索下拉（模糊匹配，不区分大小写） ----
 var SYM_ALL = {{ symbols | tojson }};
+// 本页接口前缀（美股=/composite，虚拟币=/crypto-composite），轮询/导出等异步请求统一走它
+var API_BASE = {{ (api_base|default('/composite')) | tojson }};
+// 「一键全部添加」使用的清单：虚拟币页=市值前20回测标的；美股页（未传时）=全部可选
+var SYM_ADD_ALL = {{ (add_all_symbols if add_all_symbols is defined else symbols) | tojson }};
 var NAMES = {{ names | tojson }};
-var BEST = {{ best_params | tojson }};
-var ACCOUNT_BALANCE = {{ account_balance if account_balance is not none else 'null' }};
+var ACCOUNT_BALANCE = {{ (account_balance if account_balance is defined and account_balance is not none and account_balance != '' else none) | tojson }};
 
 var PRESETS = {{ presets | tojson }};
 
@@ -395,27 +419,7 @@ function setSymName(card, symbol) {
     if (nameInput) nameInput.value = nm;
 }
 
-// 选择币种后，自动把参数填充为该币种的最优策略（策略组合/周期/止盈止损/是否做空）
-function applyBestParams(card, symbol) {
-    var base = symbol.split('/')[0].toUpperCase();
-    var bp = BEST[base];
-    if (!bp) return;
-    card.querySelectorAll('.cs-strat-chk').forEach(function (c) {
-        c.checked = (bp.strategies.indexOf(c.value) >= 0);
-    });
-    updateStrategies(card);
-    var tf = card.querySelector('select[name="cs_timeframe"]');
-    if (tf && bp.timeframe) tf.value = bp.timeframe;
-    var tp = card.querySelector('input[name="cs_take_profit"]');
-    if (tp) tp.value = (bp.take_profit > 0) ? bp.take_profit : '';
-    var sl = card.querySelector('input[name="cs_stop_loss"]');
-    if (sl) sl.value = (bp.stop_loss > 0) ? bp.stop_loss : '';
-    var chk = card.querySelector('.cs-short-chk');
-    if (chk) chk.checked = !!bp.allow_short;
-    var hs = card.querySelector('input[name="cs_allow_short"]');
-    if (hs) hs.value = bp.allow_short ? '1' : '0';
-}
-
+// 选择币种后仅刷新币种中文名；策略等参数保持用户当前设置（历史最优自动填充已移除）
 function bindSymClick(combo) {
     var list = combo.querySelector('.sym-list');
     list.addEventListener('click', function (e) {
@@ -425,7 +429,8 @@ function bindSymClick(combo) {
         var inp = combo.querySelector('.sym-inp');
         inp.value = opt.dataset.v;
         setSymName(card, opt.dataset.v);
-        applyBestParams(card, opt.dataset.v);
+        // 若设置了「统一配置」，则新选的币种自动套用统一策略/周期/止盈止损/做空
+        applyUniformToCard(card);
         list.style.display = 'none';
     });
 }
@@ -469,10 +474,8 @@ function addSymRow(symbol) {
     if (chk) chk.checked = false;
     var hs = row.querySelector('input[name="cs_allow_short"]');
     if (hs) hs.value = '0';
-    // 选择币种时自动填充该币种最优策略参数（覆盖默认 EMA/1h）
+    // 设置了「统一配置」时，新币对自动套用统一策略/周期/止盈止损/做空
     if (symbol) {
-        applyBestParams(row, symbol);
-        // 若设置了「统一策略」，则以统一策略覆盖该币种的最优策略
         applyUniformToCard(row);
     }
     container.appendChild(row);
@@ -540,6 +543,31 @@ function getUniformStrategy() {
     return sel ? sel.value : '';
 }
 
+function getUniformTimeframe() {
+    var sel = document.getElementById('uniform-timeframe');
+    return sel ? sel.value : '';
+}
+
+// 统一止盈/止损：输入了有效数字（>0）才返回值，否则 null 表示不调整
+function getUniformNum(id) {
+    var inp = document.getElementById(id);
+    if (!inp) return null;
+    var v = parseFloat(inp.value);
+    return (!isNaN(v) && v > 0) ? v : null;
+}
+
+function getUniformShort() {
+    var sel = document.getElementById('uniform-short');
+    return (sel && sel.value !== '') ? sel.value : null;
+}
+
+// 是否任一统一项已设置（策略/周期/止盈/止损/方向）
+function hasAnyUniform() {
+    return !!(getUniformStrategy() || getUniformTimeframe()
+        || getUniformNum('uniform-tp') || getUniformNum('uniform-sl')
+        || getUniformShort() !== null);
+}
+
 // 下拉框选择策略即生效：选择后立即把该策略应用到当前所有已添加的币对
 function setUniformStrategy(val) {
     if (val) {
@@ -547,25 +575,48 @@ function setUniformStrategy(val) {
     }
 }
 
-// 将一个币对卡的策略重置为「统一策略」（仅勾选该单一策略）
+// 将「统一配置」应用到一个币对卡（策略/周期/止盈止损/方向；设置了的部分才覆盖）
 function resetCardStrategy(card) {
     var uni = getUniformStrategy();
-    if (!uni) return;
-    card.querySelectorAll('.cs-strat-chk').forEach(function (c) {
-        c.checked = (c.value === uni);
-    });
-    updateStrategies(card);
+    if (uni) {
+        card.querySelectorAll('.cs-strat-chk').forEach(function (c) {
+            c.checked = (c.value === uni);
+        });
+        updateStrategies(card);
+    }
+    var tf = getUniformTimeframe();
+    if (tf) {
+        var tfSel = card.querySelector('select[name="cs_timeframe"]');
+        if (tfSel) tfSel.value = tf;
+    }
+    var tp = getUniformNum('uniform-tp');
+    if (tp !== null) {
+        var tpInp = card.querySelector('input[name="cs_take_profit"]');
+        if (tpInp) tpInp.value = tp;
+    }
+    var sl = getUniformNum('uniform-sl');
+    if (sl !== null) {
+        var slInp = card.querySelector('input[name="cs_stop_loss"]');
+        if (slInp) slInp.value = sl;
+    }
+    var sh = getUniformShort();
+    if (sh !== null) {
+        var chk = card.querySelector('.cs-short-chk');
+        if (chk) chk.checked = (sh === '1');
+        var hs = card.querySelector('input[name="cs_allow_short"]');
+        if (hs) hs.value = sh;
+    }
 }
 
-// 新增币对/一键全部添加时，若设置了统一策略则在选择币种后重置策略
+// 新增币对/一键全部添加时，若设置了任一统一项则套用到该币对
 function applyUniformToCard(card) {
     var inp = card.querySelector('.sym-inp');
-    if (inp && inp.value.trim()) resetCardStrategy(card);
+    if (inp && inp.value.trim() && hasAnyUniform()) resetCardStrategy(card);
 }
 
-// 一键添加全部可选币对（美股页=全部美股代币；虚拟币页=全部主流币，去重后按 SYM_ALL 一次添加）
+// 一键添加全部币对（美股页=全部美股代币；虚拟币页=市值前20回测标的，按 SYM_ADD_ALL 添加）
 function addAllSymbols() {
-    SYM_ALL.forEach(function (s) {
+    SYM_ADD_ALL.forEach(function (s) {
         addSymRow(s);
     });
     // 优先匹配时资金按份额分配，权重已失效（不写入误导性的均分权重）；
@@ -578,12 +629,11 @@ function addAllSymbols() {
     applyUniformStrategy();
 }
 
-// 将「统一策略」应用到当前所有已添加的币对。
-// 未选择统一策略时静默跳过（不打断「一键全部添加」快捷添加）；仅当用户手动点击按钮且未选策略时才提示。
+// 将「统一配置」应用到当前所有已添加的币对（策略/周期/止盈止损/方向，设置了的部分覆盖）。
+// 全部留空时静默跳过（不打断「一键全部添加」快捷添加）；仅当用户手动点击按钮且全空时才提示。
 function applyUniformStrategy(manual) {
-    var uni = getUniformStrategy();
-    if (!uni) {
-        if (manual) alert('请先在「统一策略」下拉框选择一个策略');
+    if (!hasAnyUniform()) {
+        if (manual) alert('请先在「统一策略」区域设置至少一项（策略/时间周期/止盈/止损/方向）');
         return;
     }
     var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
@@ -777,7 +827,7 @@ function refreshTaskRows(tasks) {
 }
 
 function pollStatus() {
-    var url = CUR_TASK ? '/composite/api/status?task_id=' + encodeURIComponent(CUR_TASK) : '/composite/api/status';
+    var url = API_BASE + '/api/status' + (CUR_TASK ? '?task_id=' + encodeURIComponent(CUR_TASK) : '');
     fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {

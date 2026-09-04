@@ -14,6 +14,8 @@ data/auto_trader_state.json
 data/auto_futures_state.json
 data/composite_state.json
 data/composite_tasks.json
+data/crypto_composite_state.json
+data/crypto_composite_tasks.json
 data/spot_tasks.json
 data/futures_tasks.json
 data/x.html
