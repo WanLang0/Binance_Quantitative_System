@@ -26,6 +26,9 @@ logger = logging.getLogger('daily_signal_report')
 # 数据根目录（磁盘状态/配置）
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, 'data', 'daily_signal_report.json')
+# 发送互斥锁：串行化「调度器定时发送」与「设置页立即发送」，避免并发双发邮件。
+# 只在本模块内部使用、单锁无嵌套，不存在死锁路径。
+_send_lock = threading.Lock()
 _mailer = None
 
 
@@ -302,40 +305,46 @@ def _has_sent_today(state, day):
 
 def run_daily_report(force=False):
     """执行一次当日信号扫描并发送邮件（开关关闭时跳过；若当天已发且非 force 则跳过）。
+    发送全程持模块级互斥锁：防止「调度器触发」与「设置页立即发送」并发导致重复发信。
     返回 (是否发送, 提示)"""
-    cfg = get_config()
-    if not cfg.get('enabled') and not force:
-        return False, '每日日报开关未开启'
-    mailer = _get_mailer()
-    if not mailer:
-        return False, 'mailer 未初始化'
-    if not mailer.is_configured():
-        return False, '未配置邮箱（设置页绑定 QQ 邮箱后方可发送）'
+    if not _send_lock.acquire(blocking=False):
+        return False, '日报正在发送中，请稍候（避免重复发信）'
+    try:
+        cfg = get_config()
+        if not cfg.get('enabled') and not force:
+            return False, '每日日报开关未开启'
+        mailer = _get_mailer()
+        if not mailer:
+            return False, 'mailer 未初始化'
+        if not mailer.is_configured():
+            return False, '未配置邮箱（设置页绑定 QQ 邮箱后方可发送）'
 
-    today = datetime.now().strftime('%Y-%m-%d')
-    state = _load_state()
-    if not force and _has_sent_today(state, today):
-        return False, f'{today} 日报已发送，跳过'
+        today = datetime.now().strftime('%Y-%m-%d')
+        state = _load_state()
+        if not force and _has_sent_today(state, today):
+            return False, f'{today} 日报已发送，跳过'
 
-    ex = _Exchange()
-    rows, total_signals, err_count = [], 0, 0
-    for sym in TOP20_SYMBOLS:
-        try:
-            r = scan_symbol(ex, sym, SCAN_STRATEGIES)
-        except Exception as e:
-            r = {'symbol': sym, 'name': NAME_MAP.get(sym.split('/')[0], sym),
-                 'price': None, 'change_pct': None, 'signals': [], 'err': str(e)}
-        if r.get('err'):
-            err_count += 1
-        total_signals += len(r.get('signals') or [])
-        rows.append(r)
+        ex = _Exchange()
+        rows, total_signals, err_count = [], 0, 0
+        for sym in TOP20_SYMBOLS:
+            try:
+                r = scan_symbol(ex, sym, SCAN_STRATEGIES)
+            except Exception as e:
+                r = {'symbol': sym, 'name': NAME_MAP.get(sym.split('/')[0], sym),
+                     'price': None, 'change_pct': None, 'signals': [], 'err': str(e)}
+            if r.get('err'):
+                err_count += 1
+            total_signals += len(r.get('signals') or [])
+            rows.append(r)
 
-    body = build_report_body(today, rows, total_signals, err_count)
-    subject = f"📧 币安量化 · 虚拟币信号/异动日报 {today}"
-    ok, tip = mailer.send_email(subject, body)
-    if ok:
-        _save_state({**state, 'last_sent_date': today, 'total_signals': total_signals})
-    return ok, tip
+        body = build_report_body(today, rows, total_signals, err_count)
+        subject = f"📧 币安量化 · 虚拟币信号/异动日报 {today}"
+        ok, tip = mailer.send_email(subject, body)
+        if ok:
+            _save_state({**state, 'last_sent_date': today, 'total_signals': total_signals})
+        return ok, tip
+    finally:
+        _send_lock.release()
 
 
 # ---------- 调度器（守护线程，每天 18:30 触发） ----------
@@ -364,21 +373,24 @@ def _next_trigger_dt(now=None, tstr='18:30'):
 
 
 def _scheduler_loop():
+    # 分段睡眠（每段最多60s）：中途修改发送时间/开关可在1分钟内生效，
+    # 避免「一觉睡到旧触发时刻」导致改完时间仍在旧时间发送。
     while True:
         try:
             now = datetime.now()
             cfg = get_config()
             if not cfg.get('enabled'):
-                # 未开启：休眠到下一个整点再检查配置，避免空转
-                time.sleep(1800)
+                time.sleep(60)  # 未开启：轻量轮询配置
                 continue
             nxt = _next_trigger_dt(now, cfg.get('time', '18:30'))
             sleep_s = (nxt - now).total_seconds()
             if sleep_s > 0:
-                time.sleep(sleep_s)
+                time.sleep(min(sleep_s, 60))  # 分段睡，醒来重读配置重算触发点
+                continue
             # 到达触发时间，执行日报（force 关闭时同一天自动幂等）
             ok, tip = run_daily_report(force=False)
             logger.info(f"每日日报执行: {tip}")
+            time.sleep(60)  # 触发后短暂歇息，防止时间边界抖动重复触发
         except Exception as e:
             logger.warning(f"日报调度异常: {e}")
             time.sleep(60)
