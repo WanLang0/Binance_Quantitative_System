@@ -359,6 +359,8 @@ td.short, td.neg { color: var(--sell); }
                     <option value="">（暂无任务）</option>
                     {% endif %}
                 </select>
+                <button type="button" class="btn" style="padding:3px 10px;font-size:.8rem;margin-left:8px"
+                        onclick="clearLogView()" title="仅清空页面显示，只保留清屏后的新日志；磁盘日志全量保留，导出日志不受影响">🧹 清屏</button>
             </h2>
             <div class="log-box" id="log-box">
                 {% if log_lines %}
@@ -712,6 +714,9 @@ document.addEventListener('DOMContentLoaded', function () {
 <script>
 var CUR_TASK = {{ cur_task_id | tojson }};
 var pollTimer = null;
+var LOG_MARK = {};      // 每任务清屏标记：记录清屏时已存在的日志条数，之后只显示新日志
+var LAST_LOG_LEN = {};  // 每任务最近一次轮询到的日志总条数（供清屏时取基准）
+LAST_LOG_LEN[CUR_TASK] = {{ (log_lines | length) }};
 
 function setRunTag(n) {
     var runTag = document.getElementById('run-tag');
@@ -789,16 +794,20 @@ function updateStatus(data) {
         if (cells[13]) cells[13].textContent = (s.buy_count || 0) + '/' + (s.sell_count || 0);
     });
 
-    // 日志（倒序显示最新100条）
+    // 日志（倒序显示最新100条；已清屏则只显示清屏点之后的新日志）
     var box = document.getElementById('log-box');
-    var logs = data.log || [];
+    var all = data.log || [];
+    LAST_LOG_LEN[CUR_TASK] = all.length;
+    var logs = all.slice(LOG_MARK[CUR_TASK] || 0);
     var html = '';
     var num = 0;
     for (var i = logs.length - 1; i >= 0 && num < 100; i--) {
         html += '<div>' + escapeHtml(logs[i]) + '</div>';
         num++;
     }
-    box.innerHTML = html || '<div class="empty">暂无日志</div>';
+    box.innerHTML = html || (LOG_MARK[CUR_TASK]
+        ? '<div class="empty">已清屏：暂无新日志（导出日志不受影响）</div>'
+        : '<div class="empty">暂无日志</div>');
     var lc = document.getElementById('log-count');
     if (lc) lc.textContent = logs.length;
 }
@@ -843,6 +852,15 @@ function selectTask(tid) {
     var sel = document.getElementById('task-switch');
     if (sel && sel.value !== tid) sel.value = tid;
     pollStatus();
+}
+
+// 清屏：仅清空页面显示，清屏后只渲染新产生的日志；磁盘日志与「导出日志」全量保留
+function clearLogView() {
+    LOG_MARK[CUR_TASK] = LAST_LOG_LEN[CUR_TASK] || 0;
+    var box = document.getElementById('log-box');
+    if (box) box.innerHTML = '<div class="empty">已清屏：仅显示清屏后的新日志（导出日志不受影响）</div>';
+    var lc = document.getElementById('log-count');
+    if (lc) lc.textContent = '0';
 }
 
 function startPolling(sec) {
