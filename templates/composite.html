@@ -98,7 +98,7 @@ td.short, td.neg { color: var(--sell); }
                     <input type="number" name="leverage" step="1" min="1" max="50" value="{{ leverage or 1 }}">
                 </div>
                 <button type="submit" name="save_keys" value="1" class="btn btn-primary btn-block">保存密钥</button>
-                <p class="info-note">{% if nav_key == 'crypto_composite' %}通过币安<b> USDT 永续合约</b>交易主流加密币（市值前20回测标的 BTC/ETH/HYPE 等 24 只）。<b>主网默认</b>，可用测试网模拟；请确保已开通合约权限、API Key 已加入 IP 白名单。{% else %}通过币安<b> USDT 永续合约</b>交易美股代币（QQQ/TQQQ/NVDA/MU 等）。<b>主网默认</b>（美股永续仅主网有）；测试网只能选币种合约。{% endif %}</p>
+                <p class="info-note">{% if nav_key == 'crypto_composite' %}通过币安<b> USDT 永续合约</b>交易主流加密币（市值前30回测标的 BTC/ETH/HYPE 等 30 只）。<b>主网默认</b>，可用测试网模拟；请确保已开通合约权限、API Key 已加入 IP 白名单。{% else %}通过币安<b> USDT 永续合约</b>交易美股代币（QQQ/TQQQ/NVDA/MU 等）。<b>主网默认</b>（美股永续仅主网有）；测试网只能选币种合约。{% endif %}</p>
             </form>
         </div>
 
@@ -382,7 +382,7 @@ td.short, td.neg { color: var(--sell); }
 var SYM_ALL = {{ symbols | tojson }};
 // 本页接口前缀（美股=/composite，虚拟币=/crypto-composite），轮询/导出等异步请求统一走它
 var API_BASE = {{ (api_base|default('/composite')) | tojson }};
-// 「一键全部添加」使用的清单：虚拟币页=市值前20回测标的；美股页（未传时）=全部可选
+// 「一键全部添加」使用的清单：虚拟币页=市值前30回测标的；美股页（未传时）=全部可选
 var SYM_ADD_ALL = {{ (add_all_symbols if add_all_symbols is defined else symbols) | tojson }};
 var NAMES = {{ names | tojson }};
 var ACCOUNT_BALANCE = {{ (account_balance if account_balance is defined and account_balance is not none and account_balance != '' else none) | tojson }};
@@ -616,7 +616,7 @@ function applyUniformToCard(card) {
     if (inp && inp.value.trim() && hasAnyUniform()) resetCardStrategy(card);
 }
 
-// 一键添加全部币对（美股页=全部美股代币；虚拟币页=市值前20回测标的，按 SYM_ADD_ALL 添加）
+// 一键添加全部币对（美股页=全部美股代币；虚拟币页=市值前30回测标的，按 SYM_ADD_ALL 添加）
 function addAllSymbols() {
     SYM_ADD_ALL.forEach(function (s) {
         addSymRow(s);

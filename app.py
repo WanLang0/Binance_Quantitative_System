@@ -1951,15 +1951,16 @@ def _composite_symbol_list():
 
 # ==================== 虚拟币综合量化（与美股综合量化同界面同功能，标的为加密币 USDT 永续） ====================
 
-# 虚拟币综合量化可选的币对（市值前20回测标的在前 + 其他主流币，均为币安 USDT 永续）
+# 虚拟币综合量化可选的币对（市值前30回测标的，均为币安 USDT 永续）
 CRYPTO_COMPOSITE_SYMBOLS = [
-    # 市值前20（CoinGecko，剔除稳定币）∩ 币安 USDT 永续，按市值降序
+    # 市值前30（CoinGecko，剔除稳定币/封装/黄金）∩ 币安 USDT 永续，按市值降序
     'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'SOL/USDT',
     'TRX/USDT', 'HYPE/USDT', 'ZEC/USDT', 'DOGE/USDT', 'XMR/USDT',
     'LINK/USDT', 'ADA/USDT', 'XLM/USDT', 'BCH/USDT', 'CC/USDT',
     'LTC/USDT', 'UNI/USDT', 'GRAM/USDT', 'HBAR/USDT', 'AVAX/USDT',
-    # 其他主流币
-    'DOT/USDT', 'TON/USDT', 'NEAR/USDT', 'ICP/USDT',
+    'SUI/USDT', 'NEAR/USDT', 'M/USDT', 'TAO/USDT',
+    'ASTER/USDT', 'AAVE/USDT', 'ONDO/USDT', 'MORPHO/USDT',
+    'DOT/USDT', 'ICP/USDT',
 ]
 
 # 币种展示名称映射
@@ -1968,7 +1969,9 @@ CRYPTO_COMPOSITE_NAMES = {
     'TRX': '波场', 'HYPE': 'Hyperliquid', 'ZEC': 'Zcash', 'DOGE': '狗狗币', 'XMR': '门罗币',
     'LINK': 'Chainlink', 'ADA': '艾达币', 'XLM': '恒星币', 'BCH': '比特现金', 'CC': 'Canton',
     'LTC': '莱特币', 'UNI': 'Uniswap', 'GRAM': 'Gram', 'HBAR': 'Hedera', 'AVAX': '雪崩',
-    'DOT': '波卡', 'TON': 'Toncoin', 'NEAR': 'NEAR协议', 'ICP': '互联网计算机',
+    'SUI': 'Sui', 'NEAR': 'NEAR协议', 'M': 'MemeCore', 'TAO': 'Bittensor',
+    'ASTER': 'Aster', 'AAVE': 'Aave', 'ONDO': 'Ondo', 'MORPHO': 'Morpho',
+    'DOT': '波卡', 'ICP': '互联网计算机',
 }
 
 
@@ -2178,15 +2181,16 @@ _COMPOSITE_CTX = {
             'nav_key': 'crypto_composite', 'api_base': '/crypto-composite',
             'page_title': '虚拟币综合量化交易系统', 'brand': '🧩 虚拟币综合量化',
             'all_btn_name': '全部主流币', 'task_name_default': '主流币综合',
-            # 「全部主流币」按钮只加市值前20回测标的；下拉仍含其他主流币+历史测试币供手动选
-            'add_all_symbols': CRYPTO_COMPOSITE_SYMBOLS[:20],
+            # 「全部主流币」按钮只加市值前30标的；下拉仍含历史测试币供手动选
+            'add_all_symbols': CRYPTO_COMPOSITE_SYMBOLS[:30],
             'presets': [['BTC/USDT', '比特币'], ['ETH/USDT', '以太坊'], ['BNB/USDT', '币安币'],
                         ['XRP/USDT', '瑞波币'], ['SOL/USDT', 'Solana'], ['TRX/USDT', '波场'],
                         ['HYPE/USDT', 'Hyperliquid'], ['ZEC/USDT', 'Zcash'], ['DOGE/USDT', '狗狗币'],
                         ['XMR/USDT', '门罗币'], ['LINK/USDT', 'Chainlink'], ['ADA/USDT', '艾达币'],
                         ['XLM/USDT', '恒星币'], ['BCH/USDT', '比特现金'], ['CC/USDT', 'Canton'],
                         ['LTC/USDT', '莱特币'], ['UNI/USDT', 'Uniswap'], ['GRAM/USDT', 'Gram'],
-                        ['HBAR/USDT', 'Hedera'], ['AVAX/USDT', '雪崩']],
+                        ['HBAR/USDT', 'Hedera'], ['AVAX/USDT', '雪崩'], ['SUI/USDT', 'Sui'],
+                        ['NEAR/USDT', 'NEAR协议'], ['TAO/USDT', 'Bittensor'], ['AAVE/USDT', 'Aave']],
             'default_syms': ['BTC/USDT'],
         },
     },

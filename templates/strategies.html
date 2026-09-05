@@ -289,7 +289,7 @@
     <div class="card">
         <h2>{{ recommended.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ recommended.meta.updated }}</span></h2>
         <div class="info-note">{{ recommended.meta.desc }}</div>
-        {% for mkt, mname in [('crypto', '🪙 虚拟币（市值前20合约币 · macd+背离+量能）'), ('us', '📈 美股代币（Yahoo 1h）')] %}
+        {% for mkt, mname in [('crypto', '🪙 虚拟币（市值前30合约币 · macd+背离+量能）'), ('us', '📈 美股代币（Yahoo 1h）')] %}
         {% set rows = recommended[mkt] %}
         {% if rows %}
         <div style="margin:14px 0 6px;font-weight:600;font-size:1.02rem">{{ mname }}</div>
