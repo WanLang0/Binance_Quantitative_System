@@ -284,7 +284,10 @@ class AutoFutures:
             if perr:
                 self._log(f"刷新持仓失败(本轮跳过持仓同步): {perr}")
                 return
-            pos = next((p for p in positions if p.get('symbol') == symbol), None)
+            # 符号兼容：交易所返回 ccxt 统一符号(BTC/USDT:USDT)，任务配置可能是
+            # 不带后缀的 BTC/USDT，两种格式都能匹配，避免误判"外部平仓"
+            pos = next((p for p in positions
+                        if p.get('symbol') == symbol or p.get('symbol_base') == symbol), None)
             if not pos or pos.get('contracts', 0) <= 0:
                 # 外部平仓检测：引擎认为有仓但交易所已无仓（多为止损保护单触发）
                 if prev_pos and prev_pos > 0 and prev_side != 'none':
@@ -408,11 +411,11 @@ class AutoFutures:
         body = (
             f"📋 量化任务: 自动合约-{task_id}（{mode}）\n"
             f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"──────────── 交易明细 ────────────\n"
+            f"──── 交易明细 ────\n"
             f"品种: {symbol}\n周期: {tf}\n策略: {strategies}\n"
             f"方向: {side}\n操作: {action}\n数量: {qty} 张\n价格: {price}\n"
             f"{note}"
-            f"──────────── 账户信息 ────────────\n"
+            f"──── 账户信息 ────\n"
             f"账户可用余额: {acct:.2f} USDT\n复利可用买入资金: {buy_bal:.2f} USDT\n"
             f"杠杆: {lev}x\n当前持仓: {pos} 张（开仓均价 {avg:.6f}）\n"
             f"未实现盈亏: {upnl:+.2f} USDT（{pnl_pct:+.2f}%）\n占用保证金: {mgn:.2f} USDT\n"

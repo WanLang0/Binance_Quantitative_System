@@ -17,13 +17,14 @@ SMTP_PORT = 465  # SSL
 TIMEOUT = 15     # 网络不通时避免长时间挂起
 
 
-def send_email(subject, body):
-    """同步发送告警邮件到已配置的QQ邮箱，返回 (是否成功, 提示)"""
+def send_email(subject, body, html=False):
+    """同步发送告警邮件到已配置的QQ邮箱，返回 (是否成功, 提示)。
+    html=True 时以 HTML 正文发送（邮件客户端渲染样式）"""
     account = auth.get_any_email_account()
     if not account:
         return False, '未配置邮箱或授权码'
     email, auth_code = account
-    msg = MIMEText(body, 'plain', 'utf-8')
+    msg = MIMEText(body, 'html' if html else 'plain', 'utf-8')
     msg['Subject'] = Header(subject, 'utf-8')
     msg['From'] = email
     msg['To'] = email
@@ -36,11 +37,11 @@ def send_email(subject, body):
         return False, f'发送失败: {type(e).__name__}: {e}'
 
 
-def send_async(subject, body):
+def send_async(subject, body, html=False):
     """守护线程发送（引擎故障告警用）：网络不通时最多阻塞 TIMEOUT 秒且不影响交易循环"""
     def _worker():
         try:
-            ok, tip = send_email(subject, body)
+            ok, tip = send_email(subject, body, html=html)
             print(f"[mailer] {'OK' if ok else 'FAIL'} {subject} -> {tip}")
         except Exception as e:
             print(f"[mailer] 异常: {e}")

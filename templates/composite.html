@@ -308,7 +308,7 @@ td.short, td.neg { color: var(--sell); }
         {% if tasks %}
         <div class="card">
             <h2>🗂️ 综合任务列表（{{ tasks | length }} 条，{{ running_count }} 个运行中）</h2>
-            <div class="table-wrap">
+            <div class="table-wrap" style="max-height:260px;overflow-y:auto">
             <table class="table">
                 <tr><th>启动时间</th><th>任务名</th><th>总资金</th><th>币对</th><th>策略分配</th><th>间隔</th><th>杠杆</th><th>状态</th><th>操作</th></tr>
                 {% for t in tasks %}
@@ -317,7 +317,7 @@ td.short, td.neg { color: var(--sell); }
                     <td><b>{{ t.name }}</b></td>
                     <td>{{ t.total_fund }}U</td>
                     <td>{{ t.symbols | length if t.symbols else 0 }}个</td>
-                    <td style="font-size:.85rem">{% for c in (t.symbols or [])[:4] %}{{ c.symbol.split('/')[0] }}({{ c.strategy }},{{ '%.0f' | format(c.fund_ratio * 100) }}%){% if not loop.last %} / {% endif %}{% endfor %}{% if (t.symbols or []) | length > 4 %}…{% endif %}</td>
+                    <td style="font-size:.85rem" title="{% for c in (t.symbols or []) %}{{ c.symbol.split('/')[0] }}({{ c.strategy }},{{ '%.0f' | format(c.fund_ratio * 100) }}%){% if not loop.last %} / {% endif %}{% endfor %}">{% for c in (t.symbols or [])[:6] %}{{ c.symbol.split('/')[0] }}({{ '%.0f' | format(c.fund_ratio * 100) }}%){% if not loop.last %} / {% endif %}{% endfor %}{% if (t.symbols or []) | length > 6 %}…{% endif %}</td>
                     <td>{{ t.interval }}s</td>
                     <td>{{ t.leverage }}x</td>
                     <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>

@@ -1723,6 +1723,28 @@ def _load_macd_matrix():
         return None
 
 
+def _load_us_macd_matrix():
+    """美股代币 × 三种MACD组合策略 全配置回测矩阵（最优策略页表格展示）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'us_macd_div_summary_2024_2026.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_recommended():
+    """实盘推荐配置（虚拟币/美股 各三档，风险低→高）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'recommended_configs.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 @app.route("/strategies", methods=["GET", "POST"])
 def strategies_summary():
     """最优策略页：可管理的最优列表 + 可翻页历史测试记录 + 历年矩阵 + 研究时间线"""
@@ -1791,6 +1813,8 @@ def strategies_summary():
                            sort=sort, order=order, cat=cat, sector=sector,
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
+                           us_macd_matrix=_load_us_macd_matrix(),
+                           recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)
 

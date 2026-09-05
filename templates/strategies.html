@@ -285,6 +285,55 @@
 
     <!-- 历年收益矩阵 / 研究结论时间线：数据迁移至 year_matrix.py / research_log.py 单独维护，界面暂不展示 -->
 
+    {% if recommended %}
+    <div class="card">
+        <h2>{{ recommended.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ recommended.meta.updated }}</span></h2>
+        <div class="info-note">{{ recommended.meta.desc }}</div>
+        {% for mkt, mname in [('crypto', '🪙 虚拟币（市值前20合约币 · macd+背离+量能）'), ('us', '📈 美股代币（Yahoo 1h）')] %}
+        {% set rows = recommended[mkt] %}
+        {% if rows %}
+        <div style="margin:14px 0 6px;font-weight:600;font-size:1.02rem">{{ mname }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>风险</th><th>定位</th><th>周期</th><th>方向</th><th>止盈止损</th>
+                <th>2024收益</th><th>2025收益</th><th>2026YTD收益</th>
+                <th>三年合计盈亏</th><th>三年下单数</th><th>三年均回撤</th><th>三年最深回撤</th><th>三年总夏普</th>
+                <th style="min-width:260px">说明</th>
+            </tr>
+            {% for r in rows %}
+            <tr>
+                <td><b>{{ r.risk }}</b></td>
+                <td>{{ r.label }}</td>
+                <td>{{ r.tf }}</td>
+                <td>{{ r.mode }}</td>
+                <td>{{ r.tpsl }}</td>
+                {% for y in ['2024', '2025', '2026YTD'] %}
+                {% set d = r.years[y] %}
+                {% if d and d.ret is not none %}
+                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}">{{ '%+.1f'|format(d.ret) }}%<br>
+                    <small style="color:#8a94a6">{{ d.pos }}/{{ d.cnt }}正</small></td>
+                {% else %}
+                <td>—</td>
+                {% endif %}
+                {% endfor %}
+                <td class="{{ 'pos' if r.tot > 0 else 'neg' }}">{{ '%+.1f'|format(r.tot) }}%</td>
+                <td>{{ r.n_all }}</td>
+                <td>{{ '%.1f'|format(r.mdd_all_avg) }}%</td>
+                <td class="{{ 'neg' if r.mdd_all_max < -50 else '' }}">{{ '%.1f'|format(r.mdd_all_max) }}%</td>
+                <td class="{{ 'pos' if r.sh_all > 0 else 'neg' }}">{{ '%+.2f'|format(r.sh_all) }}</td>
+                <td style="font-size:.8rem;color:#aab4c4">{{ r.note }}<br>
+                    <small style="color:#8a94a6">BH基准：2024 {{ '%+.1f'|format(r.bh['2024']) }}% / 2025 {{ '%+.1f'|format(r.bh['2025']) }}% / 2026YTD {{ '%+.1f'|format(r.bh['2026YTD']) }}%</small></td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>提示：</b>虚拟币三档均为 macd+背离+量能 变体（回测中唯一跨年度稳健的变体）；美股任何配置均跑输买入持有，定位是「降波动的持有替代」，不建议做空美股。回测≠未来收益，实盘请以 1x 起步验证。</div>
+    </div>
+    {% endif %}
+
     {% if macd_matrix %}
     <div class="card">
         <h2>{{ macd_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ macd_matrix.meta.updated }}</span></h2>
@@ -334,6 +383,60 @@
         </div>
         {% endfor %}
         <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ macd_matrix.meta.conclusion }}</div>
+    </div>
+    {% endif %}
+
+    {% if us_macd_matrix %}
+    <div class="card">
+        <h2>{{ us_macd_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ us_macd_matrix.meta.updated }}</span></h2>
+        <div class="info-note">{{ us_macd_matrix.meta.desc }}</div>
+        {% if us_macd_matrix.meta.bh['1h'] %}
+        <div class="info-note">买入持有BH基准（跨标的均值）：
+            2024(9月起) {{ '%+.1f'|format(us_macd_matrix.meta.bh['1h']['2024']) }}% /
+            2025 {{ '%+.1f'|format(us_macd_matrix.meta.bh['1h']['2025']) }}% /
+            2026YTD {{ '%+.1f'|format(us_macd_matrix.meta.bh['1h']['2026YTD']) }}%。
+        </div>
+        {% endif %}
+        {% for s in us_macd_matrix.strategies %}
+        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>周期</th><th>方向</th><th>止盈止损</th>
+                <th>2024收益</th><th>2024回撤</th><th>2024最大回撤</th><th>2024下单数</th><th>2024夏普</th>
+                <th>2025收益</th><th>2025回撤</th><th>2025最大回撤</th><th>2025下单数</th><th>2025夏普</th>
+                <th>2026YTD收益</th><th>2026YTD回撤</th><th>2026YTD最大回撤</th><th>2026YTD下单数</th><th>2026YTD夏普</th>
+                <th>三年合计盈亏</th><th>三年下单数</th><th>三年均回撤</th><th>三年最深回撤</th><th>三年总夏普</th>
+            </tr>
+            {% for c in s.configs %}
+            <tr>
+                <td>{{ c.tf }}</td>
+                <td>{{ c.mode }}</td>
+                <td>{{ c.tpsl }}</td>
+                {% for y in ['2024', '2025', '2026YTD'] %}
+                {% set d = c[y] %}
+                {% if d and d.ret is not none %}
+                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}">{{ '%+.1f'|format(d.ret) }}%<br>
+                    <small style="color:#8a94a6">{{ d.pos }}/{{ d.cnt }}正·跑赢BH{{ d.beat }}</small></td>
+                <td>{{ '%.1f'|format(d.mdd) }}%</td>
+                <td class="{{ 'neg' if d.mdd_max is not none and d.mdd_max < -50 else '' }}">{{ '%.1f'|format(d.mdd_max) }}%</td>
+                <td>{{ d.n if d.n is not none else '—' }}</td>
+                <td>{{ '%+.2f'|format(d.sh) if d.sh is not none else '—' }}</td>
+                {% else %}
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+                {% endif %}
+                {% endfor %}
+                <td class="{{ 'pos' if c.tot is not none and c.tot > 0 else 'neg' if c.tot is not none else '' }}">{% if c.tot is not none %}{{ '%+.1f'|format(c.tot) }}%{% else %}—{% endif %}</td>
+                <td>{{ c.n_all if c.n_all is not none else '—' }}</td>
+                <td>{{ '%.1f'|format(c.mdd_all_avg) }}%</td>
+                <td class="{{ 'neg' if c.mdd_all_max < -50 else '' }}">{{ '%.1f'|format(c.mdd_all_max) }}%</td>
+                <td class="{{ 'pos' if c.sh_all is not none and c.sh_all > 0 else 'neg' if c.sh_all is not none else '' }}">{% if c.sh_all is not none %}{{ '%+.2f'|format(c.sh_all) }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ us_macd_matrix.meta.conclusion }}</div>
     </div>
     {% endif %}
 

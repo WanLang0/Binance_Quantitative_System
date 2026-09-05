@@ -499,13 +499,27 @@ class CompositeTrader:
             return
         pos_by_symbol = {}
         for p in positions:
+            # 双键登记：ccxt 统一符号(BTC/USDT:USDT)与去后缀符号(BTC/USDT)都能匹配，
+            # 避免引擎配置符号格式与交易所返回不一致导致"找不到持仓"误判外部平仓
             pos_by_symbol[p.get('symbol')] = p
+            base = p.get('symbol_base') or (p.get('symbol') or '').rsplit(':', 1)[0]
+            if base and base != p.get('symbol'):
+                pos_by_symbol.setdefault(base, p)
         for s in self.status['symbols']:
             sym = s['symbol']
             pos = pos_by_symbol.get(sym)
             if not pos or pos.get('contracts', 0) <= 0:
                 # 外部平仓检测：引擎认为有仓但交易所已无仓
                 if s.get('position') and s.get('position', 0) > 0 and s.get('side') != 'none':
+                    # 防抖：刚开仓120s内不判外部平仓（防API延迟/持仓识别抖动导致误判，
+                    # 引发"回收份额→重开仓→再误判"的循环开仓），本轮保持状态下一轮再确认
+                    lt = (s.get('last_trade') or {}).get('time')
+                    try:
+                        recent = bool(lt) and (datetime.now() - datetime.fromisoformat(lt)).total_seconds() < 120
+                    except Exception:
+                        recent = False
+                    if recent:
+                        continue
                     self._alert(f"检测到持仓已被外部平仓({sym})，清理挂单并同步状态")
                     s['sell_count'] += 1
                     self.status['sell_count'] += 1
@@ -601,8 +615,8 @@ class CompositeTrader:
             return f"当前价偏离上次收盘价 {dev*100:.2f}% > 3%"
         return None
 
-    def _mail_trade(self, s, side, action, qty, price, extra=''):
-        """下单成功邮件通知，包含任务名称与账户信息"""
+    def _mail_trade(self, s, side, action, qty, price, extra='', pnl=None):
+        """下单成功邮件通知（HTML 样式版）：开多=绿 / 开空=红 / 平仓按盈亏着色"""
         if not mailer.is_configured():
             return
         st = self.status
@@ -612,25 +626,63 @@ class CompositeTrader:
         tf = s.get('timeframe') or '?'
         sym_name = s.get('name') or s['symbol'].split('/')[0]
         pos = s.get('position', 0) or 0
-        auth = s.get('leverage', self.leverage)
+        lev = s.get('leverage', self.leverage)
         acct = st.get('account_balance', 0.0) or 0.0
         alloc = s.get('allocated_fund', 0.0) or 0.0
         buy_bal = s.get('buy_balance', 0.0) or 0.0
-        note = (f"备注: {extra}\n") if extra else ""
-        body = (
-            f"📋 量化任务: {task_name}（综合量化-{task_id}）\n"
-            f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"──────────── 交易明细 ────────────\n"
-            f"品种: {s['symbol']}（{sym_name}）\n周期: {tf}\n策略: {strategies}\n"
-            f"方向: {side}\n操作: {action}\n数量: {qty}\n价格: {price}\n"
-            f"{note}"
-            f"──────────── 账户信息 ────────────\n"
-            f"任务账户可用余额: {acct:.2f} USDT\n杠杆: {auth}x\n本币对分配资金: {alloc:.2f} USDT\n"
-            f"本币对复利资金: {buy_bal:.2f} USDT\n当前持仓张数: {pos}\n"
-            f"任务累计买入/卖出: {st.get('buy_count', 0)}/{st.get('sell_count', 0)} 次"
-        )
-        subject = f"💰 币安量化成交(综合|{task_id}|{side}): {s['symbol']} 近{price}"
-        mailer.send_async(subject, body)
+
+        # 配色（与系统一致：多=绿 #16a34a / 空=红 #dc2626；平仓按盈亏着色）
+        GREEN, RED, TXT, MUTED, BORDER, BG = '#16a34a', '#dc2626', '#1e2530', '#8a94a6', '#e3e8ef', '#f7f9fc'
+        if side == '做多':
+            theme = GREEN
+        elif side == '做空':
+            theme = RED
+        else:  # 平仓：按盈亏着色
+            theme = GREEN if (pnl or 0) > 0 else (RED if (pnl or 0) < 0 else TXT)
+        side_color = GREEN if '多' in side else (RED if '空' in side else TXT)
+
+        def row(k, v, v_color=TXT, bold=False):
+            return ('<tr>'
+                    f'<td style="padding:7px 12px;border-bottom:1px solid {BORDER};color:{MUTED};width:130px">{k}</td>'
+                    f'<td style="padding:7px 12px;border-bottom:1px solid {BORDER};color:{v_color};'
+                    f'font-weight:{600 if bold else 400}">{v}</td></tr>')
+
+        pnl_html = ''
+        if pnl is not None:
+            pc = GREEN if pnl > 0 else (RED if pnl < 0 else MUTED)
+            pnl_html = row('本单盈亏', f'<b style="color:{pc}">{pnl:+.2f} USDT</b>')
+
+        html = f"""
+<div style="font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;max-width:560px;margin:0 auto;border:1px solid {BORDER};border-radius:10px;overflow:hidden">
+  <div style="background:{theme};padding:14px 18px">
+    <div style="color:#fff;font-size:17px;font-weight:600">💰 币安量化成交 · {side}{action}</div>
+    <div style="color:rgba(255,255,255,.85);font-size:12px;margin-top:4px">{s['symbol']}（{sym_name}） · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+  </div>
+  <div style="padding:14px 18px;background:#fff">
+    <div style="font-size:13px;color:{MUTED};margin-bottom:10px">📋 任务：{task_name}（ID {task_id}）</div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;background:{BG};border-radius:6px">
+      {row('品种', f"<b>{s['symbol']}</b>（{sym_name}）")}
+      {row('方向 / 操作', f"<b style='color:{side_color}'>{side}</b> / {action}")}
+      {row('周期 / 策略', f"{tf} · {strategies}")}
+      {row('数量 / 价格', f"{qty} 张 @ {price}")}
+      {pnl_html}
+      {row('备注', extra or '—', MUTED)}
+    </table>
+    <div style="height:12px"></div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;background:{BG};border-radius:6px">
+      {row('账户可用余额', f'{acct:.2f} USDT')}
+      {row('杠杆 / 分配资金', f'{lev}x · {alloc:.2f} USDT')}
+      {row('本币对复利池', f'{buy_bal:.2f} USDT')}
+      {row('当前持仓', f'{pos} 张')}
+      {row('累计买入 / 卖出', f"{st.get('buy_count', 0)} / {st.get('sell_count', 0)} 次")}
+    </table>
+  </div>
+  <div style="background:{BG};padding:10px 18px;font-size:11px;color:{MUTED};text-align:center;border-top:1px solid {BORDER}">
+    币安量化系统自动发送 · 综合量化任务 {task_id}
+  </div>
+</div>"""
+        subject = f"💰 币安量化成交({side}{action}): {s['symbol']}"
+        mailer.send_async(subject, html, html=True)
         self._log(f"已发送成交邮件: {s['symbol']} {side} {action}")
 
     def _check_tp_sl(self, s, price):
@@ -672,6 +724,29 @@ class CompositeTrader:
         p, _ = self.trader.get_ticker(symbol)
         return p
 
+    def _fill_info_of(self, order, fallback_price, fallback_qty=None):
+        """从下单回报取实际成交均价/数量（市价单立即成交时 ccxt 多直接带 average）；
+        未带则补查一次成交回报。取不到回退下单前参考值。
+        返回 (实际成交均价, 实际成交数量或None)"""
+        avg = None
+        filled = None
+        try:
+            if order:
+                avg = order.get('average') or order.get('price')
+                filled = order.get('filled')
+                if not (avg and float(avg) > 0) and order.get('id'):
+                    od, e = self.trader.fetch_order(order['id'], order.get('symbol') or '')
+                    if od and not e:
+                        avg = avg or od.get('average') or od.get('price')
+                        filled = filled or od.get('filled')
+        except Exception:
+            pass
+        try:
+            avg = float(avg) if avg and float(avg) > 0 else fallback_price
+        except (TypeError, ValueError):
+            avg = fallback_price
+        return avg, filled
+
     def _exit_position(self, s, side, reason):
         """市价平掉该币对合约持仓（止盈/止损/强制平仓共用，reduceOnly）"""
         pos = s.get('position', 0) or 0
@@ -710,7 +785,7 @@ class CompositeTrader:
             'pnl': pnl, 'reason': reason,
         }
         self._log(f"{reason}平仓: {contracts} 张 {s['symbol']} @ {price} (盈亏{pnl:+.2f}U, 复利池→{s['buy_balance']:.2f}U)")
-        self._mail_trade(s, '平仓', reason, contracts, price or 0, extra=f"平仓价 {price}")
+        self._mail_trade(s, '平仓', reason, contracts, price or 0, extra=f"平仓价 {price}", pnl=pnl)
         self.save_state()
 
     def _close_position(self, s, side):
@@ -751,7 +826,7 @@ class CompositeTrader:
             'pnl': pnl,
         }
         self._log(f"平仓: {contracts} 张 {s['symbol']} @ {price} (盈亏{pnl:+.2f}U, 复利池→{s['buy_balance']:.2f}U)")
-        self._mail_trade(s, '平仓', '平仓(信号)', contracts, price or 0, extra=f"平仓价 {price}")
+        self._mail_trade(s, '平仓', '平仓(信号)', contracts, price or 0, extra=f"平仓价 {price}", pnl=pnl)
         self.save_state()
 
     def _open_long(self, s):
@@ -769,18 +844,19 @@ class CompositeTrader:
             s['last_error'] = f'开多失败: {err}'
             self._log(f"开多失败: {err}")
             return 'error'
-        s['position'] = contracts
+        fill_price, filled = self._fill_info_of(order, price)
+        s['position'] = float(filled) if filled and float(filled) > 0 else contracts
         s['side'] = 'long'
-        s['entry_price'] = price
+        s['entry_price'] = fill_price
         s['buy_count'] += 1
         self.status['buy_count'] += 1
         s['last_trade'] = {
             'time': datetime.now().isoformat(), 'action': 'OPEN_LONG', 'symbol': s['symbol'],
-            'price': price, 'contracts': contracts, 'notional': contracts * price,
+            'price': fill_price, 'contracts': s['position'], 'notional': s['position'] * fill_price,
             'invest': self._inv(s),
         }
-        self._log(f"开多: {contracts} 张 {s['symbol']} @ {price} (投入{self._inv(s):.2f}U, 杠杆{self.leverage}x)")
-        self._mail_trade(s, '做多', '开仓', contracts, price, extra=f"开仓价 {price}, 杠杆{self.leverage}x")
+        self._log(f"开多: {s['position']} 张 {s['symbol']} @ {fill_price} (投入{self._inv(s):.2f}U, 杠杆{self.leverage}x)")
+        self._mail_trade(s, '做多', '开仓', s['position'], fill_price, extra=f"开仓均价 {fill_price}, 杠杆{self.leverage}x")
         self.save_state()
         return 'ok'
 
@@ -799,17 +875,18 @@ class CompositeTrader:
             s['last_error'] = f'开空失败: {err}'
             self._log(f"开空失败: {err}")
             return 'error'
-        s['position'] = contracts
+        fill_price, filled = self._fill_info_of(order, price)
+        s['position'] = float(filled) if filled and float(filled) > 0 else contracts
         s['side'] = 'short'
-        s['entry_price'] = price
+        s['entry_price'] = fill_price
         s['buy_count'] += 1
         self.status['buy_count'] += 1
         s['last_trade'] = {
             'time': datetime.now().isoformat(), 'action': 'OPEN_SHORT', 'symbol': s['symbol'],
-            'price': price, 'contracts': contracts, 'notional': contracts * price,
+            'price': fill_price, 'contracts': s['position'], 'notional': s['position'] * fill_price,
         }
-        self._log(f"开空: {contracts} 张 {s['symbol']} @ {price} (投入{self._inv(s):.2f}U, 杠杆{self.leverage}x)")
-        self._mail_trade(s, '做空', '开仓', contracts, price, extra=f"开仓价 {price}, 杠杆{self.leverage}x")
+        self._log(f"开空: {s['position']} 张 {s['symbol']} @ {fill_price} (投入{self._inv(s):.2f}U, 杠杆{self.leverage}x)")
+        self._mail_trade(s, '做空', '开仓', s['position'], fill_price, extra=f"开仓均价 {fill_price}, 杠杆{self.leverage}x")
         self.save_state()
         return 'ok'
 

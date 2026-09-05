@@ -146,17 +146,30 @@ class FuturesTrader:
             return [], str(e)
 
     def get_positions(self, symbol=None):
-        """获取合约持仓（含方向、张数、开仓均价、未实现盈亏、强平价、保证金）"""
+        """获取合约持仓（含方向、张数、开仓均价、未实现盈亏、强平价、保证金）
+
+        单向持仓(one-way)模式下 ccxt 返回空单 contracts 为负数，此处统一归一化为
+        正数张数并兜底推导方向——否则空单会被当"无持仓"过滤，引发引擎误判
+        "已被外部平仓"进而循环开空、仓位无限累积（-2019 保证金不足事故）。
+        """
         try:
             positions = self.exchange.fetch_positions(symbol) if symbol else self.exchange.fetch_positions()
             result = []
             for p in positions:
-                contracts = float(p.get('contracts') or p.get('contractSize') or 0)
-                if contracts <= 0:
+                raw = p.get('contracts')
+                if raw is None:
                     continue
-                side = p.get('side')  # long / short
+                contracts = float(raw)
+                if contracts == 0:
+                    continue
+                side = p.get('side') or ('short' if contracts < 0 else 'long')
+                contracts = abs(contracts)
+                unified = p.get('symbol') or ''
+                # 兼容键：ccxt 统一符号为 BTC/USDT:USDT，而综合量化/自动合约的币种配置
+                # 可能是不带后缀的 BTC/USDT —— 两个键都返回，供下游匹配
                 result.append({
-                    'symbol': p.get('symbol'),
+                    'symbol': unified,
+                    'symbol_base': unified.rsplit(':', 1)[0] if ':' in unified else unified,
                     'side': side,
                     'contracts': contracts,
                     'contract_size': p.get('contractSize', 1),
@@ -207,6 +220,14 @@ class FuturesTrader:
                 except Exception as e2:
                     return None, str(e2)
             return None, msg
+
+    def fetch_order(self, order_id, symbol):
+        """查询单笔订单的成交回报（实际成交均价/数量）"""
+        try:
+            od = self.exchange.fetch_order(order_id, symbol)
+            return od, None
+        except Exception as e:
+            return None, str(e)
 
     def cancel_order(self, order_id, symbol):
         try:
