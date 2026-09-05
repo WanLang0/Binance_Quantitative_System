@@ -2960,14 +2960,91 @@ def auto_export():
                      download_name=fname, mimetype=mime)
 
 
+def _report_positions_snapshot():
+    """定时持仓报告数据源：收集所有运行中引擎（综合量化美股/虚拟币 + 自动合约）
+    在此时此刻的账户真实持仓与余额。
+
+    按 trader 实例去重分组（多任务共用同一密钥时只查一次API），
+    持仓来自交易所 fetch_positions（权威数据，非引擎内存快照）。
+    返回 {'groups': [{tasks, network, usdt, positions, err}], 'task_count': N}"""
+    groups = {}  # id(trader) -> 账户组
+
+    def _group_of(trader, task_name):
+        key = id(trader)
+        g = groups.get(key)
+        if g is None:
+            g = {'tasks': [], 'network': '测试网' if getattr(trader, 'testnet', True) else '主网',
+                 'usdt': None, 'positions': [], 'err': None, '_trader': trader}
+            groups[key] = g
+        if task_name and task_name not in g['tasks']:
+            g['tasks'].append(task_name)
+
+    engines = []
+    for market in ('us', 'crypto'):
+        try:
+            reg = _composite_registry(market)
+        except Exception:
+            reg = {}
+        label = '美股' if market == 'us' else '虚拟币'
+        for tid, eng in sorted(reg.items(), reverse=True):
+            try:
+                running = bool(eng.status.get('running'))
+            except Exception:
+                running = False
+            if running:
+                engines.append((eng, f"{label}·{eng.status.get('name') or tid}"))
+    for tid, eng in list(_auto_futures_engines.items()):
+        try:
+            running = bool(eng.status.get('running'))
+        except Exception:
+            running = False
+        if running:
+            engines.append((eng, f"合约·{eng.status.get('symbol') or tid}"))
+
+    for eng, name in engines:
+        trader = getattr(eng, 'trader', None)
+        if trader is None or not trader.is_configured():
+            continue
+        _group_of(trader, name)
+
+    for g in groups.values():
+        trader = g.pop('_trader')
+        try:
+            positions, perr = trader.get_positions()
+            g['positions'] = positions or []
+            g['err'] = perr
+            # 补充收益率%（按方向：空单收益与价格反向）
+            for p in g['positions']:
+                entry = float(p.get('entry_price') or 0)
+                mark = float(p.get('mark_price') or 0) or entry
+                try:
+                    ratio = (mark - entry) / entry if entry else 0.0
+                    if p.get('side') == 'short':
+                        ratio = -ratio
+                    p['pnl_pct'] = ratio * 100
+                except Exception:
+                    p['pnl_pct'] = 0.0
+        except Exception as e:
+            g['err'] = str(e)
+        try:
+            balances, _ = trader.get_balance()
+            usdt = next((b for b in (balances or []) if b.get('asset') == 'USDT'), None)
+            if usdt:
+                g['usdt'] = {'total': usdt.get('total'), 'free': usdt.get('free'), 'used': usdt.get('used')}
+        except Exception:
+            pass
+
+    return {'groups': list(groups.values()), 'task_count': len(engines)}
+
+
 if __name__ == "__main__":
-    # 注入邮件/认证模块并启动「每日18:30虚拟币信号日报」后台调度线程。
+    # 注入邮件模块与持仓快照数据源，启动「定时持仓报告」后台调度线程。
     # 即使当前未登录也会以守护线程方式后台运行；发送前会校验邮箱是否已绑定。
     try:
-        _daily_report._inject(mailer, _auth)
+        _daily_report._inject(mailer, _auth, positions_provider=_report_positions_snapshot)
         _daily_report.start_scheduler()
     except Exception as e:
-        print(f"每日信号日报调度启动失败(不影响主服务): {e}")
+        print(f"定时持仓报告调度启动失败(不影响主服务): {e}")
     # threaded=True：让 Flask 并发处理请求。否则单个长耗时网络请求（如市场概览/信号计算）
     # 会占住唯一工作线程，导致其它请求（状态轮询/启动/停止）全部排队阻塞。
     app.run(debug=True, host="0.0.0.0", port=8888, threaded=True)

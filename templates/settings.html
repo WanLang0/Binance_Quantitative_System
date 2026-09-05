@@ -34,30 +34,30 @@
         <p class="info-note">引擎<b>无法访问币安</b>时（网络中断/代理失效），系统将通过 QQ 邮箱 SMTP 提醒：<b>每 10 分钟一封、共 3 封</b>，网络恢复后自动重置。授权码使用 Fernet 加密存入数据库，不留明文。授权码获取：QQ 邮箱网页版 → 设置 → 账户 → 开启 SMTP 服务。</p>
     </div>
 
-    <!-- 每日虚拟币信号日报 -->
+    <!-- 定时持仓报告 -->
     <div class="card">
-        <h2>📊 每日虚拟币信号日报</h2>
+        <h2>📊 定时持仓报告</h2>
         <form method="POST" action="/settings">
             <input type="hidden" name="action" value="save_daily_report">
             <div class="form-grid">
                 <div class="field">
-                    <label>开启每日日报</label>
+                    <label>开启定时报告</label>
                     <input type="checkbox" name="daily_report_enabled" {% if daily_report.enabled %}checked{% endif %} style="width:auto">
                 </div>
                 <div class="field">
                     <label>每天发送时间（24小时制）</label>
                     <input type="time" name="daily_report_time" value="{{ daily_report.time }}">
                 </div>
-                <button type="submit" class="btn btn-primary">保存日报配置</button>
+                <button type="submit" class="btn btn-primary">保存报告配置</button>
             </div>
         </form>
         <form method="POST" action="/settings" style="margin-top:8px">
             <input type="hidden" name="action" value="test_daily_report">
-            <button type="submit" class="btn">立即发送一次日报</button>
+            <button type="submit" class="btn">立即发送一次报告</button>
         </form>
-        <p class="info-note">每天在设定时间对<b>市值前20虚拟币</b>用 MACD 链复组合策略扫描当日<b>买点/卖点信号</b>并汇总，通过 QQ 邮箱发送；<b>无信号也会发</b>（今日未触发信号）。开启后需先在左侧绑定 QQ 邮箱并保存。</p>
+        <p class="info-note">每天在设定时间把<b>此时此刻的账户真实持仓</b>（币种、方向、数量、开仓均价、未实现盈亏、强平价及 USDT 权益）通过 QQ 邮箱发送；数据来自运行中量化任务绑定的交易所账户，<b>空仓/无运行任务也会发</b>。开启后需先在左侧绑定 QQ 邮箱并保存。</p>
         {% if daily_report.last_sent_date %}
-        <p class="info-note">上次发送：<b>{{ daily_report.last_sent_date }}</b>，当日信号 {{ daily_report.last_total_signals }} 次。</p>
+        <p class="info-note">上次发送：<b>{{ daily_report.last_sent_date }}</b>，持仓 {{ daily_report.last_total_signals }} 个。</p>
         {% endif %}
     </div>
 

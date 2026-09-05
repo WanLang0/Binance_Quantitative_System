@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""每日虚拟币信号/异动汇总邮件模块（每天 18:30 自动发送）
+"""定时持仓报告邮件模块（默认每天 18:30 自动发送）
 
-功能：在每天 18:30，对「市值前20虚拟币」用固定的 MACD 链复组合策略
-（macd+背离+量能 等，与回测/实盘引擎同口径）扫描当日信号并汇总：
-- 当日触发的买点/卖点信号（按 1h 已收盘K线判定）
-- 各币最近 24h 涨跌幅（异动榜单）
-- 无信号/无变化也会发一封「今日无信号」邮件
+功能：在设定时刻，把「此时此刻的真实持仓情况」通过邮件发送：
+- 各账户（按运行中引擎的交易器去重分组）的合约持仓：
+  币种、方向、数量、开仓均价、标记价、未实现盈亏、收益率、强平价
+- 账户 USDT 权益/可用/占用保证金
+- 运行中的量化任务列表概览
 
-与主交易引擎完全解耦：不操作 API 下单，只用 ccxt.binanceusdm 拉公开K线，
-通过 .env 配置的代理访问币安；邮件经 mailer.send_async 发送（同样走 QQ SMTP）。
+持仓数据由 app.py 注入的 positions_provider 提供（查询运行中引擎的
+trader，即交易所真实持仓，非内存快照）；邮件经 mailer.send_async 发送
+（QQ SMTP，HTML 样式，与成交通知邮件同风格）。
 """
 import os
 import json
@@ -16,10 +17,6 @@ import threading
 import time
 import logging
 from datetime import datetime, timedelta
-
-import pandas as pd
-
-from divergence_signals import compute_divergence_signals, find_divergence_name
 
 logger = logging.getLogger('daily_signal_report')
 
@@ -30,13 +27,17 @@ STATE_FILE = os.path.join(BASE_DIR, 'data', 'daily_signal_report.json')
 # 只在本模块内部使用、单锁无嵌套，不存在死锁路径。
 _send_lock = threading.Lock()
 _mailer = None
+# 持仓快照数据源（app.py 启动时注入；返回 {'groups': [...], 'task_count': int}）
+_positions_provider = None
 
 
 # ---------- 依赖注入（避免循环 import，由 app.py 在启动时注入） ----------
-def _inject(mailer_module, auth_module):
-    """注入 mailer / auth 模块（app.py 启动时调用一次）"""
-    global _mailer
+def _inject(mailer_module, auth_module=None, positions_provider=None):
+    """注入 mailer 模块与持仓快照数据源（app.py 启动时调用一次）"""
+    global _mailer, _positions_provider
     _mailer = mailer_module
+    if positions_provider:
+        _positions_provider = positions_provider
 
 
 def _get_mailer():
@@ -47,190 +48,109 @@ def _get_mailer():
     return _mailer
 
 
-# 市值前20虚拟币（与综合量化 CRYPTO_COMPOSITE_SYMBOLS 前20一致，CoinGecko 按市值剔除稳定币）
-TOP20_SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'SOL/USDT',
-    'TRX/USDT', 'HYPE/USDT', 'ZEC/USDT', 'DOGE/USDT', 'XMR/USDT',
-    'LINK/USDT', 'ADA/USDT', 'XLM/USDT', 'BCH/USDT', 'CC/USDT',
-    'LTC/USDT', 'UNI/USDT', 'GRAM/USDT', 'HBAR/USDT', 'AVAX/USDT',
-]
-NAME_MAP = {
-    'BTC': '比特币', 'ETH': '以太坊', 'BNB': '币安币', 'XRP': '瑞波币', 'SOL': 'Solana',
-    'TRX': '波场', 'HYPE': 'Hyperliquid', 'ZEC': 'Zcash', 'DOGE': '狗狗币', 'XMR': '门罗币',
-    'LINK': 'Chainlink', 'ADA': '艾达币', 'XLM': '恒星币', 'BCH': '比特现金', 'CC': 'Canton',
-    'LTC': '莱特币', 'UNI': 'Uniswap', 'GRAM': 'Gram', 'HBAR': 'Hedera', 'AVAX': '雪崩',
-}
-# 固定组合策略（与回测一致）；优先用「macd+背离+量能」作为主扫描策略
-SCAN_STRATEGIES = ['macd+背离+量能', 'macd+背离', 'macd+背离+均线+量能']
+# ---------- 邮件正文（HTML） ----------
+def build_positions_html(snapshot):
+    """组装持仓报告邮件正文（HTML，样式与成交通知邮件一致：多=绿/空=红）"""
+    GREEN, RED, TXT, MUTED, BORDER, BG = '#16a34a', '#dc2626', '#1e293b', '#8a94a6', '#e3e8ef', '#f7f9fc'
+    groups = (snapshot or {}).get('groups') or []
+    task_count = (snapshot or {}).get('task_count') or 0
+    now_txt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    def pnl_color(v):
+        return GREEN if v > 0 else (RED if v < 0 else MUTED)
 
-# ---------- ccxt 数据源（合约 K 线，与回测口径一致） ----------
-def _load_env_proxy():
-    """读取 .env 中的 HTTP_PROXY/HTTPS_PROXY（与 app.py 的 _load_env_file 同口径）"""
-    env_path = os.path.join(BASE_DIR, '.env')
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                key, _, val = line.partition('=')
-                key, val = key.strip(), val.strip().strip('"').strip("'")
-                if val and not os.environ.get(key):
-                    os.environ[key] = val
-    return (os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy') or None,
-            os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy') or None)
-
-
-class _Exchange:
-    """极简 ccxt 合约行情拉取器（只读公开K线/价格，不触碰私钥/下单）"""
-
-    def __init__(self):
-        import ccxt
-        http_proxy, https_proxy = _load_env_proxy()
-        config = {
-            'enableRateLimit': True,
-            'timeout': 15000,
-            'options': {
-                'defaultType': 'future',
-                'adjustForTimeDifference': True,
-            },
-        }
-        proxy = https_proxy or http_proxy
-        if proxy:
-            config['proxies'] = {'http': proxy, 'https': proxy}
-        self._ex = ccxt.binanceusdm(config)
-        self._ex.options['fetchCurrencies'] = False
-        self._ex.options['warnOnFetchOpenOrdersWithoutSymbol'] = False
-
-    def get_ohlcv(self, symbol, timeframe='1h', limit=300):
-        """拉取最近 limit 根已收盘K线（丢弃进行中的未收盘K线）
-        返回 [{ts, open, high, low, close, volume}...] 或 (None, err)"""
+    def fmt(v, nd=2):
         try:
-            candles = self._ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not candles:
-                return None, "无K线数据"
-            tf_ms = {'1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
-                     '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000,
-                     '4h': 14_400_000, '6h': 21_600_000, '12h': 43_200_000,
-                     '1d': 86_400_000}.get(timeframe, 0)
-            if tf_ms and candles[-1][0] + tf_ms > int(time.time() * 1000):
-                candles = candles[:-1]  # 丢弃未收盘的进行中K线
-            if not candles:
-                return None, "无K线数据"
-            data = [{
-                'ts': int(c[0]), 'open': float(c[1]), 'high': float(c[2]),
-                'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]),
-            } for c in candles]
-            return data, None
-        except Exception as e:
-            return None, str(e)
+            return f"{float(v):,.{nd}f}"
+        except (TypeError, ValueError):
+            return '—'
 
-    def get_ticker(self, symbol):
-        """获取最新价 + 24h 涨跌幅，返回 (price, change_pct, err)。失败返回 (None, None, err)"""
-        try:
-            t = self._ex.fetch_ticker(symbol)
-            price = t.get('last')
-            change = t.get('percentage')  # 已乘100的百分数（如 +2.5）
-            if change is None and t.get('close') and t.get('open'):
-                change = (t['close'] - t['open']) / t['open'] * 100
-            return price, change, None
-        except Exception as e:
-            return None, None, str(e)
+    html = f"""
+<div style="font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;max-width:640px;margin:0 auto;border:1px solid {BORDER};border-radius:10px;overflow:hidden">
+  <div style="background:#1e2530;padding:14px 18px">
+    <div style="color:#fff;font-size:17px;font-weight:600">💰 币安量化 · 持仓报告</div>
+    <div style="color:#aab4c4;font-size:12px;margin-top:4px">⏰ {now_txt} · 运行中任务 {task_count} 个</div>
+  </div>
+  <div style="padding:16px 18px;background:#fff">"""
 
-
-# ---------- 信号扫描 ----------
-def _to_df(candles):
-    """K线列表 → 含 open/high/low/close/volume、按时间索引的 DataFrame（供 compute_divergence_signals）"""
-    if not candles:
-        return None
-    df = pd.DataFrame(candles)
-    df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
-    df = df.set_index('timestamp')
-    return df
-
-
-def scan_symbol(ex, symbol, strategies, timeframe='1h'):
-    """扫描单一币种当日信号。
-    返回 {'symbol','name','price','change_pct','signals':[{strategy,dt,dir}...],'err'}"""
-    name = NAME_MAP.get(symbol.split('/')[0], symbol.split('/')[0])
-    price, change, terr = ex.get_ticker(symbol)
-    candles, cerr = ex.get_ohlcv(symbol, timeframe=timeframe, limit=300)
-    if cerr or not candles:
-        return {'symbol': symbol, 'name': name, 'price': price, 'change_pct': change,
-                'signals': [], 'err': cerr or '无K线'}
-    df = _to_df(candles)
-    if df is None or df.empty:
-        return {'symbol': symbol, 'name': name, 'price': price, 'change_pct': change,
-                'signals': [], 'err': '无K线'}
-
-    # 当日 00:00 边界：把「本地自然日」起始转换为 UTC 时间戳再与K线(UTC)比较，
-    # 避免本地时区(如东八区)与交易所 UTC 的偏移导致切掉/漏掉当日信号。
-    # 方式：取本地当日0点，用 time.mktime 解析为本地时间戳，再减去本地时区偏移得到UTC。
-    now_local = datetime.now()
-    day_start_local = datetime(now_local.year, now_local.month, now_local.day, 0, 0, 0)
-    # 本地0点对应的 UTC 时间戳（本地是UTC+N，则 UTC_ts = local_ts - N*3600）
-    day_start_utc_ts = time.mktime(day_start_local.timetuple()) - now_local.tzinfo.utcoffset(now_local).total_seconds() if now_local.tzinfo else time.mktime(day_start_local.timetuple())
-    day_start = datetime.utcfromtimestamp(day_start_utc_ts)
-
-    all_signals = []
-    for strat in strategies:
-        dflag = find_divergence_name([strat])
-        if not dflag:
-            continue
-        _dft, sig = compute_divergence_signals(df, dflag)
-        if sig is None or sig.empty:
-            continue
-        # 遍历当日范围内的信号（sig 与 df 索引对齐，时间为 UTC）
-        for ts, v in sig.items():
-            if v == 0:
-                continue
-            if ts.tzinfo:
-                ts_naive = ts.tz_localize(None)
-            else:
-                ts_naive = ts
-            if ts_naive >= day_start:
-                all_signals.append({
-                    'strategy': strat,
-                    'dt': ts_naive.strftime('%H:%M'),
-                    'dir': '买' if v == 1 else '卖',
-                })
-    return {'symbol': symbol, 'name': name, 'price': price, 'change_pct': change,
-            'signals': all_signals, 'err': None}
-
-
-# ---------- 邮件正文 ----------
-def build_report_body(day, rows, total_signals, err_count):
-    """组装邮件正文（纯文本）"""
-    lines = []
-    lines.append(f"📧 币安量化 · 虚拟币信号/异动日报")
-    lines.append(f"📅 日期：{day}")
-    lines.append(f"⏰ 生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("")
-    lines.append("【本日 MACD 链复信号汇总】")
-    if total_signals == 0:
-        lines.append("今日未触发任何买点/卖点信号，市场相对平静。")
+    if not groups:
+        html += f"""
+    <div style="text-align:center;padding:26px 10px;color:{MUTED};font-size:14px">
+      当前无运行中的量化任务，无持仓可报。<br>启动综合量化/自动合约任务后，此处将展示账户真实持仓。
+    </div>"""
     else:
-        lines.append(f"今日共命中 {total_signals} 次信号：")
-    for r in rows:
-        sigs = r.get('signals') or []
-        change = r.get('change_pct')
-        change_txt = f"{change:+.2f}%" if change is not None else "—"
-        line = f"• {r['symbol']}（{r['name']}） 24h: {change_txt}"
-        if r.get('err'):
-            line += "（数据异常）"
-        if sigs:
-            detail = ", ".join(f"{s['strategy']}:{s['dir']}@{s['dt']}点" for s in sigs)
-            line += f"  信号[ {detail} ]"
-        else:
-            line += ""
-        lines.append(line)
-    lines.append("")
-    if err_count:
-        lines.append(f"⚠ 有 {err_count} 个币种数据获取失败，已跳过。")
-    lines.append("")
-    lines.append("—— 本邮件由币安量化系统每日自动发送 ——")
-    return "\n".join(lines)
+        for g in groups:
+            tasks = '、'.join(g.get('tasks') or []) or '（无任务名）'
+            network = g.get('network') or ''
+            usdt = g.get('usdt') or {}
+            positions = g.get('positions') or []
+            total_upnl = sum(float(p.get('unrealized_pnl') or 0) for p in positions)
+            up_color = pnl_color(total_upnl)
+            html += f"""
+    <div style="border:1px solid {BORDER};border-radius:8px;overflow:hidden;margin-bottom:14px">
+      <div style="background:{BG};padding:10px 14px;border-bottom:1px solid {BORDER}">
+        <b style="color:{TXT};font-size:14px">{tasks}</b>
+        <span style="color:{MUTED};font-size:12px;margin-left:8px">{'· ' + network if network else ''} · 持仓 {len(positions)} 个</span>
+      </div>
+      <div style="padding:10px 14px;font-size:13px;color:{TXT}">
+        <div>USDT 权益 <b>{fmt(usdt.get('total'))}</b>
+             <span style="color:{MUTED}">| 可用 {fmt(usdt.get('free'))}</span>
+             <span style="color:{MUTED}">| 占用保证金 {fmt(usdt.get('used'))}</span>
+             <span style="margin-left:10px">未实现盈亏
+               <b style="color:{up_color}">{total_upnl:+,.2f} U</b></span>
+      </div>"""
+            if g.get('err'):
+                html += f"""
+      <div style="padding:6px 14px 10px;font-size:12px;color:{RED}">⚠ 持仓查询失败：{g['err']}</div>"""
+            if positions:
+                head = (f"<tr style='background:{BG};color:{MUTED};font-size:12px'>"
+                        f"<td style='padding:6px 10px'>币种</td><td style='padding:6px 10px'>方向</td>"
+                        f"<td style='padding:6px 10px'>数量</td><td style='padding:6px 10px'>开仓均价</td>"
+                        f"<td style='padding:6px 10px'>标记价</td><td style='padding:6px 10px'>未实现盈亏</td>"
+                        f"<td style='padding:6px 10px'>收益率</td><td style='padding:6px 10px'>强平价</td></tr>")
+                rows = [head]
+                for p in positions:
+                    side = p.get('side') or '?'
+                    side_txt = '做多' if side == 'long' else ('做空' if side == 'short' else side)
+                    side_color = GREEN if side == 'long' else (RED if side == 'short' else TXT)
+                    upnl = float(p.get('unrealized_pnl') or 0)
+                    ppct = float(p.get('pnl_pct') or 0)
+                    rows.append(
+                        f"<tr style='border-bottom:1px solid {BORDER};font-size:13px'>"
+                        f"<td style='padding:7px 10px;font-weight:600'>{(p.get('symbol_base') or p.get('symbol') or '?').split('/')[0]}</td>"
+                        f"<td style='padding:7px 10px;color:{side_color};font-weight:600'>{side_txt}</td>"
+                        f"<td style='padding:7px 10px'>{fmt(p.get('contracts'), 6).rstrip('0').rstrip('.') or '0'}</td>"
+                        f"<td style='padding:7px 10px'>{fmt(p.get('entry_price'), 4)}</td>"
+                        f"<td style='padding:7px 10px'>{fmt(p.get('mark_price'), 4)}</td>"
+                        f"<td style='padding:7px 10px;color:{pnl_color(upnl)};font-weight:600'>{upnl:+,.2f} U</td>"
+                        f"<td style='padding:7px 10px;color:{pnl_color(ppct)}'>{ppct:+.2f}%</td>"
+                        f"<td style='padding:7px 10px;color:{MUTED}'>{fmt(p.get('liquidation_price'), 4)}</td></tr>")
+                html += (f"<table style='width:100%;border-collapse:collapse;text-align:left'>"
+                         + ''.join(rows) + "</table>")
+            else:
+                html += f"""
+      <div style="text-align:center;padding:14px;color:{MUTED};font-size:13px">当前空仓 🎉</div>"""
+            html += """
+    </div>"""
+    html += f"""
+  </div>
+  <div style="background:#f7f9fc;padding:10px 18px;color:#8a94a6;font-size:12px;text-align:center">
+    —— 本邮件由币安量化系统定时发送（数据为发送时刻的交易所真实持仓）——
+  </div>
+</div>"""
+    return html
+
+
+def _report_subject(snapshot):
+    """邮件标题：简短汇总（N仓 + 盈亏）"""
+    groups = (snapshot or {}).get('groups') or []
+    positions = [p for g in groups for p in (g.get('positions') or [])]
+    if not groups:
+        return "💰币安量化持仓：无运行任务"
+    if not positions:
+        return "💰币安量化持仓：空仓"
+    total = sum(float(p.get('unrealized_pnl') or 0) for p in positions)
+    return f"💰币安量化持仓：{len(positions)}仓 {total:+.2f}U"
 
 
 # ---------- 状态持久化（幂等：同一天内不重复发送） ----------
@@ -254,11 +174,11 @@ def _save_state(state):
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.warning(f"保存日报状态失败: {e}")
+        logger.warning(f"保存报告状态失败: {e}")
 
 
 def get_config():
-    """读取日报开关配置，返回 {enabled, time, last_sent_date, last_total_signals}"""
+    """读取报告开关配置，返回 {enabled, time, last_sent_date, last_total_signals}(持仓数)"""
     state = _load_state()
     cfg = dict(DEFAULT_CONFIG)
     saved = state.get('config') or {}
@@ -273,7 +193,7 @@ def get_config():
 
 
 def set_config(enabled=None, report_time=None):
-    """更新日报开关配置，返回 (是否成功, 提示)。
+    """更新报告开关配置，返回 (是否成功, 提示)。
     enabled: True/False；report_time: 'HH:MM' 24小时制"""
     state = _load_state()
     cfg = dict(DEFAULT_CONFIG)
@@ -296,7 +216,7 @@ def set_config(enabled=None, report_time=None):
         cfg['time'] = f"{hh:02d}:{mm:02d}"
     state['config'] = cfg
     _save_state(state)
-    return True, f'日报已{"开启" if cfg["enabled"] else "关闭"}，发送时间 {cfg["time"]}'
+    return True, f'持仓报告已{"开启" if cfg["enabled"] else "关闭"}，发送时间 {cfg["time"]}'
 
 
 def _has_sent_today(state, day):
@@ -304,15 +224,15 @@ def _has_sent_today(state, day):
 
 
 def run_daily_report(force=False):
-    """执行一次当日信号扫描并发送邮件（开关关闭时跳过；若当天已发且非 force 则跳过）。
+    """执行一次持仓快照并发送邮件（开关关闭时跳过；若当天已发且非 force 则跳过）。
     发送全程持模块级互斥锁：防止「调度器触发」与「设置页立即发送」并发导致重复发信。
     返回 (是否发送, 提示)"""
     if not _send_lock.acquire(blocking=False):
-        return False, '日报正在发送中，请稍候（避免重复发信）'
+        return False, '报告正在发送中，请稍候（避免重复发信）'
     try:
         cfg = get_config()
         if not cfg.get('enabled') and not force:
-            return False, '每日日报开关未开启'
+            return False, '定时报告开关未开启'
         mailer = _get_mailer()
         if not mailer:
             return False, 'mailer 未初始化'
@@ -322,32 +242,29 @@ def run_daily_report(force=False):
         today = datetime.now().strftime('%Y-%m-%d')
         state = _load_state()
         if not force and _has_sent_today(state, today):
-            return False, f'{today} 日报已发送，跳过'
+            return False, f'{today} 报告已发送，跳过'
 
-        ex = _Exchange()
-        rows, total_signals, err_count = [], 0, 0
-        for sym in TOP20_SYMBOLS:
+        # 此时此刻的持仓快照（app.py 注入的 provider；未注入按无任务处理）
+        snapshot = {'groups': [], 'task_count': 0}
+        if _positions_provider:
             try:
-                r = scan_symbol(ex, sym, SCAN_STRATEGIES)
+                snapshot = _positions_provider() or snapshot
             except Exception as e:
-                r = {'symbol': sym, 'name': NAME_MAP.get(sym.split('/')[0], sym),
-                     'price': None, 'change_pct': None, 'signals': [], 'err': str(e)}
-            if r.get('err'):
-                err_count += 1
-            total_signals += len(r.get('signals') or [])
-            rows.append(r)
+                logger.warning(f"持仓快照获取失败: {e}")
+                snapshot = {'groups': [], 'task_count': 0}
 
-        body = build_report_body(today, rows, total_signals, err_count)
-        subject = f"📧 币安量化 · 虚拟币信号/异动日报 {today}"
-        ok, tip = mailer.send_email(subject, body)
+        body = build_positions_html(snapshot)
+        subject = _report_subject(snapshot)
+        ok, tip = mailer.send_email(subject, body, html=True)
         if ok:
-            _save_state({**state, 'last_sent_date': today, 'total_signals': total_signals})
+            pos_count = sum(len(g.get('positions') or []) for g in (snapshot.get('groups') or []))
+            _save_state({**state, 'last_sent_date': today, 'total_signals': pos_count})
         return ok, tip
     finally:
         _send_lock.release()
 
 
-# ---------- 调度器（守护线程，每天 18:30 触发） ----------
+# ---------- 调度器（守护线程，按配置时间触发） ----------
 def _parse_time_str(tstr):
     """解析 'HH:MM' 为 (hour, minute)，非法返回 None"""
     try:
@@ -387,12 +304,12 @@ def _scheduler_loop():
             if sleep_s > 0:
                 time.sleep(min(sleep_s, 60))  # 分段睡，醒来重读配置重算触发点
                 continue
-            # 到达触发时间，执行日报（force 关闭时同一天自动幂等）
+            # 到达触发时间，执行报告（force 关闭时同一天自动幂等）
             ok, tip = run_daily_report(force=False)
-            logger.info(f"每日日报执行: {tip}")
+            logger.info(f"定时持仓报告执行: {tip}")
             time.sleep(60)  # 触发后短暂歇息，防止时间边界抖动重复触发
         except Exception as e:
-            logger.warning(f"日报调度异常: {e}")
+            logger.warning(f"报告调度异常: {e}")
             time.sleep(60)
 
 
