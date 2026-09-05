@@ -955,6 +955,12 @@ class CompositeTrader:
         alerted = False
         while not self._stop_event.is_set():
             try:
+                # 0. 若上次命中 -1003 IP 封禁且尚未到期，先等待到期再继续，
+                #    避免封禁期内持续打请求把 banned until 不断后移、封禁永不结束
+                try:
+                    self.trader.wait_ip_ban()
+                except Exception:
+                    pass
                 # 1. 批量刷新价格
                 self._refresh_prices()
                 # 2. 逐币对计算信号并应用买卖（单个币对失败不阻断其它币对）

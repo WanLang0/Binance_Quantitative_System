@@ -11,6 +11,7 @@
 """
 import ccxt
 import os
+import re
 import time
 
 
@@ -23,6 +24,12 @@ class FuturesTrader:
         self.proxy = proxy
         self.testnet = testnet
         self.leverage = leverage
+        # closed-candle K线缓存：同一币对/周期在「新一根K线收盘」前不复用重复拉取，
+        # 极大降低每秒 REST 请求量，规避币安测试网 -1003 IP 封禁（Way too many requests）
+        self._ohlcv_cache = {}
+        # IP 封禁截止时间戳（毫秒）：命中 -1003 后记录，主循环据此暂停请求等待到期，
+        # 避免封禁期内持续重试把 banned until 不断后移、导致封禁永不结束
+        self._ip_ban_until_ms = 0
         self._create_exchange()
 
     def _create_exchange(self):
@@ -84,25 +91,82 @@ class FuturesTrader:
         except Exception as e:
             return False, str(e)
 
+    def _is_ip_ban(self, e):
+        """判断异常是否为币安 -1003 IP 封禁（Way too many requests），并记录封禁截止时间"""
+        try:
+            msg = str(e)
+        except Exception:
+            return False
+        if '-1003' not in msg:
+            return False
+        # 解析 banned until <epoch_ms>，用于精确等待封禁到期
+        m = re.search(r'banned\s+until\s+(\d+)', msg, re.IGNORECASE)
+        if m:
+            try:
+                until = int(m.group(1))
+                self._ip_ban_until_ms = max(getattr(self, '_ip_ban_until_ms', 0), until)
+            except (TypeError, ValueError):
+                pass
+        return True
+
+    def wait_ip_ban(self):
+        """若当前已被 -1003 封禁且未到期，阻塞等待到期（带 1s 粒度），避免在封禁期内继续打请求。"""
+        if getattr(self, '_ip_ban_until_ms', 0) <= time.time() * 1000:
+            return
+        remain = (self._ip_ban_until_ms - time.time() * 1000) / 1000.0
+        # 最多等待到封禁截止；防止异常时间戳导致无限等待
+        if remain <= 0 or remain > 3600:
+            self._ip_ban_until_ms = 0
+            return
+        time.sleep(min(remain, 3600))
+
+    def _is_banned_now(self):
+        """非阻塞判断当前是否处于 IP 封禁期内。封禁期内直接短路，不再发起网络请求，
+        避免同一轮循环里后续币对继续打请求把 banned until 不断后移。"""
+        return getattr(self, '_ip_ban_until_ms', 0) > time.time() * 1000
+
     def fetch_ticker(self, symbol):
+        if self._is_banned_now():
+            return None, f"IP被封禁中({symbol})"
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             return ticker['last'], None
         except Exception as e:
+            if self._is_ip_ban(e):
+                return None, f"IP被限流({symbol})"
             return None, str(e)
 
     def get_ohlcv(self, symbol, timeframe='15m', limit=100):
         """获取最近 limit 根**已收盘**K线（合约）。丢弃未收盘的进行中K线，
-        避免指标随现价跳动导致信号在K线内反复翻转（与回测收盘口径不一致）。"""
+        避免指标随现价跳动导致信号在K线内反复翻转（与回测收盘口径不一致）。
+
+        已收盘K线缓存：在「下一根K线收盘」前直接复用上次结果，不再重复请求币安。
+        这显著降低每秒 REST 请求量（19 币对 × 多任务从"每轮都拉"变为"每K线收盘拉一次"），
+        是规避测试网 -1003 IP 封禁的关键。K线收盘后缓存自动失效并重新拉取。"""
+        tf_ms = {'1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
+                 '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000,
+                 '4h': 14_400_000, '6h': 21_600_000, '12h': 43_200_000,
+                 '1d': 86_400_000}.get(timeframe)
+        # 封禁期内直接短路（本次仍可用缓存数据做信号，不再发起网络请求延长封禁）
+        if self._is_banned_now():
+            cache = getattr(self, '_ohlcv_cache', {}).get((symbol, timeframe, limit)) if tf_ms else None
+            if cache:
+                return cache[1], None
+            return None, f"IP被封禁中({symbol})"
+        now_ms = int(time.time() * 1000)
+        key = (symbol, timeframe, limit)
+        cache = getattr(self, '_ohlcv_cache', {}).get(key) if tf_ms else None
+        if cache:
+            last_close_ms, data = cache[0], cache[1]
+            # 缓存 = 最近一根已收盘K线。其开盘点为 last_close_ms，在 now < last_close_ms + 2*tf_ms 前
+            # 不会出现"更新的已收盘K线"，直接复用；否则说明新一根K线已收盘，刷新。timing 与回测收盘口径完全一致。
+            if now_ms < last_close_ms + 2 * tf_ms:
+                return data, None
         try:
             candles = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not candles:
                 return None, "无K线数据"
-            tf_ms = {'1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
-                     '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000,
-                     '4h': 14_400_000, '6h': 21_600_000, '12h': 43_200_000,
-                     '1d': 86_400_000}.get(timeframe, 0)
-            if tf_ms and candles[-1][0] + tf_ms > int(time.time() * 1000):
+            if tf_ms and candles[-1][0] + tf_ms > now_ms:
                 candles = candles[:-1]  # 丢弃未收盘的进行中K线
             if not candles:
                 return None, "无K线数据"
@@ -117,12 +181,23 @@ class FuturesTrader:
                 }
                 for c in candles
             ]
+            if tf_ms:
+                # 以「最新已收盘K线的开盘点」为缓存有效期依据
+                cache_map = getattr(self, '_ohlcv_cache', None)
+                if cache_map is None:
+                    cache_map = {}
+                    self._ohlcv_cache = cache_map
+                cache_map[key] = (int(data[-1]['ts']), data)
             return data, None
         except Exception as e:
+            if self._is_ip_ban(e):
+                return None, f"IP被限流({symbol})"
             return None, str(e)
 
     def get_balance(self):
         """获取账户余额（USDT 可用/持仓，及保证金模式）"""
+        if self._is_banned_now():
+            return [], f"IP被封禁中(get_balance)"
         try:
             balance = self.exchange.fetch_balance()
             balances = []
@@ -143,6 +218,8 @@ class FuturesTrader:
                     })
             return balances, None
         except Exception as e:
+            if self._is_ip_ban(e):
+                return [], f"IP被限流(get_balance)"
             return [], str(e)
 
     def get_positions(self, symbol=None):
@@ -152,6 +229,8 @@ class FuturesTrader:
         正数张数并兜底推导方向——否则空单会被当"无持仓"过滤，引发引擎误判
         "已被外部平仓"进而循环开空、仓位无限累积（-2019 保证金不足事故）。
         """
+        if self._is_banned_now():
+            return [], f"IP被封禁中(get_positions)"
         try:
             positions = self.exchange.fetch_positions(symbol) if symbol else self.exchange.fetch_positions()
             result = []
@@ -183,6 +262,8 @@ class FuturesTrader:
                 })
             return result, None
         except Exception as e:
+            if self._is_ip_ban(e):
+                return [], f"IP被限流(get_positions)"
             return [], str(e)
 
     def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False):
@@ -279,6 +360,8 @@ class FuturesTrader:
 
     def get_tickers(self, symbols):
         """批量获取多个交易对当前价格"""
+        if self._is_banned_now():
+            return {}
         try:
             tickers = self.exchange.fetch_tickers(symbols)
             prices = {}
@@ -288,8 +371,9 @@ class FuturesTrader:
                     prices[sym] = t['last']
             if prices:
                 return prices
-        except Exception:
-            pass
+        except Exception as e:
+            if self._is_ip_ban(e):
+                return {}
         prices = {}
         for sym in symbols:
             try:
