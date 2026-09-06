@@ -395,6 +395,17 @@ class AutoFutures:
         """下单成功邮件通知（开仓/平仓/止盈/止损均提示），包含任务名称与账户信息"""
         if not mailer.is_configured():
             return
+        # 平仓时明确标注平仓原因，便于区分止盈/止损/信号反转
+        if side == '平仓':
+            if '止盈' in (action or ''):
+                close_type = '止盈平仓'
+            elif '止损' in (action or ''):
+                close_type = '止损平仓'
+            else:
+                close_type = '信号反转平仓'
+            head_label = close_type
+        else:
+            head_label = action
         st = self.status
         mode = '网格' if st.get('mode') == 'grid' else '标准多策略(OR)'
         tf = st.get('timeframe') or '?'
@@ -414,7 +425,7 @@ class AutoFutures:
             f"⏱ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"──── 交易明细 ────\n"
             f"品种: {symbol}\n周期: {tf}\n策略: {strategies}\n"
-            f"方向: {side}\n操作: {action}\n数量: {qty} 张\n价格: {price}\n"
+            f"方向: {side}\n操作: {head_label}\n数量: {qty} 张\n价格: {price}\n"
             f"{note}"
             f"──── 账户信息 ────\n"
             f"账户可用余额: {acct:.2f} USDT\n复利可用买入资金: {buy_bal:.2f} USDT\n"
@@ -422,12 +433,12 @@ class AutoFutures:
             f"未实现盈亏: {upnl:+.2f} USDT（{pnl_pct:+.2f}%）\n占用保证金: {mgn:.2f} USDT\n"
             f"任务累计买入/卖出: {st.get('buy_count', 0)}/{st.get('sell_count', 0)} 次"
         )
-        subject = f"💰 币安量化成交(合约|{task_id}|{side}): {symbol} 近{price}"
+        subject = f"💰 币安量化成交(合约|{task_id}|{head_label}): {symbol} 近{price}"
         mailer.send_async(subject, body)
         self._log(f"已发送成交邮件: {symbol} {side} {action}")
 
     def _check_tp_sl(self, symbol, price):
-        """止盈/止损监控：开仓均价达到设置的止盈/止损价则市价平仓获利/止损。
+        """止盈/止损监控：按最近已收盘K线收盘价判断是否达到止盈/止损，触发则市价平仓。
         对合约同时服务做多(多头止盈/止损)与做空(空头止盈/止损)。"""
         tp = self.status.get('take_profit_pct', 0.0) or 0.0
         sl = self.status.get('stop_loss_pct', 0.0) or 0.0
@@ -436,7 +447,7 @@ class AutoFutures:
         pos = self.status.get('position', 0) or 0
         avg = self.status.get('entry_price', 0.0) or 0.0
         side = self.status.get('side', 'none')
-        if pos <= 0 or avg <= 0 or side == 'none':
+        if pos <= 0 or avg <= 0 or side == 'none' or price <= 0:
             return
         trigger = None
         pct = 0.0
@@ -452,7 +463,7 @@ class AutoFutures:
                 trigger, pct = '止损', sl
         if not trigger:
             return
-        self._log(f"{trigger}触发: {symbol} {side} 现价 {price:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
+        self._log(f"{trigger}触发(收盘确认): {symbol} {side} 收盘价 {price:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
         self._exit_position(symbol, side, trigger)
 
     def _exit_position(self, symbol, side, reason):
@@ -778,8 +789,8 @@ class AutoFutures:
                 self._refresh_last_close(symbol, self.status['timeframe'])
                 self._grid_sell(symbol, price, step_pct)
                 self._grid_buy(symbol, price, qty_usdt, step_pct, max_levels)
-                # 止盈/止损监控（市价平仓）
-                self._check_tp_sl(symbol, price)
+                # 止盈/止损监控（市价平仓，按已收盘K线收盘价判断，与回测口径一致）
+                self._check_tp_sl(symbol, self.status.get('last_close') or 0.0)
                 self._refresh_real_position(symbol)
                 self.status['monitor_loop'] += 1
                 self.status['consecutive_errors'] = 0
@@ -896,7 +907,9 @@ class AutoFutures:
                         self.status['signal'] = '观望'
                     self.status['last_price'] = price or self.status['last_price']
                     # 止盈/止损监控（市价平仓，先于开平仓信号执行）
-                    self._check_tp_sl(symbol, price or self.status['last_price'])
+                    # 用最近已收盘K线收盘价判断（与回测口径一致，盘中插针不打损；
+                    # last_close 已在 _compute_signal 中按已收盘K线更新）
+                    self._check_tp_sl(symbol, self.status.get('last_close') or 0.0)
                     self._apply_orders(symbol, qty_usdt)
                     self._refresh_real_position(symbol)
                 self.status['monitor_loop'] += 1

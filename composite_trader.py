@@ -637,6 +637,18 @@ class CompositeTrader:
         """下单成功邮件通知（HTML 样式版）：开多=绿 / 开空=红 / 平仓按盈亏着色"""
         if not mailer.is_configured():
             return
+        # 平仓时明确标注平仓原因，便于区分止盈/止损/信号反转
+        if side == '平仓':
+            if '止盈' in (action or ''):
+                close_type = '止盈平仓'
+            elif '止损' in (action or ''):
+                close_type = '止损平仓'
+            else:
+                close_type = '信号反转平仓'
+            head_label = close_type
+        else:
+            close_type = None
+            head_label = f"{side}{action}"
         st = self.status
         task_id = self._task_id or '—'
         task_name = st.get('name') or '—'
@@ -673,14 +685,14 @@ class CompositeTrader:
         html = f"""
 <div style="font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;max-width:560px;margin:0 auto;border:1px solid {BORDER};border-radius:10px;overflow:hidden">
   <div style="background:{theme};padding:14px 18px">
-    <div style="color:#fff;font-size:17px;font-weight:600">💰 币安量化成交 · {side}{action}</div>
+    <div style="color:#fff;font-size:17px;font-weight:600">💰 币安量化成交 · {head_label}</div>
     <div style="color:rgba(255,255,255,.85);font-size:12px;margin-top:4px">{s['symbol']}（{sym_name}） · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
   </div>
   <div style="padding:14px 18px;background:#fff">
     <div style="font-size:13px;color:{MUTED};margin-bottom:10px">📋 任务：{task_name}（ID {task_id}）</div>
     <table style="width:100%;border-collapse:collapse;font-size:13px;background:{BG};border-radius:6px">
       {row('品种', f"<b>{s['symbol']}</b>（{sym_name}）")}
-      {row('方向 / 操作', f"<b style='color:{side_color}'>{side}</b> / {action}")}
+      {row('方向 / 操作', f"<b style='color:{side_color}'>{side}</b> / {head_label}")}
       {row('周期 / 策略', f"{tf} · {strategies}")}
       {row('数量 / 价格', f"{qty} 张 @ {price}")}
       {pnl_html}
@@ -699,18 +711,18 @@ class CompositeTrader:
     币安量化系统自动发送 · 综合量化任务 {task_id}
   </div>
 </div>"""
-        subject = f"💰 币安量化成交({side}{action}): {s['symbol']}"
+        subject = f"💰 币安量化成交({head_label}): {s['symbol']}"
         mailer.send_async(subject, html, html=True)
         self._log(f"已发送成交邮件: {s['symbol']} {side} {action}")
 
     def _check_tp_sl(self, s, price):
-        """止盈/止损监控：开仓均价达到设置的止盈/止损价则市价平仓"""
+        """止盈/止损监控：按最近已收盘K线收盘价判断是否达到止盈/止损，触发则市价平仓"""
         tp = s.get('take_profit_pct') or 0.0
         sl = s.get('stop_loss_pct') or 0.0
         if tp <= 0 and sl <= 0:
             return
         pos, avg, side = s.get('position', 0) or 0, s.get('entry_price', 0.0) or 0.0, s.get('side', 'none')
-        if pos <= 0 or avg <= 0 or side == 'none':
+        if pos <= 0 or avg <= 0 or side == 'none' or price <= 0:
             return
         trigger, pct = None, 0.0
         if side == 'long':
@@ -725,7 +737,7 @@ class CompositeTrader:
                 trigger, pct = '止损', sl
         if not trigger:
             return
-        self._log(f"{trigger}触发: {s['symbol']} {side} 现价 {price:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
+        self._log(f"{trigger}触发(收盘确认): {s['symbol']} {side} 收盘价 {price:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
         self._exit_position(s, side, trigger)
 
     def _calc_contracts(self, symbol, usdt_amount):
@@ -1004,7 +1016,8 @@ class CompositeTrader:
                     else:
                         s['signal'] = '观望'
                     # 3. 止盈/止损监控（先于开平仓信号执行）
-                    self._check_tp_sl(s, s.get('last_price') or 0.0)
+                    # 用最近已收盘K线收盘价判断（与回测口径一致，盘中插针不打损）
+                    self._check_tp_sl(s, s.get('last_close') or 0.0)
                     # 4. 应用买卖信号
                     self._apply_orders(s)
                 self.status['signal'] = '有买点' if all_sig == 1 else ('有卖点' if all_sig == -1 else '观望')
