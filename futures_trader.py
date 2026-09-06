@@ -321,7 +321,8 @@ class FuturesTrader:
         now = time.time()
         if self._dual_side is not None and now - self._dual_side_ts < 600:
             return self._dual_side
-        for fn in ('fapi_private_v2_get_position_side_dual',
+        for fn in ('fapiprivate_get_positionside_dual',       # ccxt>=4.x 命名（GET /fapi/v1/positionSide/dual）
+                   'fapi_private_v2_get_position_side_dual',  # 旧版 ccxt 命名
                    'fapi_private_v3_get_position_side_dual'):
             api = getattr(self.exchange, fn, None)
             if api is None:

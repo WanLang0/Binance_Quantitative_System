@@ -17,7 +17,7 @@ class FakeEx:
         self.dual, self.query_ok, self.reject_no_ps = dual, query_ok, reject_no_ps
         self.calls = []
 
-    def fapi_private_v2_get_position_side_dual(self):
+    def fapiprivate_get_positionside_dual(self):   # ccxt>=4.x 隐式方法名
         if not self.query_ok:
             raise RuntimeError('network down')
         return {'dualSidePosition': self.dual}
