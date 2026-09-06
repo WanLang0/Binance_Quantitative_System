@@ -30,6 +30,10 @@ class FuturesTrader:
         # IP 封禁截止时间戳（毫秒）：命中 -1003 后记录，主循环据此暂停请求等待到期，
         # 避免封禁期内持续重试把 banned until 不断后移、导致封禁永不结束
         self._ip_ban_until_ms = 0
+        # 持仓模式缓存：True=双向持仓(Hedge) / False=单向(One-way) / None=未知(按单向处理)
+        # 由 get_position_mode() 惰性探测并缓存；-4061 报错时立即翻转重试
+        self._dual_side = None
+        self._dual_side_ts = 0.0
         self._create_exchange()
 
     def _create_exchange(self):
@@ -268,7 +272,10 @@ class FuturesTrader:
 
     def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False):
         """
-        下单（合约：quantity 为张数）
+        下单（合约：quantity 为张数）。自动适配账户持仓模式：
+        - 单向持仓(One-way)：平仓单带 reduceOnly（原有行为）
+        - 双向持仓(Hedge)：必须带 positionSide 且不能传 reduceOnly
+          开仓 buy→LONG / sell→SHORT；平仓(反手方向) sell→LONG / buy→SHORT
 
         Args:
             symbol: 交易对，如 BTC/USDT
@@ -278,29 +285,76 @@ class FuturesTrader:
             price: 限价单价格（市价单忽略）
             reduce_only: 是否只减仓（平仓用，防止反手开新仓）
         """
-        try:
-            params = {}
-            if reduce_only:
-                params['reduceOnly'] = True
+        def _send(params):
             if order_type == 'limit' and price:
-                order = self.exchange.create_order(symbol, 'limit', side, quantity, price, params)
-            else:
-                order = self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+                return self.exchange.create_order(symbol, 'limit', side, quantity, price, params)
+            return self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+
+        try:
+            params = self._build_order_params(side, reduce_only)
+            order = _send(params)
             return order, None
         except Exception as e:
-            # 美股代币永续：若提示未签署 TradFi 协议(-4411)，自动补签一次并重试，避免首单失败
             msg = str(e)
+            # 美股代币永续：若提示未签署 TradFi 协议(-4411)，自动补签一次并重试，避免首单失败
             if '-4411' in msg:
                 try:
                     self.sign_tradfi_agreement()
-                    if order_type == 'limit' and price:
-                        order = self.exchange.create_order(symbol, 'limit', side, quantity, price, params)
-                    else:
-                        order = self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+                    order = _send(self._build_order_params(side, reduce_only))
+                    return order, None
+                except Exception as e2:
+                    return None, str(e2)
+            # -4061 持仓模式不匹配：翻转缓存的模式认知后按新模式重试一次（用户中途切换模式时自愈）
+            if '-4061' in msg:
+                try:
+                    self._flip_position_mode()
+                    order = _send(self._build_order_params(side, reduce_only))
                     return order, None
                 except Exception as e2:
                     return None, str(e2)
             return None, msg
+
+    def get_position_mode(self):
+        """查询合约持仓模式（GET /fapi/v2|v3/positionSide/dual）。
+        返回 True=双向持仓(Hedge) / False=单向(One-way)；查询失败返回当前缓存（可能为 None，按单向处理）。
+        结果缓存10分钟，避免高频下单时反复打私有接口。"""
+        now = time.time()
+        if self._dual_side is not None and now - self._dual_side_ts < 600:
+            return self._dual_side
+        for fn in ('fapi_private_v2_get_position_side_dual',
+                   'fapi_private_v3_get_position_side_dual'):
+            api = getattr(self.exchange, fn, None)
+            if api is None:
+                continue
+            try:
+                r = api()
+                self._dual_side = bool(r.get('dualSidePosition'))
+                self._dual_side_ts = now
+                return self._dual_side
+            except AttributeError:
+                continue
+            except Exception:
+                break  # 网络/权限异常：保留旧缓存，按已知模式处理
+        return self._dual_side
+
+    def _flip_position_mode(self):
+        """翻转持仓模式缓存（配合 -4061 自愈重试）"""
+        cur = self.get_position_mode()
+        self._dual_side = not bool(cur)
+        self._dual_side_ts = time.time()
+
+    def _build_order_params(self, side, reduce_only):
+        """按持仓模式构造下单参数"""
+        params = {}
+        if self.get_position_mode():
+            # 双向持仓(Hedge)：positionSide 必填；reduceOnly 禁止传（币安会拒单）
+            if reduce_only:   # 平仓方向 = 持仓方向
+                params['positionSide'] = 'LONG' if side == 'sell' else 'SHORT'
+            else:             # 开仓方向 = 订单方向
+                params['positionSide'] = 'LONG' if side == 'buy' else 'SHORT'
+        elif reduce_only:
+            params['reduceOnly'] = True
+        return params
 
     def fetch_order(self, order_id, symbol):
         """查询单笔订单的成交回报（实际成交均价/数量）"""
@@ -319,8 +373,9 @@ class FuturesTrader:
 
     def place_stop_order(self, symbol, side, stop_price, quantity):
         """
-        下止损保护单：STOP_MARKET + reduceOnly（只减仓）。
+        下止损保护单：STOP_MARKET + 只减仓。
         挂在交易所侧，即使本服务宕机，价格触发后交易所自动平仓兜底。
+        自动适配持仓模式：单向用 reduceOnly；双向(Hedge)用 positionSide（此处 side 恒为平仓方向）。
 
         Args:
             symbol: 交易对
@@ -328,15 +383,32 @@ class FuturesTrader:
             stop_price: 触发价
             quantity: 张数（与持仓一致）
         """
-        try:
+        def _send(params):
+            return self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+
+        def _build():
             params = {
                 'stopPrice': self.exchange.price_to_precision(symbol, stop_price),
-                'reduceOnly': True,
                 'type': 'STOP_MARKET',
             }
-            order = self.exchange.create_order(symbol, 'market', side, quantity, None, params)
+            if self.get_position_mode():
+                # 双向持仓：平多(sell)→positionSide=LONG，平空(buy)→SHORT
+                params['positionSide'] = 'LONG' if side == 'sell' else 'SHORT'
+            else:
+                params['reduceOnly'] = True
+            return params
+
+        try:
+            order = _send(_build())
             return order, None
         except Exception as e:
+            if '-4061' in str(e):
+                try:
+                    self._flip_position_mode()
+                    order = _send(_build())
+                    return order, None
+                except Exception as e2:
+                    return None, str(e2)
             return None, str(e)
 
     def cancel_all_orders(self, symbol):
