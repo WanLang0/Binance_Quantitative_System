@@ -1033,6 +1033,11 @@ def futures():
         task = next((t for t in AutoFutures.list_tasks() if t.get('id') == tid), None)
         if not task:
             return redirect(url_for('futures', _error=f"任务不存在或已丢失: {tid}"))
+        # 网络一致性校验：任务记录记住创建时的网络，防止"测试网任务被主网密钥恢复"误用真实资金
+        task_testnet = task.get('testnet')
+        if task_testnet is not None and bool(task_testnet) != testnet:
+            want = '测试网' if task_testnet else '主网'
+            return redirect(url_for('futures', _error=f"该任务是{want}任务，请先把页面网络切换到{want}并绑定对应密钥后再继续运行"))
         # 币种是否在当前所选网络存在且可交易，交由 _composite/_fut_start_task 内的 _market_check 精准校验
         task_lev = int(task.get('leverage', 5))
         sp = float(task.get('stop_pct', 0) or 0)
@@ -2111,6 +2116,11 @@ def _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,
                           api_key, api_secret, shared_trader, leverage, testnet, task_id=None,
                           prioritize=False, share_count=0, market='us'):
     """启动一个综合量化任务（多币种+独立策略+资金比例分配；多任务并行；币种须在币安合约市场）"""
+    # 防重复启动：恢复一个已在运行的任务会顶掉注册表里的旧引擎（旧线程失控继续交易），
+    # 且两个引擎共享同一 task_id 的任务记录/日志，状态彻底混乱
+    reg = _composite_registry(market)
+    if task_id and reg.get(task_id) and reg[task_id].status.get('running'):
+        return False, "该任务已在运行中，请先停止后再启动"
     # 校验每个币对都在币安合约市场存在且可交易
     if shared_trader:
         for cfg in symbol_configs:
@@ -2313,6 +2323,11 @@ def _composite_page(market='us'):
         task = next((t for t in CompositeTrader.list_tasks(market) if t.get('id') == tid), None)
         if not task:
             return redirect(url_for(endpoint, _error=f"任务不存在或已丢失: {tid}"))
+        # 网络一致性校验：任务记录记住创建时的网络，防止"测试网任务被主网密钥恢复"误用真实资金
+        task_testnet = task.get('testnet')
+        if task_testnet is not None and bool(task_testnet) != testnet:
+            want = '测试网' if task_testnet else '主网'
+            return redirect(url_for(endpoint, _error=f"该任务是{want}任务，请先把页面网络切换到{want}并绑定对应密钥后再继续运行"))
         # 币种是否在当前所选网络存在且可交易，交由 _composite_start_task 内的 _market_check 精准校验
         task_lev = int(task.get('leverage', 5))
         task_buy_pct = float(task.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)

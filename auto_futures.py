@@ -152,6 +152,7 @@ class AutoFutures:
             'stop_loss_pct': self.status.get('stop_loss_pct', 0),
             'grid_step': self.status['grid'].get('step_pct', 0.01),
             'grid_max_levels': self.status['grid'].get('max_levels', 12),
+            'testnet': bool(self.testnet),   # 记住创建网络：恢复时校验，防止测试网任务被主网密钥恢复(真实资金)
             'status': 'running',
             'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }

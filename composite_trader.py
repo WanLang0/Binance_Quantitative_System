@@ -52,9 +52,13 @@ def default_task_name(market):
     return '虚拟币综合量化任务' if market == 'crypto' else '美股综合量化任务'
 
 
-def state_file(market='us'):
-    """运行状态快照文件（按市场分开）"""
-    name = 'crypto_composite_state.json' if market == 'crypto' else 'composite_state.json'
+def state_file(market='us', task_id=None):
+    """运行状态快照文件（按市场+任务分开）。
+    每个任务独立一份复利池/持仓/份额状态，杜绝跨任务（含跨网络）互相污染——
+    修复前所有任务共用一个文件，谁最后写入就覆盖谁，导致"测试网任务用了主网金额"。
+    task_id 为空时返回旧版共享文件路径，仅供一次性迁移读取。"""
+    base = 'crypto_composite_state' if market == 'crypto' else 'composite_state'
+    name = f'{base}_{task_id}.json' if task_id else f'{base}.json'
     return os.path.join('data', name)
 
 
@@ -131,7 +135,7 @@ class CompositeTrader:
     # ---------- 状态管理 ----------
     @property
     def state_file(self):
-        return state_file(self.market)
+        return state_file(self.market, getattr(self, '_task_id', None))
 
     def reset_status(self):
         self.status = {
@@ -201,6 +205,7 @@ class CompositeTrader:
             'buy_pct': self.status['buy_pct'],
             'prioritize': self.status.get('prioritize', False),
             'share_count': self.status.get('share_count', 0),
+            'testnet': bool(self.testnet),   # 记住创建网络：恢复时校验，防止测试网任务被主网密钥恢复(真实资金)
             'symbols': [{
                 'symbol': s['symbol'], 'name': s['name'], 'strategy': s['strategy'],
                 'strategies': s.get('strategies') or [s['strategy']],
@@ -265,6 +270,7 @@ class CompositeTrader:
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             data = {
+                'task_id': getattr(self, '_task_id', None),
                 'name': self.status['name'],
                 'total_fund': self.status['total_fund'],
                 'interval': self.status['interval'],
@@ -298,9 +304,21 @@ class CompositeTrader:
 
     def load_state(self):
         try:
-            if not os.path.exists(self.state_file):
+            path = self.state_file
+            # 一次性迁移旧版共享状态文件：仅当任务名一致时收编给本任务（os.replace 改名后
+            # 不会被其它任务二次收编）；名字不符则忽略，避免A任务复利池被B任务冒领。
+            legacy = state_file(self.market)
+            if not os.path.exists(path) and os.path.exists(legacy):
+                try:
+                    with open(legacy, 'r', encoding='utf-8') as f:
+                        legacy_data = json.load(f)
+                    if legacy_data.get('name') == self.status['name']:
+                        os.replace(legacy, path)
+                except Exception:
+                    pass
+            if not os.path.exists(path):
                 return
-            with open(self.state_file, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.status['name'] = data.get('name', self.status['name'])
             self.status['total_fund'] = data.get('total_fund', self.status['total_fund'])
@@ -1052,11 +1070,11 @@ class CompositeTrader:
                 return False, '请为各币对设置资金权重(>0)'
             # 恢复任务(task_id 复用)时：从磁盘读回复利本金/持仓/份额等累积状态，
             # 使复利不因重启而重置。全新启动(task_id=None)不读，保持初始资金。
+            # 注意：须先确定 task_id（状态文件按任务命名）再 load_state。
+            self._task_id = task_id or (datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}")
             if task_id:
                 self.load_state()
             self._stop_event.clear()
-            # 恢复任务时复用旧 task_id，任务列表不新增、日志续写
-            self._task_id = task_id or (datetime.now().strftime('%Y%m%d%H%M%S') + f"{int(time.time() * 1000) % 1000:03d}")
             self.log_file = os.path.join(LOG_DIR, f'{log_prefix(self.market)}{self._task_id}.log')
             self._running = True
             self.status['running'] = True
