@@ -8,6 +8,7 @@ users.db
 data/users.db
 data/strategy_records.db
 data/strategy_records.db.bak*
+data/strategy_records_backup_before_remove.db
 data/secret_key
 data/secret.key
 data/auto_trader_state.json
@@ -29,6 +30,7 @@ data/*.db-shm
 
 # 回测结果产物（明细/缓存不入库；最优策略页展示依赖的 summary JSON 随仓库分发）
 /results/
+scripts/cache/
 scripts/results/*
 !scripts/results/*_summary_2024_2026.json
 !scripts/results/recommended_configs.json
