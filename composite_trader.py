@@ -291,6 +291,7 @@ class CompositeTrader:
                     'side': s.get('side', 'none'), 'position': s.get('position', 0),
                     'entry_price': s.get('entry_price', 0.0),
                     'buy_count': s.get('buy_count', 0), 'sell_count': s.get('sell_count', 0),
+                    'last_open_ms': s.get('last_open_ms', 0),
                     'shares': s.get('shares', 0),
                 } for s in self.status['symbols']],
                 'buy_count': self.status['buy_count'],
@@ -342,6 +343,7 @@ class CompositeTrader:
                 s['entry_price'] = src.get('entry_price', 0.0)
                 s['buy_count'] = src.get('buy_count', s.get('buy_count', 0))
                 s['sell_count'] = src.get('sell_count', s.get('sell_count', 0))
+                s['last_open_ms'] = src.get('last_open_ms', s.get('last_open_ms', 0))
                 s['shares'] = src.get('shares', 0)
             self.status['buy_count'] = data.get('buy_count', self.status['buy_count'])
             self.status['sell_count'] = data.get('sell_count', self.status['sell_count'])
@@ -424,6 +426,7 @@ class CompositeTrader:
                 'sell_count': 0,
                 'last_trade': None,
                 'last_error': None,
+                'last_open_ms': 0,                  # 最近一次引擎开仓时间戳(ms)，外部平仓精确记账的查询起点
                 'shares': 0,                        # 优先匹配：当前占用的份额数
                 'share_cap': round(unit, 8) if prioritize else 0.0,  # 优先匹配：一份份额的资金额度，开仓金额硬上限
             })
@@ -545,6 +548,9 @@ class CompositeTrader:
                         self.trader.cancel_all_orders(sym)
                     except Exception:
                         pass
+                    # 外部平仓精确记账：调币安 income(REALIZED_PNL) 取自上次开仓以来的真实成交盈亏，
+                    # 滚入复利池 buy_balance（与算法自身平仓一致）。接口失败/查询为空则不更新，保留旧池。
+                    self._record_external_close_pnl(s)
                 self._release_share(s)  # 优先匹配：外部平仓同样回收份额
                 s['position'] = 0
                 s['side'] = 'none'
@@ -777,6 +783,30 @@ class CompositeTrader:
             avg = fallback_price
         return avg, filled
 
+    def _record_external_close_pnl(self, s):
+        """外部平仓精确记账：查询币安 income(REALIZED_PNL) 中自上次引擎开仓以来的成交盈亏，
+        滚入该币对复利池 buy_balance，使"手动平仓/其它任务平仓"的盈亏也计入复利。
+        - 以 last_open_ms 为 startTime 查询起点（避免把上一轮持仓的历史盈亏重复计入）；
+        - incomeType 只取 REALIZED_PNL，佣金/资金费不在本池记账；
+        - 接口失败/查询为空(qt=0)时保持旧池不变，静默跳过（外部平仓已由告警提示，不影响主循环）。
+        """
+        try:
+            since = s.get('last_open_ms') or 0
+            pnl, err = self.trader.get_realized_pnl(symbol=s['symbol'], since_ms=since if since else None)
+            if err:
+                self._log(f"{s['symbol']} 外部平仓记账失败(保留原池): {err}")
+                return
+            if pnl is None:
+                return
+            if pnl == 0:
+                self._log(f"{s['symbol']} 外部平仓: 无配对已实现盈亏(可能手动加/减仓)，复利池不调整")
+                return
+            old = (s.get('buy_balance') or 0.0)
+            s['buy_balance'] = round(old + pnl, 8)
+            self._log(f"{s['symbol']} 外部平仓记账: income实亏{pnl:+.2f}U, 复利池 {old:.2f}→{s['buy_balance']:.2f}U")
+        except Exception as e:
+            self._log(f"{s['symbol']} 外部平仓记账异常(保留原池): {e}")
+
     def _exit_position(self, s, side, reason):
         """市价平掉该币对合约持仓（止盈/止损/强制平仓共用，reduceOnly）"""
         pos = s.get('position', 0) or 0
@@ -880,6 +910,7 @@ class CompositeTrader:
         s['entry_price'] = fill_price
         s['buy_count'] += 1
         self.status['buy_count'] += 1
+        s['last_open_ms'] = int(time.time() * 1000)  # 记录开仓时间(ms)，供外部平仓精确记账查询
         s['last_trade'] = {
             'time': datetime.now().isoformat(), 'action': 'OPEN_LONG', 'symbol': s['symbol'],
             'price': fill_price, 'contracts': s['position'], 'notional': s['position'] * fill_price,
@@ -911,6 +942,7 @@ class CompositeTrader:
         s['entry_price'] = fill_price
         s['buy_count'] += 1
         self.status['buy_count'] += 1
+        s['last_open_ms'] = int(time.time() * 1000)  # 记录开仓时间(ms)，供外部平仓精确记账查询
         s['last_trade'] = {
             'time': datetime.now().isoformat(), 'action': 'OPEN_SHORT', 'symbol': s['symbol'],
             'price': fill_price, 'contracts': s['position'], 'notional': s['position'] * fill_price,

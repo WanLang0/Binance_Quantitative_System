@@ -270,6 +270,58 @@ class FuturesTrader:
                 return [], f"IP被限流(get_positions)"
             return [], str(e)
 
+    def get_realized_pnl(self, symbol=None, since_ms=None, limit=100):
+        """查询币安合约已实现盈亏（收入明细 incomeType=REALIZED_PNL），用于外部平仓后精确回补复利池。
+
+        Args:
+            symbol: 交易对，如 'BTC/USDT'（None=全账户）
+            since_ms: 起始时间戳(ms)，只统计该时间之后发生的平仓盈亏（以最后一次开仓时间为起点）
+            limit: 最多返回条数（币安单笔上限1000，此处默认100足够覆盖一次持仓）
+
+        Returns:
+            (合计已实现盈亏float, None) 或 (None, err)
+        """
+        if self._is_banned_now():
+            return None, f"IP被封禁中(get_realized_pnl)"
+        try:
+            params = {'incomeType': 'REALIZED_PNL', 'limit': limit}
+            if symbol:
+                params['symbol'] = symbol
+            if since_ms:
+                params['startTime'] = int(since_ms)
+            data = None
+            # 多种 ccxt 命名兜底（新版小驼峰 / 旧版大驼峰均可）
+            for fn in ('fapiprivate_get_income', 'fapiPrivateGetIncome', 'fapi_private_v2_get_income'):
+                api = getattr(self.exchange, fn, None)
+                if api is None:
+                    continue
+                try:
+                    data = api(params)
+                    break
+                except AttributeError:
+                    continue
+                except Exception as e:
+                    if self._is_ip_ban(e):
+                        return None, f"IP被限流(get_realized_pnl)"
+                    data = None
+                    break
+            if data is None:
+                return None, "income接口不可用"
+            rows = data if isinstance(data, list) else (data.get('data') or data.get('rows') or [])
+            total = 0.0
+            for r in rows:
+                if (r.get('incomeType') or '') != 'REALIZED_PNL':
+                    continue
+                try:
+                    total += float(r.get('income') or 0)
+                except (TypeError, ValueError):
+                    pass
+            return round(total, 8), None
+        except Exception as e:
+            if self._is_ip_ban(e):
+                return None, f"IP被限流(get_realized_pnl)"
+            return None, str(e)
+
     def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False):
         """
         下单（合约：quantity 为张数）。自动适配账户持仓模式：
