@@ -286,27 +286,25 @@ class FuturesTrader:
         try:
             params = {'incomeType': 'REALIZED_PNL', 'limit': limit}
             if symbol:
-                params['symbol'] = symbol
+                # 隐式接口要求交易所原始符号(XMRUSDT)，统一符号(XMR/USDT / XMR/USDT:USDT)
+                # 直接传会报 -1121 无效符号，须先转换
+                sid = symbol.split(':')[0].replace('/', '').upper()
+                try:
+                    sid = self.exchange.market_id(symbol) or sid
+                except Exception:
+                    pass
+                params['symbol'] = sid
             if since_ms:
                 params['startTime'] = int(since_ms)
-            data = None
-            # 多种 ccxt 命名兜底（新版小驼峰 / 旧版大驼峰均可）
-            for fn in ('fapiprivate_get_income', 'fapiPrivateGetIncome', 'fapi_private_v2_get_income'):
+            # 多种 ccxt 命名兜底（ccxt>=4.x 小写下划线 / 旧版大驼峰；实测4.1.77两者都有）
+            api = None
+            for fn in ('fapiprivate_get_income', 'fapiPrivateGetIncome'):
                 api = getattr(self.exchange, fn, None)
-                if api is None:
-                    continue
-                try:
-                    data = api(params)
+                if api is not None:
                     break
-                except AttributeError:
-                    continue
-                except Exception as e:
-                    if self._is_ip_ban(e):
-                        return None, f"IP被限流(get_realized_pnl)"
-                    data = None
-                    break
-            if data is None:
-                return None, "income接口不可用"
+            if api is None:
+                return None, "income接口不可用(当前ccxt版本无该方法)"
+            data = api(params)
             rows = data if isinstance(data, list) else (data.get('data') or data.get('rows') or [])
             total = 0.0
             for r in rows:
