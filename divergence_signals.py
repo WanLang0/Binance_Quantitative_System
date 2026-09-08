@@ -7,12 +7,15 @@ MACD + 价格形态(顶底背离) + 共振过滤 —— 固定组合策略信号
 - macd+背离+量能            : 上者基础上 叠加「成交量放大(>1.5倍20期均量)」共振过滤
 - macd+背离+均线+量能       : 上者基础上 叠加「收盘价位于20日均线同侧(趋势过滤)」共振过滤
 
-信号构造（与 scripts/tmp_macd_divergence_1h_2025.py 的回测口径保持一致）：
+信号构造（无前视口径，与实盘引擎严格一致）：
 - 买入 = (MACD金叉 | 底背离) [& 均线过滤] [& 量能过滤]
 - 卖出 = (MACD死叉 | 顶背离) [& 均线过滤] [& 量能过滤]
+- 背离信号在 pivot 确认根（i+PIVOT_ORDER）标记，非 pivot 当根——修复前视偏差（回测提前5根
+  用未来数据入场，实盘引擎读最后一根K线时背离永不成立）。
 
 本模块被 auto_trader / auto_futures / composite_trader 复用，
 使实盘引擎的信号与历史回测严格一致，避免"回测赚钱、实盘变样"。
+新增信号必须通过 scripts/check_no_lookahead.py 无前视校验。
 """
 import numpy as np
 import pandas as pd
@@ -81,7 +84,12 @@ def _find_pivots(s, order=PIVOT_ORDER, kind='high'):
 
 
 def _divergence(df, macd_col='MACD', order=PIVOT_ORDER):
-    """顶背离/底背离。返回 (top_div, bot_div) 布尔 Series（在 pivot 确认点标记）"""
+    """顶背离/底背离。返回 (top_div, bot_div) 布尔 Series。
+
+    无前视口径：pivot 在 i 处成立需要 [i-order, i+order] 窗口（即 i+order 根收盘后才可知），
+    因此背离标志统一右移 order 根、标记在"确认根" i+order 上——
+    回测在确认根收盘成交、实盘引擎在最后一根已收盘K线上读到同样的标志，
+    两者时间轴严格一致（修复前标志在 pivot 当根 i，回测等于提前 order 根用未来数据抄底摸顶）。"""
     px_high = _find_pivots(df['high'], order, 'high')
     px_low = _find_pivots(df['low'], order, 'low')
     macd = df[macd_col].to_numpy()
@@ -99,6 +107,9 @@ def _divergence(df, macd_col='MACD', order=PIVOT_ORDER):
         if pl is not None and p < pl and m > pm2:  # 价新低 MACD 未新低 → 底背离
             bot[i] = True
         pl = p; pm2 = m
+    # 关键：右移到确认根（i+order 收盘时 pivot 才被确认），消除前视偏差
+    top = np.concatenate([np.zeros(order, dtype=bool), top[:-order]])
+    bot = np.concatenate([np.zeros(order, dtype=bool), bot[:-order]])
     return pd.Series(top, index=df.index), pd.Series(bot, index=df.index)
 
 
