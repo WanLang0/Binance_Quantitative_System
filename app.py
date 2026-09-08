@@ -187,7 +187,7 @@ TIMEFRAME_OPTIONS = {
 
 # 策略指标选项
 STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉",
-              "macd+背离", "macd+背离+量能", "macd+背离+均线+量能"]
+              "macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能"]
 
 # 固定交易对列表（symbol, 显示名称）
 SYMBOL_LIST = [
@@ -261,8 +261,8 @@ def _build_indicators(form, selected_strategies):
         indicators['ma_cross_long'] = _to_int(form.get('ma_cross_long'), 30)
         indicators['ma_cross_periods'] = [indicators['ma_cross_short'], indicators['ma_cross_long']]
 
-    if any(n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能") for n in selected_strategies):
-        # 固定组合背离策略：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+    if any(n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能") for n in selected_strategies):
+        # 固定组合背离策略族：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
         indicators['macd'] = True
         indicators['macd_fast'] = _to_int(form.get('macd_fast'), 12)
         indicators['macd_slow'] = _to_int(form.get('macd_slow'), 26)
@@ -301,8 +301,8 @@ def _strategy_params_from_names(names):
         elif n == "双均线交叉":
             p.update({"ma_cross": True, "ma_cross_short": 10, "ma_cross_long": 30,
                       "ma_cross_periods": [10, 30]})
-        elif n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能"):
-            # 固定组合背离策略：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+        elif n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能"):
+            # 固定组合背离策略族：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
             p.update({"macd": True, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9})
     return p
 
@@ -2306,6 +2306,13 @@ def _composite_page(market='us'):
         buy_pct = _to_float(form.get("buy_pct"), 95) / 100
         prioritize = form.get("prioritize") == "1"
         share_count = _to_int(form.get("share_count"), 0)
+        # ATR动态止盈止损（冠军策略口径，全局开关应用到任务内全部币对）
+        atr_on = form.get("atr_enable") == "1"
+        atr_cfg = {
+            'atr_period': _to_int(form.get("atr_period"), 14),
+            'atr_sl_mult': _to_float(form.get("atr_sl_mult"), 1.5),
+            'atr_tp_mult': _to_float(form.get("atr_tp_mult"), 2.0),
+        } if atr_on else {}
         # 解析每个币对的配置：symbol / strategies(多策略组合) / timeframe / fund_ratio / 止盈止损 / allow_short
         symbol_configs = []
         raw_syms = form.getlist("cs_symbol")
@@ -2332,6 +2339,7 @@ def _composite_page(market='us'):
                 'stop_loss_pct': _to_float(raw_sls[i], 0) / 100 if i < len(raw_sls) else 0,
                 'allow_short': (raw_short[i] == '1') if i < len(raw_short) else False,
                 'long_only': (raw_short[i] != '1') if i < len(raw_short) else True,
+                **atr_cfg,
             })
         # 币种是否在当前所选网络存在且可交易，交由 _composite_start_task 内的 _market_check 精准校验
         ok, msg = _composite_start_task(name, total_fund, symbol_configs, interval, buy_pct,

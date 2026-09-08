@@ -127,6 +127,25 @@ td.short, td.neg { color: var(--sell); }
                 </div>
                 <div class="field">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input type="checkbox" id="atr-chk" onchange="toggleAtr()">
+                        启用 ATR 动态止盈止损（C判定）
+                    </label>
+                    <div id="atr-opts" style="display:none;margin-top:6px">
+                        <label>ATR周期
+                            <input type="number" name="atr_period" step="1" min="2" value="14">
+                        </label>
+                        <label>止损倍数 ×ATR
+                            <input type="number" name="atr_sl_mult" step="0.1" min="0.1" value="1.5">
+                        </label>
+                        <label>止盈倍数 ×ATR
+                            <input type="number" name="atr_tp_mult" step="0.1" min="0.1" value="2.0">
+                        </label>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">止盈=倍数×ATR/价格（截断1%~8%），开仓时锁定；止盈按实时价盘中触发（吃插针），止损按K线收盘确认（防插针打损）。冠军策略建议：macd+量能 · 4h · 双向 · 14/1.5/2.0 · 轮询5秒。</div>
+                    </div>
+                    <input type="hidden" name="atr_enable" id="atr_enable" value="0">
+                </div>
+                <div class="field">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
                         <input type="checkbox" id="prioritize-chk" onchange="togglePrioritize()">
                         开启量化优先匹配
                     </label>
@@ -523,10 +542,11 @@ function evenWeights() {
     var cards = Array.prototype.slice.call(document.querySelectorAll('#sym-rows .sym-card:not(#sym-card-tpl)'));
     var valid = cards.filter(function (c) { return c.querySelector('.sym-inp').value.trim(); });
     if (!valid.length) return;
-    var each = Math.floor(10000 / valid.length) / 100;
-    valid.forEach(function (c, i) {
+    // 保留小数点后一位、取下限：30币=3.3%/个（合计99%，余量闲置，杜绝超分）
+    var each = Math.floor(1000 / valid.length) / 10;
+    valid.forEach(function (c) {
         var ratio = c.querySelector('input[name="cs_ratio"]');
-        ratio.value = (i === valid.length - 1) ? Math.round((100 - each * (valid.length - 1)) * 100) / 100 : each;
+        ratio.value = each.toFixed(1);
     });
     updateRatioTotal();
 }
@@ -664,6 +684,15 @@ function updateRatioTotal() {
     var bpv = bp ? (parseFloat(bp.value) || 95) : 95;
     el.innerHTML = '资金权重合计：<b>' + total.toFixed(0) + '%</b>（分配金额 = 任务总资金 × 权重%，实际买入再 × ' + bpv + '% 安全系数）'
         + (total > 100 ? ' <b style="color:#f6465d">⚠ 超过100%</b>' : '');
+}
+
+function toggleAtr() {
+    var chk = document.getElementById('atr-chk');
+    var opts = document.getElementById('atr-opts');
+    var hid = document.getElementById('atr_enable');
+    var on = chk && chk.checked;
+    if (opts) opts.style.display = on ? 'block' : 'none';
+    if (hid) hid.value = on ? '1' : '0';
 }
 
 function togglePrioritize() {

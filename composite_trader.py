@@ -214,6 +214,9 @@ class CompositeTrader:
                 'allow_short': s.get('allow_short', False),
                 'take_profit_pct': s.get('take_profit_pct', 0),
                 'stop_loss_pct': s.get('stop_loss_pct', 0),
+                'atr_period': s.get('atr_period', 0),
+                'atr_sl_mult': s.get('atr_sl_mult', 1.5),
+                'atr_tp_mult': s.get('atr_tp_mult', 2.0),
             } for s in self.status['symbols']],
             'status': 'running',
             'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -288,10 +291,16 @@ class CompositeTrader:
                     'allow_short': s.get('allow_short', False),
                     'take_profit_pct': s.get('take_profit_pct', 0),
                     'stop_loss_pct': s.get('stop_loss_pct', 0),
+                    'atr_period': s.get('atr_period', 0),
+                    'atr_sl_mult': s.get('atr_sl_mult', 1.5),
+                    'atr_tp_mult': s.get('atr_tp_mult', 2.0),
+                    'cur_tp_pct': s.get('cur_tp_pct', 0.0),
+                    'cur_sl_pct': s.get('cur_sl_pct', 0.0),
                     'side': s.get('side', 'none'), 'position': s.get('position', 0),
                     'entry_price': s.get('entry_price', 0.0),
                     'buy_count': s.get('buy_count', 0), 'sell_count': s.get('sell_count', 0),
                     'last_open_ms': s.get('last_open_ms', 0),
+                    'last_open_bar_ms': s.get('last_open_bar_ms', 0),
                     'shares': s.get('shares', 0),
                 } for s in self.status['symbols']],
                 'buy_count': self.status['buy_count'],
@@ -344,6 +353,9 @@ class CompositeTrader:
                 s['buy_count'] = src.get('buy_count', s.get('buy_count', 0))
                 s['sell_count'] = src.get('sell_count', s.get('sell_count', 0))
                 s['last_open_ms'] = src.get('last_open_ms', s.get('last_open_ms', 0))
+                s['last_open_bar_ms'] = src.get('last_open_bar_ms', s.get('last_open_bar_ms', 0))
+                s['cur_tp_pct'] = src.get('cur_tp_pct', 0.0)
+                s['cur_sl_pct'] = src.get('cur_sl_pct', 0.0)
                 s['shares'] = src.get('shares', 0)
             self.status['buy_count'] = data.get('buy_count', self.status['buy_count'])
             self.status['sell_count'] = data.get('sell_count', self.status['sell_count'])
@@ -411,6 +423,12 @@ class CompositeTrader:
                 'allow_short': bool(cfg.get('allow_short', False)),
                 'take_profit_pct': float(cfg.get('take_profit_pct') or 0),
                 'stop_loss_pct': float(cfg.get('stop_loss_pct') or 0),
+                # ATR动态止盈止损（冠军策略口径，0=关闭走传统固定比例+全收盘判定）
+                'atr_period': int(cfg.get('atr_period') or 0),
+                'atr_sl_mult': float(cfg.get('atr_sl_mult') or 1.5),
+                'atr_tp_mult': float(cfg.get('atr_tp_mult') or 2.0),
+                'cur_tp_pct': 0.0,            # 当前仓位的ATR止盈比例（开仓时锁定，平仓清零）
+                'cur_sl_pct': 0.0,            # 当前仓位的ATR止损比例
                 # 实时状态
                 'side': 'none',
                 'position': 0,
@@ -566,6 +584,9 @@ class CompositeTrader:
                 # ccxt 在对冲模式/测试网下可能返回 side=None，兜底按多头处理，避免 None 参与信号分支判断
                 s['side'] = pos.get('side') or 'long'
                 s['entry_price'] = pos.get('entry_price', 0.0) or 0.0
+                # ATR模式接管外部持仓且无锁时，按当前ATR与该仓均价补算止盈止损锁（仅一次）
+                if int(s.get('atr_period') or 0) > 0 and not s.get('cur_tp_pct') and s['entry_price'] > 0:
+                    self._set_atr_tpsl(s, s['entry_price'])
                 s['unrealized_pnl'] = pos.get('unrealized_pnl', 0.0) or 0.0
                 _mgn = pos.get('margin', 0.0) or 0.0
                 # 收益率% = 未实现盈亏 / 投入保证金；投入保证金 = 开仓名义价值 / 杠杆
@@ -610,6 +631,18 @@ class CompositeTrader:
             sig = int(signals.iloc[-1]) if not signals.empty else 0
         if not df.empty:
             s['last_close'] = float(df['close'].iloc[-1])
+        # ATR动态止盈止损：暂存最近一根已收盘K线的ATR值（开仓时用于锁定止盈止损比例，
+        # 与回测"入场时刻ATR"口径一致；ta库滚动计算，无前视）
+        if int(s.get('atr_period') or 0) > 0 and not df.empty:
+            try:
+                atr_series = TechnicalIndicators.calculate_atr(df, int(s['atr_period']))
+                val = float(atr_series.iloc[-1]) if atr_series is not None and not atr_series.empty else 0.0
+                s['_atr'] = val if (val == val and val > 0) else 0.0   # NaN/非正兜底
+                if not (val == val and val > 0):
+                    self._log(f"⚠ ATR计算失效({s['symbol']}): 结果为空/NaN/非正，本次开仓将兜底5%/5%")
+            except Exception as e:
+                s['_atr'] = 0.0
+                self._log(f"⚠ ATR计算报错({s['symbol']}): {e}（止盈止损将兜底5%/5%）")
         return sig, None
 
     def _refresh_last_close(self, s):
@@ -622,21 +655,21 @@ class CompositeTrader:
             pass
 
     # ---------- 价格偏离校验 / 止盈止损 / 成交邮件 ----------
-    def _check_deviation(self, s, price):
-        """市价单前校验：当前价与最近一根已收盘K线收盘价价差≤3%"""
+    def _check_deviation(self, s, price, limit=0.03):
+        """市价单前校验：当前价与最近一根已收盘K线收盘价价差≤limit（默认3%）"""
         if not price or price <= 0:
             return None
         close = s.get('last_close', 0.0) or 0.0
         if close <= 0:
             return None
         dev = abs(price - close) / close
-        if dev > 0.03:
-            msg = f"{s['symbol']} 当前价 {price:.6f} 距最近收盘 {close:.6f} 偏移 {dev*100:.2f}% > 3%，已拦截市价单"
+        if dev > limit:
+            msg = f"{s['symbol']} 当前价 {price:.6f} 距最近收盘 {close:.6f} 偏移 {dev*100:.2f}% > {limit*100:.0f}%，已拦截市价单"
             self._log(f"⚠ {msg}")
             if mailer.is_configured():
-                mailer.send_async("🛡️ 币安量化拦截(综合): 价格偏移超3%", msg)
-            s['last_error'] = f"价格偏移{dev*100:.2f}%>3%，拦截"
-            return f"当前价偏离上次收盘价 {dev*100:.2f}% > 3%"
+                mailer.send_async("🛡️ 币安量化拦截(综合): 价格偏移超限", msg)
+            s['last_error'] = f"价格偏移{dev*100:.2f}%>{limit*100:.0f}%，拦截"
+            return f"当前价偏离上次收盘价 {dev*100:.2f}% > {limit*100:.0f}%"
         return None
 
     def _mail_trade(self, s, side, action, qty, price, extra='', pnl=None):
@@ -721,30 +754,66 @@ class CompositeTrader:
         mailer.send_async(subject, html, html=True)
         self._log(f"已发送成交邮件: {s['symbol']} {side} {action}")
 
-    def _check_tp_sl(self, s, price):
-        """止盈/止损监控：按最近已收盘K线收盘价判断是否达到止盈/止损，触发则市价平仓"""
-        tp = s.get('take_profit_pct') or 0.0
-        sl = s.get('stop_loss_pct') or 0.0
+    def _set_atr_tpsl(self, s, entry_price):
+        """ATR模式：开仓时按【最近一根已收盘K线的ATR】锁定该仓位的止盈/止损比例。
+        与回测"入场时刻ATR"口径一致（ta库滚动计算，无前视）。
+        比例 = 倍数×ATR/价格，截断到1%~8%区间；ATR缺失/非正等失效场景一律兜底5%并报错。"""
+        if not s or int(s.get('atr_period') or 0) <= 0 or entry_price <= 0:
+            return
+        period = int(s['atr_period'])
+        atr = s.get('_atr') or 0.0
+        if not (atr == atr and atr > 0):
+            # ATR未成功计算/非正：按固定5%/5%兜底，确保止盈止损仍能生效（绝不静默）
+            s['cur_tp_pct'] = 0.05
+            s['cur_sl_pct'] = 0.05
+            self._log(f"⚠ ATR计算失效({s['symbol']}): 空或非正，止盈止损兜底设为5%/5% (period={period})")
+            return
+        raw_tp = (s.get('atr_tp_mult') or 2.0) * atr / entry_price
+        raw_sl = (s.get('atr_sl_mult') or 1.5) * atr / entry_price
+        s['cur_tp_pct'] = max(0.01, min(0.08, raw_tp))
+        s['cur_sl_pct'] = max(0.01, min(0.08, raw_sl))
+        self._log(f"ATR止盈止损锁定({s['symbol']}): ATR={atr:.6f} 开仓价={entry_price:.6f} "
+                  f"止盈{s['cur_tp_pct']*100:.2f}% 止损{s['cur_sl_pct']*100:.2f}% "
+                  f"(period={period}, tp×{s.get('atr_tp_mult') or 2.0}, sl×{s.get('atr_sl_mult') or 1.5})")
+
+    def _check_tp_sl(self, s, close_price):
+        """止盈/止损监控（两种口径）：
+        - ATR模式(atr_period>0，macd+量能冠军口径) = C判定：
+            止盈按【实时价】盘中触发（吃插针，5s轮询捕获），止损按【已收盘K线收盘价】
+            确认（防插针打损）；比例用开仓时锁定的 cur_tp_pct/cur_sl_pct（=倍数×ATR/价格，截断1%~8%）。
+        - 传统模式：止盈/止损都按最近已收盘K线收盘价判断（保持旧行为不变）。"""
+        atr_mode = int(s.get('atr_period') or 0) > 0
+        if atr_mode:
+            tp = s.get('cur_tp_pct') or 0.0
+            sl = s.get('cur_sl_pct') or 0.0
+        else:
+            tp = s.get('take_profit_pct') or 0.0
+            sl = s.get('stop_loss_pct') or 0.0
         if tp <= 0 and sl <= 0:
             return
         pos, avg, side = s.get('position', 0) or 0, s.get('entry_price', 0.0) or 0.0, s.get('side', 'none')
-        if pos <= 0 or avg <= 0 or side == 'none' or price <= 0:
+        if pos <= 0 or avg <= 0 or side == 'none':
             return
-        trigger, pct = None, 0.0
+        # 止盈价格源：ATR模式用实时价（盘中触发）；止损始终用已收盘K线收盘价（收盘确认）
+        tp_price = (s.get('last_price') or 0.0) if atr_mode else close_price
+        sl_price = close_price
+        trigger, pct, px = None, 0.0, 0.0
         if side == 'long':
-            if tp > 0 and price >= avg * (1 + tp):
-                trigger, pct = '止盈', tp
-            elif sl > 0 and price <= avg * (1 - sl):
-                trigger, pct = '止损', sl
+            if tp > 0 and tp_price > 0 and tp_price >= avg * (1 + tp):
+                trigger, pct, px = '止盈', tp, tp_price
+            elif sl > 0 and sl_price > 0 and sl_price <= avg * (1 - sl):
+                trigger, pct, px = '止损', sl, sl_price
         else:  # short
-            if tp > 0 and price <= avg * (1 - tp):
-                trigger, pct = '止盈', tp
-            elif sl > 0 and price >= avg * (1 + sl):
-                trigger, pct = '止损', sl
+            if tp > 0 and tp_price > 0 and tp_price <= avg * (1 - tp):
+                trigger, pct, px = '止盈', tp, tp_price
+            elif sl > 0 and sl_price > 0 and sl_price >= avg * (1 + sl):
+                trigger, pct, px = '止损', sl, sl_price
         if not trigger:
             return
-        self._log(f"{trigger}触发(收盘确认): {s['symbol']} {side} 收盘价 {price:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.1f}%)")
-        self._exit_position(s, side, trigger)
+        mode_txt = 'ATR·C判定:止盈盘中实时价' if atr_mode else '收盘确认'
+        self._log(f"{trigger}触发({mode_txt}): {s['symbol']} {side} 触发价 {px:.6f} 开仓价 {avg:.6f} ({trigger}{pct*100:.2f}%)")
+        # ATR模式止盈是主动卖强，放宽价格偏离护栏至15%（3%会在强势4hK线内误拦止盈）
+        self._exit_position(s, side, trigger, dev_limit=0.15 if (atr_mode and trigger == '止盈') else 0.03)
 
     def _calc_contracts(self, symbol, usdt_amount):
         """按 USDT 金额和杠杆，结合张数精度计算可开仓的张数"""
@@ -873,6 +942,8 @@ class CompositeTrader:
         s['position'] = 0
         s['side'] = 'none'
         s['entry_price'] = 0.0
+        s.pop('cur_tp_pct', None)   # 平仓清零ATR止盈止损锁
+        s.pop('cur_sl_pct', None)
         s['sell_count'] += 1
         self.status['sell_count'] += 1
         self._release_share(s)  # 优先匹配：卖出后回收份额
@@ -908,6 +979,8 @@ class CompositeTrader:
         s['position'] = float(filled) if filled and float(filled) > 0 else contracts
         s['side'] = 'long'
         s['entry_price'] = fill_price
+        s['last_open_bar_ms'] = s.get('_sig_bar_ms') or 0   # 本仓入场消费的信号K线（防同信号重入）
+        self._set_atr_tpsl(s, fill_price)                    # ATR模式：开仓锁定该仓位止盈/止损比例
         s['buy_count'] += 1
         self.status['buy_count'] += 1
         s['last_open_ms'] = int(time.time() * 1000)  # 记录开仓时间(ms)，供外部平仓精确记账查询
@@ -954,18 +1027,24 @@ class CompositeTrader:
 
     def _apply_orders(self, s):
         """对单个币对应用信号：买点开多/持有，卖点平多/开空（allow_short）。
-        优先匹配模式下，开仓前须先抢占份额，份额耗尽则暂停新开仓、仅监控卖出。"""
+        优先匹配模式下，开仓前须先抢占份额，份额耗尽则暂停新开仓、仅监控卖出。
+        防重入：同一根信号K线只允许入场一次（与回测口径一致）——盘中止盈平仓后，
+        该K线的旧信号在后续轮询中不得立即重新开仓，须等下一根新的信号K线。"""
         sig = s.get('_sig')
         current_side = s.get('side', 'none')
         position = s.get('position', 0) or 0
+        sig_bar = s.get('_sig_bar_ms') or 0
+        consumed = (s.get('last_open_bar_ms') or 0) == sig_bar and sig_bar > 0   # 本信号K线已入场过
 
         if sig == 1:  # 买点：开多
             if position > 0 and current_side == 'long':
                 return 'idle'
             if position > 0 and current_side == 'short':
-                # 持空仓遇买点：平空（不反手开多，与单币种引擎一致）
+                # 持空仓遇买点：平空（下一轮询若信号仍有效再开多，与回测"同根反手"近似）
                 self._close_position(s, 'short')
                 return 'closed'
+            if consumed:
+                return 'idle'
             return self._open_with_share(s, self._open_long)
         elif sig == -1:  # 卖点
             if current_side == 'long' and position > 0:
@@ -977,6 +1056,8 @@ class CompositeTrader:
             if s.get('long_only', True):
                 return 'idle'
             if not s.get('allow_short', False):
+                return 'idle'
+            if consumed:
                 return 'idle'
             return self._open_with_share(s, self._open_short)
         return 'idle'
@@ -1003,6 +1084,16 @@ class CompositeTrader:
         self._log(f"{market_label(self.market)}已启动: {self.status['name']} 共{n_sym}个币对, 总资金{self.status['total_fund']}U, "
                   f"杠杆{self.leverage}x, 间隔{self.status['interval']}s, 安全系数{self.status['buy_pct']*100:.0f}%")
         self._log(f"资金分配: {names}")
+        # ATR动态止盈止损：打印完整配置参数（若有币对启用），并校验参数是否有效
+        atr_syms = [s for s in self.status['symbols'] if int(s.get('atr_period') or 0) > 0]
+        if atr_syms:
+            period, sl_m, tp_m = atr_syms[0].get('atr_period', 14), atr_syms[0].get('atr_sl_mult', 1.5), atr_syms[0].get('atr_tp_mult', 2.0)
+            self._log(f"ATR动态止盈止损已开启: 周期{period} · 止损倍数{sl_m} · 止盈倍数{tp_m} · 截断[1%,8%] · "
+                      f"C判定(止盈盘中实时价/止损收盘确认) · 共{len(atr_syms)}个币对")
+            if period < 2 or sl_m <= 0 or tp_m <= 0:
+                self._log(f"⚠ ATR配置异常: period={period}(应≥2) sl_mult={sl_m} tp_mult={tp_m}(均应>0)，请检查表单")
+        else:
+            self._log("ATR动态止盈止损未开启（使用传统固定比例止盈止损 + 收盘确认口径）")
         if self.status.get('prioritize'):
             self._log(f"量化优先匹配已开启: 总资金均分为 {self.status.get('share_count', 0)} 份份额，"
                       f"每份 {self.status['total_fund']/max(self.status.get('share_count', 1), 1):.2f}U，"
