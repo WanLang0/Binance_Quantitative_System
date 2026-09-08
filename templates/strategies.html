@@ -386,6 +386,77 @@
     </div>
     {% endif %}
 
+    {% if macd_vol_matrix %}
+    <div class="card">
+        <h2>{{ macd_vol_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ macd_vol_matrix.meta.updated }}</span></h2>
+        <div class="info-note">{{ macd_vol_matrix.meta.desc }}</div>
+        {% for s in macd_vol_matrix.strategies %}
+        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>杠杆</th><th>总计收益</th><th>组合最大回撤</th>
+                <th>单币均回撤</th><th>单币最深回撤</th><th>下单数</th><th>胜率</th><th>爆仓币数</th>
+                <th>2024收益</th><th>2025收益</th><th>2026YTD收益</th>
+            </tr>
+            {% for c in s.configs %}
+            <tr>
+                <td>{{ c.lev }}</td>
+                <td class="{{ 'pos' if c.ret > 0 else 'neg' }}">{{ '%+.1f'|format(c.ret) }}%</td>
+                <td class="neg">{{ '%.1f'|format(c.mdd) }}%</td>
+                <td class="neg">{{ '%.1f'|format(c.coin_mdd_avg) }}%</td>
+                <td class="{{ 'neg' if c.coin_mdd_max < -50 else '' }}">{{ '%.1f'|format(c.coin_mdd_max) }}%</td>
+                <td>{{ c.trades }}</td>
+                <td class="pos">{{ '%.1f'|format(c.winrate) }}%</td>
+                <td class="{{ 'neg' if c.liq_coins > 0 else '' }}">{{ c.liq_coins }}</td>
+                <td class="{{ 'pos' if c.yearly['2024'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2024']) }}%</td>
+                <td class="{{ 'pos' if c.yearly['2025'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2025']) }}%</td>
+                <td class="{{ 'pos' if c.yearly['2026'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2026']) }}%</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ macd_vol_matrix.meta.conclusion }}</div>
+    </div>
+    {% endif %}
+
+    {% if tp_close_matrix %}
+    <div class="card">
+        <h2>{{ tp_close_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ tp_close_matrix.meta.updated }}</span></h2>
+        <div class="info-note">{{ tp_close_matrix.meta.desc }}</div>
+        {% for s in tp_close_matrix.strategies %}
+        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>杠杆</th><th>止盈口径</th><th>总计收益</th><th>组合最大回撤</th>
+                <th>单币均回撤</th><th>单币最深回撤</th><th>下单数</th><th>胜率</th><th>爆仓币数</th>
+                <th>2024收益</th><th>2025收益</th><th>2026YTD收益</th>
+            </tr>
+            {% for c in s.configs %}
+            <tr>
+                <td>{{ c.lev }}</td>
+                <td>{{ c.mode }}</td>
+                <td class="{{ 'pos' if c.ret > 0 else 'neg' }}">{{ '%+.1f'|format(c.ret) }}%</td>
+                <td class="neg">{{ '%.1f'|format(c.mdd) }}%</td>
+                <td class="neg">{{ '%.1f'|format(c.coin_mdd_avg) }}%</td>
+                <td class="{{ 'neg' if c.coin_mdd_max < -50 else '' }}">{{ '%.1f'|format(c.coin_mdd_max) }}%</td>
+                <td>{{ c.trades }}</td>
+                <td class="pos">{{ '%.1f'|format(c.winrate) }}%</td>
+                <td class="{{ 'neg' if c.liq_coins > 0 else '' }}">{{ c.liq_coins }}</td>
+                <td class="{{ 'pos' if c.yearly['2024'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2024']) }}%</td>
+                <td class="{{ 'pos' if c.yearly['2025'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2025']) }}%</td>
+                <td class="{{ 'pos' if c.yearly['2026'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2026']) }}%</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ tp_close_matrix.meta.conclusion }}</div>
+    </div>
+    {% endif %}
+
     {% if us_macd_matrix %}
     <div class="card">
         <h2>{{ us_macd_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ us_macd_matrix.meta.updated }}</span></h2>

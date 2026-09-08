@@ -10,8 +10,8 @@
 
 其余口径不变：2023-10预热、95%仓位、单边手续费0.1%、止盈止损按收盘价、做空现金背书。
 """
-import os, sys, io, json
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+import os, sys, json
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np

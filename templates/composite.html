@@ -140,7 +140,11 @@ td.short, td.neg { color: var(--sell); }
                         <label>止盈倍数 ×ATR
                             <input type="number" name="atr_tp_mult" step="0.1" min="0.1" value="2.0">
                         </label>
-                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">止盈=倍数×ATR/价格（截断1%~8%），开仓时锁定；止盈按实时价盘中触发（吃插针），止损按K线收盘确认（防插针打损）。冠军策略建议：macd+量能 · 4h · 双向 · 14/1.5/2.0 · 轮询5秒。</div>
+                        <label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer">
+                            <input type="checkbox" name="atr_tp_close" value="1">
+                            止盈按收盘确认（让利润奔跑）
+                        </label>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">止盈=倍数×ATR/价格（截断1%~8%），开仓时锁定；默认止盈按实时价盘中触发（吃插针），止损按K线收盘确认（防插针打损）。勾选后止盈也改为收盘价确认（1.2x量能回测：收益多数更高但胜率约-7pp、回撤略深，详见最优策略页）。冠军策略建议：macd+量能 · 4h · 双向 · 14/1.5/2.0 · 轮询5秒。</div>
                     </div>
                     <input type="hidden" name="atr_enable" id="atr_enable" value="0">
                 </div>

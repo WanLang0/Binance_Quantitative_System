@@ -34,6 +34,8 @@ scripts/cache/
 scripts/results/*
 !scripts/results/*_summary_2024_2026.json
 !scripts/results/recommended_configs.json
+!scripts/results/macd_vol_1_2x_summary.json
+!scripts/results/tp_close_vs_intraday_summary.json
 
 # IDE / 工具
 .trae/

@@ -8,6 +8,8 @@ MACD + 价格形态(顶底背离) + 共振过滤 —— 固定组合策略信号
 - macd+背离+均线+量能       : 上者基础上 叠加「收盘价位于20日均线同侧(趋势过滤)」共振过滤
 - macd+量能                 : 纯 MACD金叉/死叉 × 放量过滤（无背离，2024-2026回测冠军：
                               4h·双向·ATR动态止盈止损·C判定 = +80.5%/MDD-4.7%/1x）
+- macd 12/16/5+量能         : 同框架，MACD 12/16/5 + 1.2x量能（1h稳健型，1.2x口径收益全面优于1.5x）
+- macd 12/16/7+量能         : 同框架，MACD 12/16/7 + 1.2x量能（新冠军，1.2x口径更优）
 
 信号构造（无前视口径，与实盘引擎严格一致）：
 - 买入 = (MACD金叉 | 底背离) [& 均线过滤] [& 量能过滤]
@@ -27,7 +29,7 @@ from indicators import TechnicalIndicators
 
 # 背离 pivot 用 5+5 根窗口（1h，约半天）
 PIVOT_ORDER = 5
-# 量能放大倍数（相对 20 期均量）
+# 量能放大倍数（相对 20 期均量）；标准策略用 1.5x，优化变体经 VARIANT_VOL_MULT 单独覆盖
 VOL_MULT = 1.5
 # MACD 参数（与引擎一致）
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
@@ -42,6 +44,33 @@ DIVERGENCE_VARIANTS = {
     'macd+背离+均线+量能':    (True,  True,  True),
     'macd+量能':              (False, False, True),
 }
+
+# 两种优化参数变体（2024-2026回测，30币均分独立复利池，ATR14 C判定，1x，1.2x量能口径）：
+# - 12/16/5：稳健型。信号最密、胜率最高（总量+188.4%/MDD-9.5%），逐年分布平滑
+# - 12/16/7：进攻型（新冠军）。总量+231.3%/MDD-8.3%，年度分布最优
+# 均为「纯 MACD金叉/死叉 × 1.2倍20期均量过滤」框架，仅 MACD 参数不同
+DIVERGENCE_VARIANTS.update({
+    'macd 12/16/5+量能': (False, False, True),
+    'macd 12/16/7+量能': (False, False, True),
+})
+
+# 策略名 → MACD 参数覆盖（默认 MACD_FAST/SLOW/SIGNAL）。新变体用各自回测冠军参数
+VARIANT_MACD_PARAMS = {
+    'macd 12/16/5+量能': (12, 16, 5),
+    'macd 12/16/7+量能': (12, 16, 7),
+}
+
+# 策略名 → 量能放大倍数（相对20期均量）。默认 VOL_MULT=1.5 应用于 macd+量能 等标准策略；
+# 优化变体 12/16/5、12/16/7 经回测验证 1.2x 口径收益全面优于 1.5x，故单独覆盖为 1.2。
+VARIANT_VOL_MULT = {
+    'macd 12/16/5+量能': 1.2,
+    'macd 12/16/7+量能': 1.2,
+}
+
+
+def _vol_mult(name):
+    """返回策略名对应的量能放大倍数；未覆盖时回退全局 VOL_MULT（1.5x）"""
+    return VARIANT_VOL_MULT.get(_normalize(name), VOL_MULT)
 
 
 def _normalize(name):
@@ -116,10 +145,14 @@ def _divergence(df, macd_col='MACD', order=PIVOT_ORDER):
     return pd.Series(top, index=df.index), pd.Series(bot, index=df.index)
 
 
-def build_variant_signals(df, use_div, use_ma, use_vol):
-    """按变体组合生成 -1/0/1 信号 Series。返回 (df_transformed, signals)"""
+def build_variant_signals(df, use_div, use_ma, use_vol, macd_params=None, vol_mult=None):
+    """按变体组合生成 -1/0/1 信号 Series。返回 (df_transformed, signals)
+    macd_params: 可选 (fast, slow, signal) 元组，覆盖默认 MACD 参数（优化变体用）
+    vol_mult: 可选量能放大倍数（优化变体分别用 1.2x/1.5x）；缺省用全局 VOL_MULT"""
+    fast, slow, signal = macd_params or (MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    vol_mult = vol_mult if vol_mult is not None else VOL_MULT
     # 标准 MACD（与 BacktestEngine 口径一致）
-    dft = TechnicalIndicators.calculate_macd(df, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    dft = TechnicalIndicators.calculate_macd(df, fast, slow, signal)
     dfd = df.copy()
     dfd['MACD'] = dft['MACD']; dfd['MACD_signal'] = dft['MACD_signal']
     macd_buy = (dfd['MACD'] > dfd['MACD_signal']) & (dfd['MACD'].shift(1) <= dfd['MACD_signal'].shift(1))
@@ -128,7 +161,7 @@ def build_variant_signals(df, use_div, use_ma, use_vol):
     # 共振过滤指标：20日均线 + 20期均量放量
     dfd['sma20'] = ta.trend.SMAIndicator(dfd['close'], window=SMA_PERIOD).sma_indicator()
     dfd['vol_ma20'] = dfd['volume'].rolling(VOL_PERIOD).mean()
-    dfd['vol_up'] = dfd['volume'] > dfd['vol_ma20'] * VOL_MULT
+    dfd['vol_up'] = dfd['volume'] > dfd['vol_ma20'] * vol_mult
 
     if use_div:
         top_div, bot_div = _divergence(dfd)
@@ -169,4 +202,6 @@ def compute_divergence_signals(df, name):
     if flags is None:
         return None, None
     use_div, use_ma, use_vol = flags
-    return build_variant_signals(df, use_div, use_ma, use_vol)
+    macd_params = VARIANT_MACD_PARAMS.get(_normalize(name))
+    vol_mult = _vol_mult(name)
+    return build_variant_signals(df, use_div, use_ma, use_vol, macd_params, vol_mult)

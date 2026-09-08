@@ -236,7 +236,7 @@ class FuturesTrader:
         if self._is_banned_now():
             return [], f"IP被封禁中(get_positions)"
         try:
-            positions = self.exchange.fetch_positions(symbol) if symbol else self.exchange.fetch_positions()
+            positions = self.exchange.fetch_positions([symbol]) if symbol else self.exchange.fetch_positions()
             result = []
             for p in positions:
                 raw = p.get('contracts')

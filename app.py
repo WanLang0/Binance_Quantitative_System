@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 from datetime import datetime, timedelta, date
 import pandas as pd
 import numpy as np
@@ -153,7 +154,9 @@ _auto_traders = {}
 # DemoTrader 实例缓存（按 api_key 缓存，避免每次请求重建 ccxt 触发 load_markets 拖慢页面）
 _demo_traders = {}
 # 市场概览缓存（60秒过期，避免每次打开首页都走代理请求阻塞）
-_overview_cache = {'key': None, 'ts': 0, 'rows': []}
+# 增加 refreshing 标志位，防止缓存过期后并发请求同时去联网刷新
+_overview_cache = {'key': None, 'ts': 0, 'rows': [], 'refreshing': False}
+_overview_lock = threading.Lock()
 
 def get_data_fetcher():
     global _data_fetcher
@@ -172,7 +175,6 @@ def _warm_market_cache():
     except Exception as e:
         print(f"市场预热失败: {e}")
 
-import threading
 threading.Thread(target=_warm_market_cache, daemon=True).start()
 
 # 时间周期选项
@@ -187,7 +189,20 @@ TIMEFRAME_OPTIONS = {
 
 # 策略指标选项
 STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉",
-              "macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能"]
+              "macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能",
+              "macd 12/16/5+量能", "macd 12/16/7+量能"]
+
+# 固定组合策略族（信号由 divergence_signals 专用构造，含各自 MACD 参数）
+_FIXED_COMBO_STRATEGIES = ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能",
+                           "macd 12/16/5+量能", "macd 12/16/7+量能")
+
+# 固定组合策略名 → 标准MACD参数（供 _build_indicators/_strategy_params_from_names 生成指标列；
+# 实际交易信号由 divergence_signals 按变体参数构造，此处参数仅用于图表展示与默认填充）
+_FIXED_COMBO_MACD = {
+    "macd+背离": (12, 26, 9), "macd+背离+量能": (12, 26, 9),
+    "macd+背离+均线+量能": (12, 26, 9), "macd+量能": (12, 26, 9),
+    "macd 12/16/5+量能": (12, 16, 5), "macd 12/16/7+量能": (12, 16, 7),
+}
 
 # 固定交易对列表（symbol, 显示名称）
 SYMBOL_LIST = [
@@ -261,12 +276,13 @@ def _build_indicators(form, selected_strategies):
         indicators['ma_cross_long'] = _to_int(form.get('ma_cross_long'), 30)
         indicators['ma_cross_periods'] = [indicators['ma_cross_short'], indicators['ma_cross_long']]
 
-    if any(n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能") for n in selected_strategies):
-        # 固定组合背离策略族：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+    if any(n in _FIXED_COMBO_STRATEGIES for n in selected_strategies):
+        # 固定组合策略族：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
+        fast, slow, signal = _FIXED_COMBO_MACD[next(n for n in selected_strategies if n in _FIXED_COMBO_STRATEGIES)]
         indicators['macd'] = True
-        indicators['macd_fast'] = _to_int(form.get('macd_fast'), 12)
-        indicators['macd_slow'] = _to_int(form.get('macd_slow'), 26)
-        indicators['macd_signal'] = _to_int(form.get('macd_signal'), 9)
+        indicators['macd_fast'] = fast
+        indicators['macd_slow'] = slow
+        indicators['macd_signal'] = signal
 
     # 展示指标（仅图表展示，不参与交易）
     if form.get('sma_show'):
@@ -301,9 +317,10 @@ def _strategy_params_from_names(names):
         elif n == "双均线交叉":
             p.update({"ma_cross": True, "ma_cross_short": 10, "ma_cross_long": 30,
                       "ma_cross_periods": [10, 30]})
-        elif n in ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能"):
-            # 固定组合背离策略族：复用标准 MACD 参数（信号由 divergence_signals 专用构造）
-            p.update({"macd": True, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9})
+        elif n in _FIXED_COMBO_STRATEGIES:
+            # 固定组合策略族：复用变体自带 MACD 参数（信号由 divergence_signals 专用构造）
+            fast, slow, signal = _FIXED_COMBO_MACD[n]
+            p.update({"macd": True, "macd_fast": fast, "macd_slow": slow, "macd_signal": signal})
     return p
 
 
@@ -317,29 +334,64 @@ def _get_symbols(market_type):
     return symbols, default_symbol
 
 
+def _fetch_overview_rows(market_type, main_coins, suffix, tokens, cache_key):
+    """后台线程：联网拉取行情并刷新缓存。永不阻塞页面请求。"""
+    try:
+        prices = data_fetcher.get_tickers_prices(tokens)
+        rows = []
+        for coin in main_coins:
+            price = prices.get(coin + suffix)
+            if price:
+                rows.append({"coin": coin, "price": f"${price:,.2f}"})
+    except Exception as e:
+        print(f"市场概览刷新失败: {e}")
+        rows = None
+    with _overview_lock:
+        if rows is not None and rows:
+            _overview_cache['key'] = cache_key
+            _overview_cache['ts'] = time.time()
+            _overview_cache['rows'] = rows
+        # 刷新失败时保留旧缓存，并清掉 refreshing 标志，允许后续重试
+        _overview_cache['refreshing'] = False
+
+
 def _get_market_overview(market_type):
-    """获取市场概览（主要币种当前价格）——单次批量请求 + 60秒缓存，避免每次打开首页都走代理阻塞"""
+    """获取市场概览（主要币种当前价格）——非阻塞：
+    缓存有效直接用；缓存过期立即返回旧值/空值，后台线程刷新，绝不阻塞首页请求。
+    这样登录后进主页永远是秒开，行情在后台慢慢更新。"""
     suffix = ":USDT" if market_type == 'future' else ""
     main_coins = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT']
     tokens = [coin + suffix for coin in main_coins]
     now = time.time()
     cache_key = f"overview_{market_type}"
     # 命中缓存则直接用，避免长耗时网络请求阻塞/排队
-    if _overview_cache.get('key') == cache_key and now - _overview_cache.get('ts', 0) < 60:
-        return _overview_cache.get('rows', [])
-    prices = data_fetcher.get_tickers_prices(tokens)
-    rows = []
-    for coin in main_coins:
-        price = prices.get(coin + suffix)
-        if price:
-            rows.append({"coin": coin, "price": f"${price:,.2f}"})
-    # 拉取失败（代理抖动/超时）时回退旧缓存，避免页面白等
-    if not rows and _overview_cache.get('key') == cache_key and _overview_cache.get('rows'):
-        return _overview_cache['rows']
-    _overview_cache['key'] = cache_key
-    _overview_cache['ts'] = now
-    _overview_cache['rows'] = rows
-    return rows
+    with _overview_lock:
+        fresh = (_overview_cache.get('key') == cache_key
+                 and now - _overview_cache.get('ts', 0) < 60)
+        rows = _overview_cache.get('rows', [])
+        # 缓存过期且已有旧值：先返回旧值，后台刷新
+        stale_has_old = (_overview_cache.get('key') == cache_key and rows)
+        refreshing = _overview_cache.get('refreshing', False)
+        if fresh or stale_has_old or (not refreshing and rows == [] and _overview_cache.get('key') == cache_key):
+            if not fresh and not refreshing:
+                # 缓存过期：启动后台刷新，但立即返回旧值/空值，不阻塞
+                _overview_cache['refreshing'] = True
+                threading.Thread(
+                    target=_fetch_overview_rows,
+                    args=(market_type, main_coins, suffix, tokens, cache_key),
+                    daemon=True).start()
+            return rows
+        if refreshing:
+            # 已有线程在刷新，返回现有值（可能为空）
+            return rows
+        # 首次访问（无缓存）：启动后台刷新并立即返回空，页面先渲染
+        _overview_cache['refreshing'] = True
+        _overview_cache['key'] = cache_key
+        threading.Thread(
+            target=_fetch_overview_rows,
+            args=(market_type, main_coins, suffix, tokens, cache_key),
+            daemon=True).start()
+        return []
 
 
 def _render_strategy_params(form, selected_strategies):
@@ -1771,6 +1823,28 @@ def _load_recommended():
         return None
 
 
+def _load_macd_vol_matrix():
+    """MACD 量能过滤 1.2x · 1h 三参数回测汇总（最优策略页表格展示）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'macd_vol_1_2x_summary.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_tp_close_matrix():
+    """MACD 量能1.2x · 止盈口径对照（盘中触发 vs 收盘确认）回测汇总（最优策略页表格展示）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'tp_close_vs_intraday_summary.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 @app.route("/strategies", methods=["GET", "POST"])
 def strategies_summary():
     """最优策略页：可管理的最优列表 + 可翻页历史测试记录 + 历年矩阵 + 研究时间线"""
@@ -1840,6 +1914,8 @@ def strategies_summary():
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
                            us_macd_matrix=_load_us_macd_matrix(),
+                           macd_vol_matrix=_load_macd_vol_matrix(),
+                           tp_close_matrix=_load_tp_close_matrix(),
                            recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)
@@ -2017,7 +2093,10 @@ def _crypto_composite_symbol_list():
 _COMPOSITE_STRAT_MAP = {'RSI': 'RSI', 'KDJ': 'KDJ', 'MACD': 'MACD', 'EMA': 'EMA',
                         '布林带': '布林带', '双均线': '双均线交叉', '双均线交叉': '双均线交叉',
                         'macd+背离': 'macd+背离', 'macd+背离+量能': 'macd+背离+量能',
-                        'macd+背离+均线+量能': 'macd+背离+均线+量能'}
+                        'macd+背离+均线+量能': 'macd+背离+均线+量能',
+                        'macd+量能': 'macd+量能',
+                        'macd 12/16/5+量能': 'macd 12/16/5+量能',
+                        'macd 12/16/7+量能': 'macd 12/16/7+量能'}
 
 
 def _map_composite_strategy(part):
@@ -2312,6 +2391,7 @@ def _composite_page(market='us'):
             'atr_period': _to_int(form.get("atr_period"), 14),
             'atr_sl_mult': _to_float(form.get("atr_sl_mult"), 1.5),
             'atr_tp_mult': _to_float(form.get("atr_tp_mult"), 2.0),
+            'atr_tp_close': form.get("atr_tp_close") == "1",
         } if atr_on else {}
         # 解析每个币对的配置：symbol / strategies(多策略组合) / timeframe / fund_ratio / 止盈止损 / allow_short
         symbol_configs = []
