@@ -168,6 +168,32 @@ def init_tables():
             c.execute("ALTER TABLE strategy_records ADD COLUMN period TEXT")
         if 'trades_detail' not in cols:
             c.execute("ALTER TABLE strategy_records ADD COLUMN trades_detail TEXT")
+        if 'tag_text' not in cols:
+            c.execute("ALTER TABLE strategy_records ADD COLUMN tag_text TEXT")
+        if 'tag_color' not in cols:
+            c.execute("ALTER TABLE strategy_records ADD COLUMN tag_color TEXT")
+
+
+def set_tag(record_id, text, color):
+    """给某条记录打醒目标签（最优策略表使用）：text=标签文字，color=颜色值。
+    为空则清除标签。返回 (是否成功, 提示)。"""
+    if not text or not str(text).strip():
+        return clear_tag(record_id)
+    with _conn() as c:
+        cur = c.execute("UPDATE strategy_records SET tag_text=?, tag_color=? WHERE id=?",
+                        (str(text).strip(), color, record_id))
+        if cur.rowcount == 0:
+            return False, '记录不存在'
+    return True, '标签已设置'
+
+
+def clear_tag(record_id):
+    """清除某条记录的标签"""
+    with _conn() as c:
+        cur = c.execute("UPDATE strategy_records SET tag_text=NULL, tag_color=NULL WHERE id=?", (record_id,))
+        if cur.rowcount == 0:
+            return False, '记录不存在'
+    return True, '标签已清除'
 
 
 def count_all():

@@ -1862,6 +1862,31 @@ def _load_c3_matrix():
     return out if any(out.values()) else None
 
 
+_NOTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'strategy_notes.json')
+
+
+def _load_strategy_notes():
+    """读取策略级笔记：{模块键: {'note': 文本, 'color': 颜色, 'updated': 时间}}"""
+    try:
+        with open(_NOTES_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_strategy_notes(data):
+    """写入策略级笔记（json 文件，带锁防并发）"""
+    import threading
+    with threading.Lock():
+        try:
+            with open(_NOTES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True, '笔记已保存'
+        except Exception as e:
+            return False, f'保存失败: {e}'
+
+
 @app.route("/strategies", methods=["GET", "POST"])
 def strategies_summary():
     """最优策略页：可管理的最优列表 + 可翻页历史测试记录 + 历年矩阵 + 研究时间线"""
@@ -1874,6 +1899,30 @@ def strategies_summary():
             ok, msg = _store.demote(rid)
         elif action == "move":
             ok, msg = _store.move(rid, request.form.get("dir", "up"))
+        elif action == "tag":
+            ok, msg = _store.set_tag(rid, request.form.get("tag_text", ""),
+                                     request.form.get("tag_color", "#3fb950"))
+        elif action == "untag":
+            ok, msg = _store.clear_tag(rid)
+        elif action == "save_note":
+            key = request.form.get("note_key", "").strip()
+            text = request.form.get("note_text", "").strip()
+            color = request.form.get("note_color", "#3fb950").strip() or "#3fb950"
+            if not key:
+                ok, msg = False, '缺少笔记标识'
+            else:
+                _data = _load_strategy_notes()
+                if text:
+                    _data[key] = {'note': text, 'color': color,
+                                  'updated': datetime.now().strftime('%Y-%m-%d %H:%M')}
+                else:
+                    _data.pop(key, None)
+                ok, msg = _save_strategy_notes(_data)
+        elif action == "clear_note":
+            key = request.form.get("note_key", "").strip()
+            _data = _load_strategy_notes()
+            _data.pop(key, None)
+            ok, msg = _save_strategy_notes(_data)
         elif action == "delete":
             ok, msg = _store.delete(rid)
         else:
@@ -1934,6 +1983,7 @@ def strategies_summary():
                            tp_close_matrix=_load_tp_close_matrix(),
                            macd_vol_monthly=_load_macd_vol_monthly(),
                            c3_matrix=_load_c3_matrix(),
+                           strategy_notes=_load_strategy_notes(),
                            recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)

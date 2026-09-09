@@ -25,6 +25,49 @@
         /strategies{%- set fqs = fp | join('&') -%}{%- if fqs %}?{{ fqs }}{%- endif -%}
     {%- endmacro %}
 
+    {# 策略级笔记区：模块前缀 + 策略名 合成唯一键，持久化到 data/strategy_notes.json #}
+    {% macro note_block(prefix, name) -%}
+    {%- set nk = prefix ~ '::' ~ name -%}
+    {%- set nb = strategy_notes.get(nk) -%}
+    <div class="strategy-note-block" style="margin:8px 0 14px">
+        {%- if nb and nb.note %}
+        <div class="strategy-note-view" style="border-left:4px solid {{ nb.color }};background:{{ nb.color }}14;padding:8px 12px;border-radius:0 6px 6px 0;font-size:.85rem;line-height:1.6">
+            <span style="font-size:.75rem;font-weight:700;color:#8a94a6;letter-spacing:.5px">📌 我的优先选择 / 备注</span>
+            <div style="margin-top:4px;color:#c9d1d9">{{ nb.note }}</div>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+                <span style="font-size:.72rem;color:#6e7681">更新于 {{ nb.updated }}</span>
+                <button type="button" class="btn" onclick="noteEdit('{{ nk }}')" style="padding:2px 8px;font-size:.75rem">✏️ 编辑</button>
+                <form method="POST" action="/strategies" style="display:inline">
+                    <input type="hidden" name="note_key" value="{{ nk }}">
+                    <button type="submit" name="action" value="clear_note" class="btn btn-cancel" style="padding:2px 8px;font-size:.75rem" onclick="return confirm('清除该策略的笔记？')">🗑 清除</button>
+                </form>
+            </div>
+        </div>
+        {%- else %}
+        <div class="strategy-note-empty" style="display:flex;gap:8px;align-items:center;color:#6e7681;font-size:.82rem">
+            <button type="button" class="btn" onclick="noteEdit('{{ nk }}')" style="padding:3px 10px;font-size:.78rem">＋ 记录优先选择 / 备注</button>
+            <span>为「{{ name }}」记录你的实盘优先级、观察要点等（仅本机存储）。</span>
+        </div>
+        {%- endif %}
+        <div class="strategy-note-edit" id="note-edit-{{ nk }}" style="display:none;margin-top:8px">
+            <form method="POST" action="/strategies">
+                <input type="hidden" name="note_key" value="{{ nk }}">
+                <textarea name="note_text" rows="3" placeholder="例：2026年优先用12/26/9 1x打底，4x仅观测…" style="width:100%;background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:#c9d1d9;font-size:.85rem;resize:vertical">{{ nb.note if nb and nb.note else '' }}</textarea>
+                <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+                    <span style="font-size:.78rem;color:#8a94a6">标签色：</span>
+                    {% for cv, cn in [('#3fb950','绿·主力'),('#d29922','黄·观察'),('#f85149','红·禁用'),('#58a6ff','蓝·信号'),('#bc8cff','紫·备选'),('#ff7b72','橙·风险')] %}
+                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:.75rem;color:#aab4c4;cursor:pointer">
+                        <input type="radio" name="note_color" value="{{ cv }}"{% if (nb and nb.color == cv) or (not nb and cv == '#3fb950') %} checked{% endif %}> {{ cn }}
+                    </label>
+                    {% endfor %}
+                    <button type="submit" name="action" value="save_note" class="btn btn-primary" style="padding:4px 14px;font-size:.8rem">保存笔记</button>
+                    <button type="button" class="btn" onclick="noteCancel('{{ nk }}')" style="padding:4px 14px;font-size:.8rem">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {%- endmacro %}
+
     {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
     {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
 
@@ -40,7 +83,8 @@
         </div>
     </div>
 
-    <!-- 历史测试记录（可搜索/翻页） -->
+    <!-- 历史测试记录（可搜索/翻页）—— 2026-09 用户选择隐藏但保留 -->
+    <!--
     <div class="card">
         <h2>🗂️ 历史测试记录（{{ ('板块「' ~ sector ~ '」' if sector else ('美股代币' if cat == 'us' else ('虚拟货币' if cat == 'crypto' else '全部'))) }} {{ total }} 条{% if q %} · 搜索「{{ q }}」{% endif %}{% if total > 15 %}，第 {{ page }}/{{ pages }} 页{% endif %}）</h2>
         <div style="display:flex;gap:8px;align-items:center;margin:0 0 10px;flex-wrap:wrap">
@@ -191,8 +235,10 @@
         <p class="info-note">{% if q %}没有匹配「{{ q }}」的记录，换个关键字或<a href="/strategies">清除搜索</a>。{% else %}暂无历史记录。{% endif %}</p>
         {% endif %}
     </div>
+    -->
 
-    <!-- 最优策略（当前推荐，可排序） -->
+    <!-- 最优策略（当前推荐，可排序）—— 2026-09 用户选择隐藏但保留 -->
+    <!--
     <div class="card">
         <h2>⭐ 最优策略（当前推荐 {{ tops | length }} 条）</h2>
         <div class="info-note" style="margin:0 0 8px">用「↑ ↓」调整优先级顺序，「移出」放回历史记录。</div>
@@ -204,7 +250,7 @@
             {% for t in tops %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td style="white-space:normal"><b>{{ t.symbol }}</b>{% if t.sector %}<div style="margin-top:2px;font-size:.72rem;color:var(--muted);background:var(--panel-alt);border:1px solid var(--border);border-radius:999px;padding:0 6px;display:inline-block;white-space:nowrap">{{ t.sector }}</div>{% endif %}</td>
+                <td style="white-space:normal"><b>{{ t.symbol }}</b>{% if t.sector %}<div style="margin-top:2px;font-size:.72rem;color:var(--muted);background:var(--panel-alt);border:1px solid var(--border);border-radius:999px;padding:0 6px;display:inline-block;white-space:nowrap">{{ t.sector }}</div>{% endif %}{% if t.tag_text %}<div style="margin-top:4px;display:inline-block;white-space:nowrap"><span class="tag-span" data-color="{{ t.tag_color }}" style="font-size:.75rem;font-weight:600;color:#fff;background:{{ t.tag_color }};border-radius:999px;padding:2px 10px;box-shadow:0 0 6px {{ t.tag_color }}66">{{ t.tag_text }}</span></div>{% endif %}</td>
                 <td>{{ t.timeframe }}</td>
                 <td>{{ t.period or '—' }}</td>
                 <td>{{ t.strategy }}</td>
@@ -219,6 +265,8 @@
                 <td style="white-space:nowrap;font-size:1rem">
                     <button type="button" class="btn" style="padding:2px 8px" title="展开逐年收益与详情"
                             onclick="var d=document.getElementById('topdet-{{ t.id }}'); d.style.display = d.style.display==='none' ? 'table-row' : 'none'">👁</button>
+                    <button type="button" class="btn" style="padding:2px 8px" title="打标/改标签"
+                            onclick="tagPrompt({{ t.id }}, this)">🏷</button>
                     <form method="POST" action="/strategies" style="display:inline">
                         <input type="hidden" name="rid" value="{{ t.id }}">
                         <button type="submit" name="action" value="move" class="btn" style="padding:2px 8px" title="上移" onclick="this.form.dir.value='up'">↑</button>
@@ -282,6 +330,7 @@
         <p class="info-note">最优策略列表为空，可从下方历史记录中「设为最优」。</p>
         {% endif %}
     </div>
+    -->
 
     <!-- 历年收益矩阵 / 研究结论时间线：数据迁移至 year_matrix.py / research_log.py 单独维护，界面暂不展示 -->
 
@@ -344,6 +393,7 @@
         </div>
         {% for s in macd_matrix.strategies %}
         <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        {{ note_block('MACD', s.name) }}
         <div class="table-wrap">
         <table class="table bordered">
             <tr>
@@ -392,6 +442,7 @@
         <div class="info-note">{{ tp_close_matrix.meta.desc }}</div>
         {% for s in tp_close_matrix.strategies %}
         <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        {{ note_block('C2', s.name) }}
         <div class="table-wrap">
         <table class="table bordered">
             <tr>
@@ -427,6 +478,10 @@
         <h2>🎯 C3 紧止损口径 · 三种MACD × 1/2/4x 杠杆 · 两时代对照<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">2021-2023 &amp; 2024-2026</span></h2>
         <div class="info-note">口径：1h K线 · 币池均分资金独立复利 · MACD金叉/死叉双向 · 1.2x量能(vol20) · <b>止损1.0×ATR14 / 止盈1.2×ATR14（截断[1%,8%]）</b> · C判定（止盈盘中触发/止损收盘确认）· 手续费0.05%/边 · 爆仓判定权益≤维持保证金0.5%。
         2021时代=2021年初市值前30可测池（26币，2021-01~2024-01）；2024时代=市值前30池（30币，2024-01~2026-09）。</div>
+        <div style="margin:14px 0 4px;font-weight:600;font-size:.95rem;color:#aab4c4">本口径策略笔记：</div>
+        {% for cname in ['12/26/9', '12/16/5', '12/16/7'] %}
+        {{ note_block('C3', cname) }}
+        {% endfor %}
         {% set era_labels = [('2021', '2021-2023（26币池）'), ('2024', '2024-2026（30币池）')] %}
         {% for era, era_label in era_labels %}
         {% set m = c3_matrix[era] %}
@@ -484,6 +539,7 @@
         {% set months = macd_vol_monthly['12/26/9']['lev1x'].keys() | list %}
         {% for s in macd_vol_monthly %}
         <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s }}<span style="font-size:.8rem;color:#8a94a6">（1x / 2x / 4x 对照）</span></div>
+        {{ note_block('月', s) }}
         <div class="table-wrap">
         <table class="table bordered">
             <tr>
@@ -525,6 +581,7 @@
         {% endif %}
         {% for s in us_macd_matrix.strategies %}
         <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
+        {{ note_block('USMACD', s.name) }}
         <div class="table-wrap">
         <table class="table bordered">
             <tr>
@@ -578,4 +635,18 @@
         <a class="btn btn-accent" style="margin-top:10px" href="/futures">去合约页面实测 →</a>
     </div>
 </div>
+<script>
+// 策略级笔记区：展开编辑 / 取消
+function noteEdit(nk) {
+    var box = document.getElementById('note-edit-' + nk);
+    if (!box) return;
+    box.style.display = 'block';
+    var ta = box.querySelector('textarea');
+    if (ta) ta.focus();
+}
+function noteCancel(nk) {
+    var box = document.getElementById('note-edit-' + nk);
+    if (box) box.style.display = 'none';
+}
+</script>
 {% endblock %}
