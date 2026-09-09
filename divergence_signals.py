@@ -52,12 +52,14 @@ DIVERGENCE_VARIANTS = {
 DIVERGENCE_VARIANTS.update({
     'macd 12/16/5+量能': (False, False, True),
     'macd 12/16/7+量能': (False, False, True),
+    'macd 12/26/9+量能': (False, False, True),
 })
 
 # 策略名 → MACD 参数覆盖（默认 MACD_FAST/SLOW/SIGNAL）。新变体用各自回测冠军参数
 VARIANT_MACD_PARAMS = {
     'macd 12/16/5+量能': (12, 16, 5),
     'macd 12/16/7+量能': (12, 16, 7),
+    'macd 12/26/9+量能': (12, 26, 9),
 }
 
 # 策略名 → 量能放大倍数（相对20期均量）。默认 VOL_MULT=1.5 应用于 macd+量能 等标准策略；
@@ -65,6 +67,7 @@ VARIANT_MACD_PARAMS = {
 VARIANT_VOL_MULT = {
     'macd 12/16/5+量能': 1.2,
     'macd 12/16/7+量能': 1.2,
+    'macd 12/26/9+量能': 1.2,
 }
 
 

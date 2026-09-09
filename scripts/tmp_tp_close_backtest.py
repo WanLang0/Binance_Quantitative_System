@@ -98,7 +98,9 @@ def simulate_lev(df, signals, initial, atr, k_sl, k_tp, lev, t0, tp_mode='intrad
                 n_trade += 1
                 if liquidated:
                     n_liq += 1
-                    cash = cash + margin - maint
+                    # 逐仓爆仓: 亏掉该仓全部保证金, 只保留未占用的钱包余额(margin已从cash扣走, 故cash原样保留)
+                    # (修复: 原为 cash+margin-maint, 漏扣浮亏, 爆仓币几乎无损复活, 严重高估回收)
+                    cash = max(cash, 0.0)
                 else:
                     pnl = units * (exit_price - entry) if side > 0 else units * (entry - exit_price)
                     cash = cash + margin + pnl - abs(units * exit_price * COMM)
@@ -118,7 +120,8 @@ def simulate_lev(df, signals, initial, atr, k_sl, k_tp, lev, t0, tp_mode='intrad
             margin = cash * 0.95
             units = (margin * lev) / price
             entry = price; side = 1
-            cash -= margin * (1 + COMM)
+            # 开仓手续费按名义值 notional=margin*lev 收取 (修复: 原为 margin*COMM 少乘 lev)
+            cash -= margin + abs(units * price * COMM)
             if atr_a is not None and np.isfinite(atr_a[i]) and atr_a[i] > 0:
                 apct = atr_a[i] / price
                 cur_sl = float(np.clip(k_sl * apct, 0.01, CLIP_HI))
@@ -134,7 +137,8 @@ def simulate_lev(df, signals, initial, atr, k_sl, k_tp, lev, t0, tp_mode='intrad
             margin = cash * 0.95
             units = (margin * lev) / price
             entry = price; side = -1
-            cash -= margin * (1 + COMM)
+            # 开仓手续费按名义值 notional=margin*lev 收取 (修复: 原为 margin*COMM 少乘 lev)
+            cash -= margin + abs(units * price * COMM)
             if atr_a is not None and np.isfinite(atr_a[i]) and atr_a[i] > 0:
                 apct = atr_a[i] / price
                 cur_sl = float(np.clip(k_sl * apct, 0.01, CLIP_HI))

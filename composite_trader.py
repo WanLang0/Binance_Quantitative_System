@@ -1176,10 +1176,23 @@ class CompositeTrader:
             self._record_equity(force=True)
         except Exception:
             pass
-        # 逐币对设置杠杆
+        # 逐币对设置杠杆 + 校验逐仓保证金模式（与回测逐仓口径一致）
         for s in self.status['symbols']:
             try:
-                self.trader.set_leverage(self.leverage, s['symbol'])
+                ok, err = self.trader.set_leverage(self.leverage, s['symbol'])
+                if not ok:
+                    self._log(f"设置杠杆失败({s['symbol']}): {err}")
+                    continue
+                # 回读确认该币实际保证金模式，写入任务日志（前端可查）
+                mode, merr = self.trader.get_margin_mode(s['symbol'])
+                if merr:
+                    self._log(f"保证金模式校验({s['symbol']}): 回读失败({merr})")
+                elif mode == 'isolated':
+                    self._log(f"保证金模式({s['symbol']}): ✓ 逐仓(isolated) @ {self.leverage}x")
+                elif mode == 'crossed':
+                    self._log(f"保证金模式({s['symbol']}): ⚠ 全仓(crossed) @ {self.leverage}x，与回测逐仓口径不一致！")
+                else:
+                    self._log(f"保证金模式({s['symbol']}): 未知({mode}) @ {self.leverage}x")
             except Exception as e:
                 self._log(f"设置杠杆失败({s['symbol']}): {e}")
 

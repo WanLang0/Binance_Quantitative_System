@@ -45,6 +45,10 @@
 }
 .strat-chip input { width: auto !important; }
 .strat-chip:has(input:checked) { border-color: var(--primary); color: var(--primary) !important; background: var(--primary-soft); }
+.vol-tag {
+    font-size: .66rem; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; background: transparent; white-space: nowrap;
+}
 
 /* 常用币对快捷添加 */
 .preset-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 8px; }
@@ -171,7 +175,7 @@ td.short, td.neg { color: var(--sell); }
                     <select id="uniform-strategy" onchange="setUniformStrategy(this.value)">
                         <option value="">（不统一应用）</option>
                         {% for s in strategy_options %}
-                        <option value="{{ s }}">{{ s }}</option>
+                        <option value="{{ s }}">{{ s }}{% if s in ('macd 12/26/9+量能', 'macd 12/16/5+量能', 'macd 12/16/7+量能') %}（量能1.2x·MACD自定义）{% elif s in ('macd+量能', 'macd+背离+量能', 'macd+背离+均线+量能') %}（量能1.5x·12/26/9）{% endif %}</option>
                         {% endfor %}
                     </select>
                     <div class="sym-card-grid" style="margin-top:6px">
@@ -224,7 +228,7 @@ td.short, td.neg { color: var(--sell); }
                                     {% for s in strategy_options %}
                                     <label class="strat-chip">
                                         <input type="checkbox" class="cs-strat-chk" value="{{ s }}" onchange="updateStrategies(this)">
-                                        {{ s }}
+                                        {{ s }}{% if s in ('macd 12/26/9+量能', 'macd 12/16/5+量能', 'macd 12/16/7+量能') %} <span class="vol-tag">量能1.2x</span>{% elif s in ('macd+量能', 'macd+背离+量能', 'macd+背离+均线+量能') %} <span class="vol-tag">量能1.5x·12/26/9</span>{% endif %}
                                     </label>
                                     {% endfor %}
                                 </div>

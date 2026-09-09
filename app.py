@@ -190,17 +190,18 @@ TIMEFRAME_OPTIONS = {
 # 策略指标选项
 STRATEGIES = ["RSI", "KDJ", "布林带", "EMA", "MACD", "双均线交叉",
               "macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能",
-              "macd 12/16/5+量能", "macd 12/16/7+量能"]
+              "macd 12/26/9+量能", "macd 12/16/5+量能", "macd 12/16/7+量能"]
 
 # 固定组合策略族（信号由 divergence_signals 专用构造，含各自 MACD 参数）
 _FIXED_COMBO_STRATEGIES = ("macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "macd+量能",
-                           "macd 12/16/5+量能", "macd 12/16/7+量能")
+                           "macd 12/26/9+量能", "macd 12/16/5+量能", "macd 12/16/7+量能")
 
 # 固定组合策略名 → 标准MACD参数（供 _build_indicators/_strategy_params_from_names 生成指标列；
 # 实际交易信号由 divergence_signals 按变体参数构造，此处参数仅用于图表展示与默认填充）
 _FIXED_COMBO_MACD = {
     "macd+背离": (12, 26, 9), "macd+背离+量能": (12, 26, 9),
     "macd+背离+均线+量能": (12, 26, 9), "macd+量能": (12, 26, 9),
+    "macd 12/26/9+量能": (12, 26, 9),
     "macd 12/16/5+量能": (12, 16, 5), "macd 12/16/7+量能": (12, 16, 7),
 }
 
@@ -1823,17 +1824,6 @@ def _load_recommended():
         return None
 
 
-def _load_macd_vol_matrix():
-    """MACD 量能过滤 1.2x · 1h 三参数回测汇总（最优策略页表格展示）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'macd_vol_1_2x_summary.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
 def _load_tp_close_matrix():
     """MACD 量能1.2x · 止盈口径对照（盘中触发 vs 收盘确认）回测汇总（最优策略页表格展示）"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1843,6 +1833,33 @@ def _load_tp_close_matrix():
             return json.load(f)
     except Exception:
         return None
+
+
+def _load_macd_vol_monthly():
+    """MACD 量能1.2x · 盘中触发 · 逐月收益+持币份数（1h · 1x/2x/4x）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'macd_vol_monthly_pos_1h.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load_c3_matrix():
+    """C3 紧止损口径（止损1.0×ATR/止盈1.2×ATR·盘中触发）三种MACD × 1/2/4x 杠杆，
+    两时代对照：2021-2023（26币池）与 2024-2026（30币池）。
+    返回 {'2021': {...}, '2024': {...}}；文件缺失的时段为 None。"""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'results')
+    out = {}
+    for key, fn in (('2021', 'top30_2021_c3_intraday_1h.json'),
+                    ('2024', 'macd_c3_lev_1h.json')):
+        try:
+            with open(os.path.join(base, fn), encoding='utf-8') as f:
+                out[key] = json.load(f)
+        except Exception:
+            out[key] = None
+    return out if any(out.values()) else None
 
 
 @app.route("/strategies", methods=["GET", "POST"])
@@ -1914,8 +1931,9 @@ def strategies_summary():
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
                            us_macd_matrix=_load_us_macd_matrix(),
-                           macd_vol_matrix=_load_macd_vol_matrix(),
                            tp_close_matrix=_load_tp_close_matrix(),
+                           macd_vol_monthly=_load_macd_vol_monthly(),
+                           c3_matrix=_load_c3_matrix(),
                            recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)
@@ -2095,6 +2113,7 @@ _COMPOSITE_STRAT_MAP = {'RSI': 'RSI', 'KDJ': 'KDJ', 'MACD': 'MACD', 'EMA': 'EMA'
                         'macd+背离': 'macd+背离', 'macd+背离+量能': 'macd+背离+量能',
                         'macd+背离+均线+量能': 'macd+背离+均线+量能',
                         'macd+量能': 'macd+量能',
+                        'macd 12/26/9+量能': 'macd 12/26/9+量能',
                         'macd 12/16/5+量能': 'macd 12/16/5+量能',
                         'macd 12/16/7+量能': 'macd 12/16/7+量能'}
 

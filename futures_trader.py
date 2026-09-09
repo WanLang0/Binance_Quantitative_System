@@ -87,10 +87,31 @@ class FuturesTrader:
         return bool(self.api_key and self.api_secret)
 
     def set_leverage(self, leverage, symbol):
-        """设置合约杠杆（默认单向持仓模式）"""
+        """设置合约杠杆（默认单向持仓模式）+ 逐仓保证金模式。
+        逐仓与回测口径一致（每币独立爆仓线，不共享账户保证金）；
+        若该交易对已是逐仓则设置调用幂等无副作用。
+        设置后回读一次交易所实际保证金模式并打印，便于确认逐仓已生效。"""
         self.leverage = leverage
         try:
+            # 先设逐仓再设杠杆（杠杆在全/逐仓下分别独立记录）
+            try:
+                self.exchange.set_margin_mode('isolated', symbol)
+            except Exception as me:
+                msg = str(me)
+                # -4046: 已是该模式, 幂等成功; 其余报错仅告警不阻断
+                if '-4046' not in msg:
+                    print(f"[set_margin_mode] {symbol}: {msg}")
             self.exchange.set_leverage(leverage, symbol)
+            # 回读确认实际保证金模式（逐仓隔离 vs 全仓共享），记录到日志
+            mode, merr = self.get_margin_mode(symbol)
+            if merr:
+                print(f"[set_margin_mode] {symbol}: 回读失败({merr})，无法确认保证金模式")
+            elif mode == 'isolated':
+                print(f"[set_margin_mode] {symbol}: 已确认逐仓(isolated) @ {leverage}x")
+            elif mode == 'crossed':
+                print(f"[set_margin_mode] ⚠ {symbol}: 当前为全仓(crossed) @ {leverage}x，与回测逐仓口径不一致！")
+            else:
+                print(f"[set_margin_mode] {symbol}: 未知保证金模式({mode}) @ {leverage}x")
             return True, None
         except Exception as e:
             return False, str(e)
@@ -393,6 +414,31 @@ class FuturesTrader:
         cur = self.get_position_mode()
         self._dual_side = not bool(cur)
         self._dual_side_ts = time.time()
+
+    def get_margin_mode(self, symbol):
+        """查询某交易对的保证金模式（币安 POSITION_RISK 接口，GET /fapi/v2/positionRisk）。
+        返回 (mode, err)：mode='isolated'|'crossed'|None，查询失败返回 (None, err)。
+        对无持仓/空仓的币也能查询——币安 positionRisk 对每个交易对返回一行（含 marginType），
+        保证金模式是交易对级属性，与是否持仓无关。
+        注意：ccxt 未暴露 marginType 的 GET 方法（仅暴露 POST 设置用），故复用 fetch_positions_risk 的原始响应。"""
+        try:
+            # 直接调底层 positionRisk 接口（ccxt 解析后含 marginMode，即使 positionAmt=0 也保留）
+            # 需带真实 market 已加载；fetch_positions_risk 内部会 load_markets
+            risk = self.exchange.fetch_positions_risk([symbol])
+        except Exception as e:
+            return None, str(e)
+        if not risk:
+            return None, f"未找到 {symbol} 的持仓风险数据"
+        # 多字段兜底：ccxt 解析后为 marginMode，原始为 marginType
+        mode = risk[0].get('marginMode') or risk[0].get('marginType')
+        if mode:
+            mode = str(mode).lower()
+            if mode == 'isolated':
+                return 'isolated', None
+            if mode in ('cross', 'crossed'):
+                return 'crossed', None
+            return mode, None
+        return None, f"{symbol} 响应无保证金模式字段"
 
     def _build_order_params(self, side, reduce_only):
         """按持仓模式构造下单参数"""

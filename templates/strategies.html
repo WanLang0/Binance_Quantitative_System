@@ -386,41 +386,6 @@
     </div>
     {% endif %}
 
-    {% if macd_vol_matrix %}
-    <div class="card">
-        <h2>{{ macd_vol_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ macd_vol_matrix.meta.updated }}</span></h2>
-        <div class="info-note">{{ macd_vol_matrix.meta.desc }}</div>
-        {% for s in macd_vol_matrix.strategies %}
-        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
-        <div class="table-wrap">
-        <table class="table bordered">
-            <tr>
-                <th>杠杆</th><th>总计收益</th><th>组合最大回撤</th>
-                <th>单币均回撤</th><th>单币最深回撤</th><th>下单数</th><th>胜率</th><th>爆仓币数</th>
-                <th>2024收益</th><th>2025收益</th><th>2026YTD收益</th>
-            </tr>
-            {% for c in s.configs %}
-            <tr>
-                <td>{{ c.lev }}</td>
-                <td class="{{ 'pos' if c.ret > 0 else 'neg' }}">{{ '%+.1f'|format(c.ret) }}%</td>
-                <td class="neg">{{ '%.1f'|format(c.mdd) }}%</td>
-                <td class="neg">{{ '%.1f'|format(c.coin_mdd_avg) }}%</td>
-                <td class="{{ 'neg' if c.coin_mdd_max < -50 else '' }}">{{ '%.1f'|format(c.coin_mdd_max) }}%</td>
-                <td>{{ c.trades }}</td>
-                <td class="pos">{{ '%.1f'|format(c.winrate) }}%</td>
-                <td class="{{ 'neg' if c.liq_coins > 0 else '' }}">{{ c.liq_coins }}</td>
-                <td class="{{ 'pos' if c.yearly['2024'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2024']) }}%</td>
-                <td class="{{ 'pos' if c.yearly['2025'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2025']) }}%</td>
-                <td class="{{ 'pos' if c.yearly['2026'] > 0 else 'neg' }}">{{ '%+.1f'|format(c.yearly['2026']) }}%</td>
-            </tr>
-            {% endfor %}
-        </table>
-        </div>
-        {% endfor %}
-        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ macd_vol_matrix.meta.conclusion }}</div>
-    </div>
-    {% endif %}
-
     {% if tp_close_matrix %}
     <div class="card">
         <h2>{{ tp_close_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ tp_close_matrix.meta.updated }}</span></h2>
@@ -454,6 +419,96 @@
         </div>
         {% endfor %}
         <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ tp_close_matrix.meta.conclusion }}</div>
+    </div>
+    {% endif %}
+
+    {% if c3_matrix %}
+    <div class="card">
+        <h2>🎯 C3 紧止损口径 · 三种MACD × 1/2/4x 杠杆 · 两时代对照<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">2021-2023 &amp; 2024-2026</span></h2>
+        <div class="info-note">口径：1h K线 · 币池均分资金独立复利 · MACD金叉/死叉双向 · 1.2x量能(vol20) · <b>止损1.0×ATR14 / 止盈1.2×ATR14（截断[1%,8%]）</b> · C判定（止盈盘中触发/止损收盘确认）· 手续费0.05%/边 · 爆仓判定权益≤维持保证金0.5%。
+        2021时代=2021年初市值前30可测池（26币，2021-01~2024-01）；2024时代=市值前30池（30币，2024-01~2026-09）。</div>
+        {% set era_labels = [('2021', '2021-2023（26币池）'), ('2024', '2024-2026（30币池）')] %}
+        {% for era, era_label in era_labels %}
+        {% set m = c3_matrix[era] %}
+        {% set years = ['2021', '2022', '2023'] if era == '2021' else ['2024', '2025', '2026'] %}
+        {% if m %}
+        <div style="margin:16px 0 4px;font-weight:700;font-size:1.02rem">{{ era_label }}</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>MACD</th><th>杠杆</th><th>总计收益</th><th>组合最大回撤</th>
+                <th>单币均回撤</th><th>单币最深回撤</th><th>下单数</th><th>胜率</th><th>爆仓币数</th>
+                <th>月均</th><th>月std</th><th>最差月</th><th>月正比例</th>
+                {% for y in years %}
+                <th>{{ y }}{% if y == '2026' %}YTD{% endif %}</th>
+                {% endfor %}
+            </tr>
+            {% for s_name in ['12/26/9', '12/16/5', '12/16/7'] %}
+            {% set s = m[s_name] %}
+            {% for lev_key, lev_label in [('lev1x', '1x'), ('lev2x', '2x'), ('lev4x', '4x')] %}
+            {% set r = s[lev_key] %}
+            <tr{% if lev_label == '1x' %} style="border-top:2px solid var(--border)"{% endif %}>
+                {% if lev_label == '1x' %}<td rowspan="3" style="font-weight:600">{{ s_name }}</td>{% endif %}
+                <td>{{ lev_label }}</td>
+                <td class="{{ 'pos' if r.ret > 0 else 'neg' }}">{{ '%+.1f'|format(r.ret) }}%</td>
+                <td class="neg">{{ '%.1f'|format(r.mdd) }}%</td>
+                <td class="neg">{{ '%.1f'|format(r.coin_mdd_avg) }}%</td>
+                <td class="{{ 'neg' if r.coin_mdd_max < -50 else '' }}">{{ '%.1f'|format(r.coin_mdd_max) }}%</td>
+                <td>{{ r.trades }}</td>
+                <td class="pos">{{ '%.1f'|format(r.winrate) }}%</td>
+                <td class="{{ 'neg' if r.liq_coins > 0 else '' }}">{{ r.liq_coins }}</td>
+                <td class="{{ 'pos' if r.avg > 0 else 'neg' }}">{{ '%+.2f'|format(r.avg) }}%</td>
+                <td>{{ '%.2f'|format(r.std) }}</td>
+                <td class="neg">{{ '%+.2f'|format(r.mn) }}%</td>
+                <td>{{ '%.0f'|format(r.posr) }}%</td>
+                {% for y in years %}
+                {% set yv = r.yearly.get(y) %}
+                <td class="{{ 'pos' if yv is not none and yv > 0 else 'neg' if yv is not none else '' }}">{% if yv is not none %}{{ '%+.1f'|format(yv) }}%{% else %}—{% endif %}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+            {% endfor %}
+        </table>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>C3（止1.0/盈1.2×ATR·盘中止盈）跨时代零爆仓（1x/2x/4x 均为0）。12/26/9 纪律最稳：1x 月std 2.6~4.5、最差月约 -1.8%、月正比例 89~90%；12/16/5 在 2024 时代月正比例最高（93.5%）、总收益最高，12/16/7 收益弹性最大（2021 时代 4x +186901%）。注意：12/16/* 在 2021/2022 大波动年最差月更深（-7%~-9.7%）、2021 时代月正比例降至 77~80%。2x 为性价比甜点（组合MDD -9%~-26%），4x 收益高但单币回撤显著（coin_mdd_avg -63%~-83%、最深 -95%~-98%），需严格控仓。</div>
+    </div>
+    {% endif %}
+
+    {% if macd_vol_monthly %}
+    <div class="card">
+        <h2>📅 MACD 量能1.2x · 盘中触发 · 逐月收益与持币份数<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">2024-02 ~ 2026-08</span></h2>
+        <div class="info-note">口径：1h K线 · 30币均分资金独立复利 · ATR14止盈2.0/止损1.5截断[1%,8%] · C判定（止盈盘中触发/止损收盘确认）· 双向 · 手续费0.05%/边。持币份数=当月平均同时持仓的币数（30币上限）。</div>
+        <div class="info-note"><b>说明：</b>2024-01 为回测窗口起始段（冷却预热期），首笔可统计收益自 2024-02 起。</div>
+        {% set months = macd_vol_monthly['12/26/9']['lev1x'].keys() | list %}
+        {% for s in macd_vol_monthly %}
+        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s }}<span style="font-size:.8rem;color:#8a94a6">（1x / 2x / 4x 对照）</span></div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>月份</th>
+                <th>1x 收益</th><th>2x 收益</th><th>4x 收益</th>
+                <th>1x 持币份数</th><th>2x 持币份数</th><th>4x 持币份数</th>
+            </tr>
+            {% for m in months %}
+            <tr>
+                <td>{{ m }}</td>
+                {% set d1 = macd_vol_monthly[s]['lev1x'].get(m) %}
+                {% set d2 = macd_vol_monthly[s]['lev2x'].get(m) %}
+                {% set d4 = macd_vol_monthly[s]['lev4x'].get(m) %}
+                <td class="{{ 'pos' if d1 and d1.ret > 0 else 'neg' if d1 and d1.ret < 0 else '' }}">{% if d1 %}{{ '%+.2f'|format(d1.ret) }}%{% else %}—{% endif %}</td>
+                <td class="{{ 'pos' if d2 and d2.ret > 0 else 'neg' if d2 and d2.ret < 0 else '' }}">{% if d2 %}{{ '%+.2f'|format(d2.ret) }}%{% else %}—{% endif %}</td>
+                <td class="{{ 'pos' if d4 and d4.ret > 0 else 'neg' if d4 and d4.ret < 0 else '' }}">{% if d4 %}{{ '%+.2f'|format(d4.ret) }}%{% else %}—{% endif %}</td>
+                <td>{% if d1 %}{{ d1.pos }}/30{% else %}—{% endif %}</td>
+                <td>{% if d2 %}{{ d2.pos }}/30{% else %}—{% endif %}</td>
+                <td>{% if d4 %}{{ d4.pos }}/30{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        {% endfor %}
+        <div class="alert alert-warn" style="margin-bottom:0"><b>提示：</b>月收益为等权平均净值月环比（30币各1份独立复利）；持币份数反映资金占用率，份数越高说明当月开仓越密集。4x 虽月收益弹性大，但下行月（如 2026-02）回撤同步放大，实盘建议以 1x 起步。</div>
     </div>
     {% endif %}
 
