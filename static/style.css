@@ -131,6 +131,18 @@ body {
     flex-wrap: wrap;
 }
 
+/* ===== 可折叠卡片（综合任务监控区）：点击标题收起/展开 ===== */
+.card-foldable > h2 { cursor: pointer; user-select: none; }
+.card-foldable > h2::after {
+    content: '▾';
+    margin-left: auto;
+    font-size: .85em;
+    color: var(--muted);
+}
+.card-foldable.folded > h2::after { content: '▸'; }
+.card-foldable.folded > h2 { margin-bottom: 0; }
+.card-foldable.folded > .card-body { display: none; }
+
 /* ===== 表单 ===== */
 .form-grid {
     display: grid;

@@ -79,6 +79,27 @@ def log_prefix(market='us'):
     return 'crypto_composite_' if market == 'crypto' else 'composite_'
 
 
+def equity_file(market='us', task_id=None):
+    """资金曲线历史文件（按市场+任务分开；任务停止后仍保留，供前端折线图回看）"""
+    if not task_id:
+        return None
+    base = 'crypto_composite_equity' if market == 'crypto' else 'composite_equity'
+    return os.path.join('data', f'{base}_{task_id}.json')
+
+
+def load_equity_points(market='us', task_id=None):
+    """读取任务资金曲线历史点 [[epoch秒, 权益USDT], ...]（无文件/损坏返回空表）"""
+    f = equity_file(market, task_id)
+    if not f or not os.path.exists(f):
+        return []
+    try:
+        with open(f, 'r', encoding='utf-8') as fh:
+            pts = json.load(fh)
+        return [(float(t), float(v)) for t, v in pts if isinstance(t, (int, float))]
+    except Exception:
+        return []
+
+
 # 策略名 → 指标参数（与 app._strategy_params_from_names 保持一致）
 def strategy_params(name):
     p = {}
@@ -884,8 +905,50 @@ class CompositeTrader:
         except Exception as e:
             self._log(f"{s['symbol']} 外部平仓记账异常(保留原池): {e}")
 
-    def _exit_position(self, s, side, reason):
-        """市价平掉该币对合约持仓（止盈/止损/强制平仓共用，reduceOnly）"""
+    # ---------- 任务权益与资金曲线 ----------
+    def _task_equity(self):
+        """任务当前权益 = Σ各币对复利池(buy_balance) + Σ未实现盈亏。
+        复利池已含历史全部已实现盈亏（平仓即滚入）；开仓占用的保证金平仓后归还，不扣减池。"""
+        syms = self.status.get('symbols') or []
+        return round(sum(float(s.get('buy_balance') or 0.0) + float(s.get('unrealized_pnl') or 0.0)
+                         for s in syms), 4)
+
+    def _record_equity(self, force=False):
+        """把任务权益快照落盘（每分钟最多1点，同分钟覆盖保持最新；自动降采样控制体积）。
+        force=True 时无条件写一个点（任务启动/停止的端点，保证曲线首尾准确）。"""
+        f = equity_file(self.market, getattr(self, '_task_id', None))
+        if not f:
+            return
+        now = time.time()
+        pts = load_equity_points(self.market, self._task_id)
+        eq = self._task_equity()
+        if pts and not force and now - pts[-1][0] < 60:
+            pts[-1] = [pts[-1][0], eq]      # 同分钟覆盖为最新值
+        else:
+            pts.append([round(now, 3), eq])
+        # 降采样：>7天保留15分钟1点，>90天保留2小时1点（近7天保持1分钟全量粒度）
+        compact = []
+        for ts, v in pts:
+            age = now - ts
+            if age <= 7 * 86400:
+                compact.append([ts, v])
+            elif age <= 90 * 86400:
+                if ts % 900 < 90:
+                    compact.append([ts, v])
+            elif ts % 7200 < 120:
+                compact.append([ts, v])
+        try:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            tmp = f + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(compact, fh)
+            os.replace(tmp, f)   # 原子替换，避免并发读出半截文件
+        except Exception:
+            pass
+
+    def _exit_position(self, s, side, reason, dev_limit=None):
+        """市价平掉该币对合约持仓（止盈/止损/强制平仓共用，reduceOnly）
+        dev_limit: 可选价格偏离护栏上限（默认沿用 _check_deviation 的 3%；ATR模式止盈主动卖强时放宽到15%）"""
         pos = s.get('position', 0) or 0
         if pos <= 0:
             return
@@ -895,7 +958,7 @@ class CompositeTrader:
             return
         side_cmd = 'sell' if side == 'long' else 'buy'
         price = (s.get('last_price') or 0.0)
-        dev = self._check_deviation(s, price)
+        dev = self._check_deviation(s, price, limit=dev_limit) if dev_limit else self._check_deviation(s, price)
         if dev:
             self._log(f"{reason}被拦截(价格偏移): {dev}")
             return
@@ -1108,6 +1171,11 @@ class CompositeTrader:
             self._log(f"量化优先匹配已开启: 总资金均分为 {self.status.get('share_count', 0)} 份份额，"
                       f"每份 {self.status['total_fund']/max(self.status.get('share_count', 1), 1):.2f}U，"
                       f"先触发买点先分配，份额用完暂停买入")
+        # 任务启动：记录资金曲线起点（初始权益=总资金）
+        try:
+            self._record_equity(force=True)
+        except Exception:
+            pass
         # 逐币对设置杠杆
         for s in self.status['symbols']:
             try:
@@ -1156,6 +1224,11 @@ class CompositeTrader:
                 self.status['signal'] = '有买点' if all_sig == 1 else ('有卖点' if all_sig == -1 else '观望')
                 # 5. 刷新实时持仓与账户余额（一次批量）
                 self._refresh_positions_and_balance()
+                # 6. 记录任务权益快照（资金曲线，每分钟1点）
+                try:
+                    self._record_equity()
+                except Exception:
+                    pass
                 # 仅当全部币对都失败才视为连续故障（触发重连）；个别币对失败不影响整体运行
                 if failed >= len(self.status['symbols']):
                     self.status['consecutive_errors'] = self.status.get('consecutive_errors', 0) + 1
@@ -1176,6 +1249,11 @@ class CompositeTrader:
             self.status['last_loop_time'] = datetime.now().isoformat()  # 心跳
             self.status['monitor_loop'] += 1
             self._stop_event.wait(self.status['interval'] or 30)
+        # 任务停止/线程退出：补记最后一个权益点（force，保证曲线尾部准确）
+        try:
+            self._record_equity(force=True)
+        except Exception:
+            pass
 
     # ---------- 网络恢复 ----------
     def _reconnect(self, max_tries=5):
@@ -1269,4 +1347,21 @@ class CompositeTrader:
             # 移除内部信号暂存字段
             for x in s['symbols']:
                 x.pop('_sig', None)
+            # 资金摘要：初始/当前资金、累计收益率、当日盈亏（当日=相对今日0点前最后一个快照）
+            init_fund = float(self.status.get('total_fund') or 0.0)
+            cur_fund = self._task_equity()
+            s['initial_fund'] = round(init_fund, 2)
+            s['current_fund'] = round(cur_fund, 2)
+            s['total_return_pct'] = round((cur_fund - init_fund) / init_fund * 100, 2) if init_fund > 0 else 0.0
+            anchor = init_fund
+            try:
+                pts = load_equity_points(self.market, getattr(self, '_task_id', None))
+                if pts:
+                    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                    before = [v for t, v in pts if t < midnight]
+                    anchor = before[-1] if before else pts[0][1]
+            except Exception:
+                pass
+            s['today_pnl'] = round(cur_fund - anchor, 2)
+            s['today_pnl_pct'] = round((cur_fund - anchor) / anchor * 100, 2) if anchor > 0 else 0.0
             return s

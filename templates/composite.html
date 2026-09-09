@@ -270,12 +270,14 @@ td.short, td.neg { color: var(--sell); }
 
         {% if status %}
         <!-- 任务级实时状态 -->
-        <div class="card">
+        <div class="card card-foldable">
             <h2>任务状态 <span id="cur-task-name" style="font-size:.8rem;color:var(--muted);font-weight:400">
                 {{ status.name if status else '' }}{% if status.running %} · 运行中{% endif %}</span></h2>
+            <div class="card-body">
             <div class="stat-grid">
                 <div class="stat-box"><div class="lbl">任务名</div><div class="val" id="st-name">{{ status.name }}</div></div>
-                <div class="stat-box"><div class="lbl">总资金</div><div class="val" id="st-fund">{{ '%.0f' | format(status.total_fund) if status.total_fund else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
+                <div class="stat-box"><div class="lbl">当前资金</div><div class="val" id="st-fund">{{ '%.2f' | format(status.current_fund if status.current_fund is defined and status.current_fund else status.total_fund) if status.total_fund else '—' }} <span style="font-size:.7rem">USDT</span></div><div style="font-size:.72rem;color:var(--muted);margin-top:2px">初始 <span id="st-initfund">{{ '%.2f' | format(status.initial_fund if status.initial_fund is defined and status.initial_fund else status.total_fund) if status.total_fund else '—' }}</span>U · 收益 <span id="st-retpct" class="{{ 'pos' if (status.total_return_pct or 0) >= 0 else 'neg' }}">{{ '%+.2f' | format(status.total_return_pct) if status.total_return_pct is defined else '—' }}%</span></div></div>
+                <div class="stat-box"><div class="lbl">今日盈亏</div><div class="val {{ 'pos' if (status.today_pnl or 0) >= 0 else 'neg' }}" id="st-daypnl">{% if status.today_pnl is defined %}{{ '%+.2f' | format(status.today_pnl or 0) }}U <span style="font-size:.7rem">({{ '%+.2f' | format(status.today_pnl_pct or 0) }}%)</span>{% else %}—{% endif %}</div></div>
                 <div class="stat-box"><div class="lbl">币对数量</div><div class="val" id="st-nsym">{{ status.symbols | length if status.symbols else '—' }}</div></div>
                 <div class="stat-box"><div class="lbl">杠杆</div><div class="val" id="st-lev">{{ status.leverage }}x</div></div>
                 <div class="stat-box"><div class="lbl">安全系数</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '95' }}%</div></div>
@@ -296,11 +298,37 @@ td.short, td.neg { color: var(--sell); }
             {% if status.last_error %}
             <div class="alert alert-error" style="margin-top:8px" id="st-error">上次错误：{{ status.last_error }}</div>
             {% endif %}
+            </div>
+        </div>
+
+        <!-- 资金曲线（任务权益历史，支持近7天/30天/自选区间查看；默认折叠，点标题展开） -->
+        <div class="card card-foldable folded">
+            <h2>📈 资金曲线 <span id="eq-range-label" style="font-size:.8rem;color:var(--muted);font-weight:400">近7天</span>
+                <span id="eq-summary" style="font-size:.85rem;font-weight:600;margin-left:10px"></span></h2>
+            <div class="card-body">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+                <button type="button" class="btn eq-btn" data-days="7" onclick="setEqMode('7', this)">近7天</button>
+                <button type="button" class="btn eq-btn" data-days="30" onclick="setEqMode('30', this)">近30天</button>
+                <button type="button" class="btn eq-btn" data-days="0" onclick="setEqMode('all', this)">全部</button>
+                <span style="color:var(--muted);font-size:.8rem">自选：</span>
+                <input type="datetime-local" id="eq-from" style="padding:4px 6px">
+                <span style="color:var(--muted)">~</span>
+                <input type="datetime-local" id="eq-to" style="padding:4px 6px">
+                <button type="button" class="btn btn-primary" onclick="loadEquityCustom()">查询区间</button>
+                <span class="muted" style="font-size:.72rem">权益=Σ复利池+未实现盈亏；收益率相对初始资金；运行中每分钟记录1点</span>
+            </div>
+            <div style="position:relative">
+                <canvas id="eq-chart" style="width:100%;height:260px"></canvas>
+                <div id="eq-tip" style="display:none;position:absolute;background:rgba(30,30,30,.92);color:#fff;padding:3px 8px;border-radius:4px;font-size:.75rem;pointer-events:none;white-space:nowrap"></div>
+            </div>
+            <div class="empty" id="eq-empty" style="display:none">该时间段暂无资金记录（任务启动后每分钟记录一个权益点；历史任务可选「全部」回看）</div>
+            </div>
         </div>
 
         <!-- 各币对实时状态表 -->
-        <div class="card">
+        <div class="card card-foldable">
             <h2>💰 各币对实时状态（<span id="sym-count">{{ status.symbols | length if status.symbols else 0 }}</span> 个币对）</h2>
+            <div class="card-body">
             <div class="table-wrap">
             <table class="table">
                 <tr><th>币对</th><th>名称</th><th>策略</th><th>周期</th><th>权重</th><th>分配资金</th><th>复利池</th><th>信号</th><th>价格</th><th>方向</th><th>持仓</th><th>均价</th><th>未实现盈亏</th><th>买/卖</th></tr>
@@ -324,13 +352,15 @@ td.short, td.neg { color: var(--sell); }
                 {% endfor %}
             </table>
             </div>
+            </div>
         </div>
         {% endif %}
 
         <!-- 综合任务列表 -->
         {% if tasks %}
-        <div class="card">
+        <div class="card card-foldable">
             <h2>🗂️ 综合任务列表（{{ tasks | length }} 条，{{ running_count }} 个运行中）</h2>
+            <div class="card-body">
             <div class="table-wrap" style="max-height:260px;overflow-y:auto">
             <table class="table">
                 <tr><th>启动时间</th><th>任务名</th><th>总资金</th><th>币对</th><th>策略分配</th><th>间隔</th><th>杠杆</th><th>状态</th><th>操作</th></tr>
@@ -366,11 +396,12 @@ td.short, td.neg { color: var(--sell); }
             </table>
             </div>
             <p class="info-note">各<b>综合任务完全独立</b>互不干扰：币对、策略、资金权重、止盈止损均按任务隔离。点「查看」切换该任务状态与日志；「停止/继续运行」控制单个任务；可导出配置与全量日志（落盘 data/logs/）。</p>
+            </div>
         </div>
         {% endif %}
 
         <!-- 运行日志（可切换任务查看） -->
-        <div class="card">
+        <div class="card card-foldable">
             <h2>📜 运行日志（<span id="log-count">{{ log_lines | length }}</span> 条）
                 <select id="task-switch" onchange="selectTask(this.value)"
                         style="width:auto;font-size:.85rem;padding:3px 6px;margin-left:8px">
@@ -385,10 +416,12 @@ td.short, td.neg { color: var(--sell); }
                 <button type="button" class="btn" style="padding:3px 10px;font-size:.8rem;margin-left:8px"
                         onclick="clearLogView()" title="仅清空页面显示，只保留清屏后的新日志；磁盘日志全量保留，导出日志不受影响">🧹 清屏</button>
             </h2>
+            <div class="card-body">
             <div class="log-box" id="log-box">
                 {% if log_lines %}
                 {% for line in log_lines %}<div>{{ line }}</div>{% endfor %}
                 {% else %}<div class="empty">暂无日志</div>{% endif %}
+            </div>
             </div>
         </div>
 
@@ -774,7 +807,6 @@ function sideText(s) { return s === 'long' ? '做多' : (s === 'short' ? '做空
 function updateStatus(data) {
     var m = {
         'st-name': data.name || '—',
-        'st-fund': (data.total_fund != null) ? Number(data.total_fund).toFixed(0) + ' USDT' : '—',
         'st-nsym': (data.symbols && data.symbols.length) ? data.symbols.length : 0,
         'st-lev': (data.leverage != null) ? data.leverage + 'x' : '—',
         'st-pct': (data.buy_pct != null) ? Number(data.buy_pct * 100).toFixed(0) + '%' : '95%',
@@ -785,6 +817,28 @@ function updateStatus(data) {
     for (var k in m) {
         var el = document.getElementById(k);
         if (el) el.textContent = m[k];
+    }
+    // 当前资金 / 初始资金 / 累计收益 / 今日盈亏
+    var fundEl = document.getElementById('st-fund');
+    var cf = (data.current_fund != null && Number(data.current_fund) > 0) ? Number(data.current_fund)
+             : (data.total_fund != null ? Number(data.total_fund) : null);
+    if (fundEl) fundEl.innerHTML = (cf != null ? cf.toFixed(2) : '—') + ' <span style="font-size:.7rem">USDT</span>';
+    var ifEl = document.getElementById('st-initfund');
+    if (ifEl) ifEl.textContent = (data.initial_fund != null && Number(data.initial_fund) > 0) ? Number(data.initial_fund).toFixed(2)
+              : (data.total_fund != null ? Number(data.total_fund).toFixed(2) : '—');
+    var rtEl = document.getElementById('st-retpct');
+    if (rtEl) {
+        var rp = Number(data.total_return_pct || 0);
+        rtEl.textContent = (rp >= 0 ? '+' : '') + rp.toFixed(2) + '%';
+        rtEl.className = rp >= 0 ? 'pos' : 'neg';
+    }
+    var dpEl = document.getElementById('st-daypnl');
+    if (dpEl) {
+        if (data.today_pnl != null) {
+            var dv = Number(data.today_pnl || 0), dpc = Number(data.today_pnl_pct || 0);
+            dpEl.innerHTML = (dv >= 0 ? '+' : '') + dv.toFixed(2) + 'U <span style="font-size:.7rem">(' + (dpc >= 0 ? '+' : '') + dpc.toFixed(2) + '%)</span>';
+            dpEl.className = 'val ' + (dv >= 0 ? 'pos' : 'neg');
+        } else { dpEl.textContent = '—'; dpEl.className = 'val'; }
     }
     var shareBox = document.getElementById('share-box');
     var shareVal = document.getElementById('st-shares');
@@ -885,6 +939,7 @@ function selectTask(tid) {
     var sel = document.getElementById('task-switch');
     if (sel && sel.value !== tid) sel.value = tid;
     pollStatus();
+    if (typeof eqFetch === 'function') eqFetch();   // 切换任务：资金曲线同步切换
 }
 
 // 清屏：仅清空页面显示，清屏后只渲染新产生的日志；磁盘日志与「导出日志」全量保留
@@ -908,6 +963,168 @@ function stopPolling() {
     var sel = document.getElementById('task-switch');
     if (sel && CUR_TASK) sel.value = CUR_TASK;
 })();
+
+// ---------- 资金曲线（任务权益折线图：近7天/30天/自选区间） ----------
+var EQ = { points: [], init: 0, mode: '7', start: null, end: null, hover: -1 };
+
+function fmtTs(ts) {
+    var d = new Date(ts * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function eqFetch() {
+    var cv = document.getElementById('eq-chart'), empty = document.getElementById('eq-empty');
+    if (!CUR_TASK) { if (cv) cv.style.display = 'none'; if (empty) empty.style.display = ''; return; }
+    var url = API_BASE + '/api/equity?task_id=' + encodeURIComponent(CUR_TASK);
+    var now = Math.floor(Date.now() / 1000);
+    if (EQ.mode === '7') url += '&start=' + (now - 7 * 86400);
+    else if (EQ.mode === '30') url += '&start=' + (now - 30 * 86400);
+    else if (EQ.mode === 'custom') { if (EQ.start) url += '&start=' + EQ.start; if (EQ.end) url += '&end=' + EQ.end; }
+    fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+        EQ.points = d.points || []; EQ.init = Number(d.initial_fund || 0); EQ.hover = -1;
+        drawEquity();
+    }).catch(function (e) { console.error('equity', e); });
+}
+
+function setEqMode(mode, btn) {
+    EQ.mode = mode;
+    document.querySelectorAll('.eq-btn').forEach(function (b) { b.classList.remove('btn-primary'); });
+    if (btn) btn.classList.add('btn-primary');
+    var lb = document.getElementById('eq-range-label');
+    if (lb) lb.textContent = { '7': '近7天', '30': '近30天', 'all': '全部', 'custom': '自选区间' }[mode] || '';
+    eqFetch();
+}
+
+function loadEquityCustom() {
+    var f = document.getElementById('eq-from').value, t = document.getElementById('eq-to').value;
+    if (!f || !t) { alert('请选择开始与结束时间'); return; }
+    var s = Math.floor(new Date(f).getTime() / 1000), e = Math.floor(new Date(t).getTime() / 1000);
+    if (s >= e) { alert('开始时间需早于结束时间'); return; }
+    EQ.start = s; EQ.end = e;
+    setEqMode('custom', null);
+}
+
+function drawEquity() {
+    var cv = document.getElementById('eq-chart'), empty = document.getElementById('eq-empty'), sumEl = document.getElementById('eq-summary');
+    if (!cv) return;
+    var pts = EQ.points;
+    if (!pts.length) {
+        cv.style.display = 'none'; if (empty) empty.style.display = '';
+        if (sumEl) sumEl.textContent = '';
+        var tipH = document.getElementById('eq-tip'); if (tipH) tipH.style.display = 'none';
+        return;
+    }
+    cv.style.display = ''; if (empty) empty.style.display = 'none';
+    if (sumEl) {
+        var first = pts[0][1], last = pts[pts.length - 1][1];
+        var dlt = last - first, pct0 = first > 0 ? dlt / first * 100 : 0;
+        sumEl.textContent = '区间 ' + (dlt >= 0 ? '+' : '') + dlt.toFixed(2) + 'U (' + (pct0 >= 0 ? '+' : '') + pct0.toFixed(2) + '%)';
+        sumEl.style.color = dlt >= 0 ? '#4caf50' : '#f44336';
+    }
+    var wrap = cv.parentElement, W = wrap.clientWidth || 800, H = 260;
+    var dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    var ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var PL = 64, PR = 64, PT = 14, PB = 26, iw = W - PL - PR, ih = H - PT - PB;
+    var t0 = pts[0][0], t1 = pts[pts.length - 1][0] || (t0 + 1);
+    var vmin = Infinity, vmax = -Infinity;
+    pts.forEach(function (p) { if (p[1] < vmin) vmin = p[1]; if (p[1] > vmax) vmax = p[1]; });
+    if (EQ.init > 0) { vmin = Math.min(vmin, EQ.init); vmax = Math.max(vmax, EQ.init); }
+    if (vmax - vmin < 1e-9) vmax = vmin + 1;
+    var padV = (vmax - vmin) * 0.08; vmin -= padV; vmax += padV;
+    function X(t) { return PL + (t - t0) / (t1 - t0) * iw; }
+    function Y(v) { return PT + (1 - (v - vmin) / (vmax - vmin)) * ih; }
+    // 网格 + 双轴刻度（右轴=相对初始资金收益率，与权益同一比例尺）
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#999';
+    for (var g = 0; g <= 4; g++) {
+        var gv = vmin + (vmax - vmin) * g / 4, gy = Y(gv);
+        ctx.strokeStyle = 'rgba(128,128,128,.18)';
+        ctx.beginPath(); ctx.moveTo(PL, gy); ctx.lineTo(W - PR, gy); ctx.stroke();
+        var rp = EQ.init > 0 ? (gv / EQ.init - 1) * 100 : 0;
+        ctx.textAlign = 'right'; ctx.fillText(gv.toFixed(0), PL - 6, gy + 3);
+        ctx.textAlign = 'left'; ctx.fillText((rp >= 0 ? '+' : '') + rp.toFixed(1) + '%', W - PR + 6, gy + 3);
+    }
+    ctx.textAlign = 'center';
+    for (var k = 0; k <= 5; k++) {
+        var gt = t0 + (t1 - t0) * k / 5;
+        ctx.fillText(fmtTs(gt), X(gt), H - 8);
+    }
+    // 初始资金基准虚线
+    if (EQ.init > vmin && EQ.init < vmax) {
+        ctx.save(); ctx.strokeStyle = 'rgba(240,185,11,.55)'; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(PL, Y(EQ.init)); ctx.lineTo(W - PR, Y(EQ.init)); ctx.stroke(); ctx.restore();
+    }
+    // 权益面积填充 + 折线
+    var grad = ctx.createLinearGradient(0, PT, 0, H - PB);
+    grad.addColorStop(0, 'rgba(25,118,210,.28)'); grad.addColorStop(1, 'rgba(25,118,210,0)');
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.lineTo(X(pts[pts.length - 1][0]), H - PB); ctx.lineTo(X(pts[0][0]), H - PB); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = '#1976d2'; ctx.lineWidth = 1.6; ctx.stroke();
+    // 悬停十字线 + 数值气泡
+    var tip = document.getElementById('eq-tip');
+    if (EQ.hover >= 0 && EQ.hover < pts.length) {
+        var hp = pts[EQ.hover], hx = X(hp[0]), hy = Y(hp[1]);
+        ctx.save(); ctx.strokeStyle = 'rgba(128,128,128,.5)'; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(hx, PT); ctx.lineTo(hx, H - PB); ctx.stroke(); ctx.restore();
+        ctx.fillStyle = '#1976d2'; ctx.beginPath(); ctx.arc(hx, hy, 3.2, 0, 7); ctx.fill();
+        if (tip) {
+            var rp2 = EQ.init > 0 ? (hp[1] / EQ.init - 1) * 100 : 0;
+            tip.style.display = '';
+            tip.textContent = fmtTs(hp[0]) + ' · ' + hp[1].toFixed(2) + 'U (' + (rp2 >= 0 ? '+' : '') + rp2.toFixed(2) + '%)';
+            var tw = tip.offsetWidth;
+            tip.style.left = Math.min(Math.max(hx - tw / 2, 4), W - tw - 4) + 'px';
+            tip.style.top = (PT + 2) + 'px';
+        }
+    } else if (tip) { tip.style.display = 'none'; }
+}
+
+(function () {
+    var cv = document.getElementById('eq-chart');
+    if (!cv) return;
+    cv.addEventListener('mousemove', function (ev) {
+        if (!EQ.points.length) return;
+        var rect = cv.getBoundingClientRect();
+        var x = ev.clientX - rect.left, PL = 64, PR = 64, iw = cv.clientWidth - PL - PR;
+        var t0 = EQ.points[0][0], t1 = EQ.points[EQ.points.length - 1][0];
+        var t = t0 + Math.max(0, Math.min(1, (x - PL) / iw)) * (t1 - t0);
+        var best = 0, bd = Infinity;
+        EQ.points.forEach(function (p, i) { var dd = Math.abs(p[0] - t); if (dd < bd) { bd = dd; best = i; } });
+        EQ.hover = best; drawEquity();
+    });
+    cv.addEventListener('mouseleave', function () { EQ.hover = -1; drawEquity(); });
+    window.addEventListener('resize', drawEquity);
+    // 自选区间默认值：近7天
+    var f = document.getElementById('eq-from'), t2 = document.getElementById('eq-to');
+    if (f && t2) {
+        var iso = function (d) { var p = function (n) { return (n < 10 ? '0' : '') + n; };
+            return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()); };
+        f.value = iso(new Date(Date.now() - 7 * 86400000)); t2.value = iso(new Date());
+    }
+    var btn7 = document.querySelector('.eq-btn[data-days="7"]');
+    if (btn7) btn7.classList.add('btn-primary');
+    eqFetch();
+    setInterval(function () { if (CUR_TASK) eqFetch(); }, 60000);   // 每60秒自动刷新当前区间
+})();
+
+// ---------- 可折叠卡片：点击标题收起/展开（忽略标题内的按钮/下拉等交互元素） ----------
+document.querySelectorAll('.card-foldable > h2').forEach(function (h2) {
+    h2.addEventListener('click', function (ev) {
+        if (ev.target.closest('button, select, input, a')) return;
+        var card = h2.parentElement;
+        card.classList.toggle('folded');
+        // 资金曲线展开时按真实宽度重绘（折叠期间 clientWidth=0 用了回退宽度）
+        if (!card.classList.contains('folded') && card.querySelector('#eq-chart')
+                && typeof drawEquity === 'function') {
+            setTimeout(drawEquity, 0);
+        }
+    });
+});
 
 startPolling(3);
 

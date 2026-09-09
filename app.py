@@ -2557,7 +2557,9 @@ def _composite_status_api(market='us'):
         cur = {'running': False, 'log': ['未启动'], 'name': '—', 'total_fund': 0,
                'buy_pct': DEFAULT_BUY_PCT, 'signal': '—', 'leverage': 5,
                'buy_count': 0, 'sell_count': 0, 'account_balance': 0.0,
-               'last_loop_time': None, 'symbols': []}
+               'last_loop_time': None, 'symbols': [],
+               'initial_fund': 0, 'current_fund': 0, 'total_return_pct': 0,
+               'today_pnl': 0, 'today_pnl_pct': 0}
         if tid:
             rec = next((t for t in tasks if t.get('id') == tid), None)
             if rec:
@@ -2578,7 +2580,67 @@ def _composite_status_api(market='us'):
                     })
                 cur = {**rec, 'running': False, 'symbols': syms,
                        'log': _composite_log_lines(tid, market) or ['（该任务暂无日志）']}
+                # 已停止任务：从资金曲线历史文件回填资金摘要（无历史时回退初始资金）
+                cur.update(_equity_summary_from_history(market, tid, total))
     return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+def _equity_summary_from_history(market, task_id, total_fund):
+    """从资金曲线历史文件生成资金摘要（已停止任务用；运行中任务由 get_status 直接提供）"""
+    from composite_trader import load_equity_points
+    total_fund = float(total_fund or 0)
+    pts = load_equity_points(market, task_id) if task_id else []
+    cur = pts[-1][1] if pts else total_fund
+    anchor = total_fund
+    if pts:
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        before = [v for t, v in pts if t < midnight]
+        anchor = before[-1] if before else pts[0][1]
+    return {
+        'initial_fund': round(total_fund, 2),
+        'current_fund': round(cur, 2),
+        'total_return_pct': round((cur - total_fund) / total_fund * 100, 2) if total_fund > 0 else 0.0,
+        'today_pnl': round(cur - anchor, 2),
+        'today_pnl_pct': round((cur - anchor) / anchor * 100, 2) if anchor > 0 else 0.0,
+    }
+
+
+@app.route("/composite/api/equity")
+def composite_equity():
+    """资金曲线数据接口：返回指定美股综合任务时间区间内的权益快照点（前端折线图）"""
+    return _composite_equity_api('us')
+
+
+@app.route("/crypto-composite/api/equity")
+def crypto_composite_equity():
+    """资金曲线数据接口：返回指定虚拟币综合任务时间区间内的权益快照点（前端折线图）"""
+    return _composite_equity_api('crypto')
+
+
+def _composite_equity_api(market='us'):
+    from flask import jsonify
+    from composite_trader import load_equity_points
+    tid = request.args.get('task_id') or ''
+    start = request.args.get('start', type=float)
+    end = request.args.get('end', type=float)
+    rec = next((t for t in _composite_tasks_view(market) if t.get('id') == tid), None)
+    init_fund = float(rec.get('total_fund') or 0) if rec else 0.0
+    pts = load_equity_points(market, tid) if tid else []
+    if start is not None:
+        pts = [p for p in pts if p[0] >= start]
+    if end is not None:
+        pts = [p for p in pts if p[0] <= end]
+    # 运行中任务追加实时权益点（历史文件最多滞后1分钟）
+    eng = _composite_registry(market).get(tid)
+    if eng and getattr(eng, '_running', False):
+        pts = pts + [[round(time.time(), 3), eng._task_equity()]]
+    # 降采样：最多1500点（等距抽样，保留首尾）
+    if len(pts) > 1500:
+        step = (len(pts) - 1) / 1499.0
+        idxs = sorted({int(i * step) for i in range(1500)} | {len(pts) - 1})
+        pts = [pts[i] for i in idxs]
+    return jsonify({'task_id': tid, 'initial_fund': round(init_fund, 2), 'count': len(pts),
+                    'points': [[round(t, 3), round(v, 4)] for t, v in pts]})
 
 
 @app.route("/composite/api/export")
