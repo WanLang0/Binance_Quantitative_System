@@ -1813,6 +1813,17 @@ def _load_us_macd_matrix():
         return None
 
 
+def _load_ndx_pool():
+    """纳指100成分股（96只）与 2024年初权重前30 × 三种MACD参数 × 30槽资金池组合回测（最优策略页表格展示）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'ndx_pool_summary_1h.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _load_recommended():
     """实盘推荐配置（虚拟币/美股 各三档，风险低→高）"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1980,6 +1991,7 @@ def strategies_summary():
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
                            us_macd_matrix=_load_us_macd_matrix(),
+                           ndx_pool=_load_ndx_pool(),
                            tp_close_matrix=_load_tp_close_matrix(),
                            macd_vol_monthly=_load_macd_vol_monthly(),
                            c3_matrix=_load_c3_matrix(),

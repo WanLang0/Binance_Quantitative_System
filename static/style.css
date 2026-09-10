@@ -141,7 +141,8 @@ body {
 }
 .card-foldable.folded > h2::after { content: '▸'; }
 .card-foldable.folded > h2 { margin-bottom: 0; }
-.card-foldable.folded > .card-body { display: none; }
+/* 折叠时隐藏标题以外的一切内容（兼容有/无 .card-body 包裹两种写法） */
+.card-foldable.folded > *:not(h2) { display: none; }
 
 /* ===== 表单 ===== */
 .form-grid {
@@ -310,6 +311,50 @@ td.neg, .neg { color: var(--sell); }
 .tag-balanced { background: #fef7e0; color: #a16207; }
 .tag-aggressive { background: var(--sell-bg); color: var(--sell); }
 .tag-rec { background: #ede9fe; color: #6d28d9; }
+
+/* ===== 告示栏（最优策略页置顶笔记） ===== */
+.notice-board {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 5px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow);
+}
+.notice-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.notice-badge {
+    color: #fff;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+.notice-title { font-size: 1.02rem; font-weight: 600; }
+.notice-time { font-size: .72rem; color: var(--muted); }
+.notice-body {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: .92rem;
+    line-height: 1.75;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.notice-empty {
+    margin-top: 10px;
+    font-size: .85rem;
+    color: var(--muted);
+}
 
 /* ===== 提示框 ===== */
 .alert {

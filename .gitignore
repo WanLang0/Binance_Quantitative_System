@@ -44,6 +44,7 @@ scripts/results/*
 !scripts/results/macd_c3_lev_1h.json
 !scripts/results/top30_2021_c3_intraday_1h.json
 !scripts/results/macd_vol_monthly_pos_1h.json
+!scripts/results/ndx_pool_summary_1h.json
 
 # 临时回测/验证脚本与中间产物（一次性分析，不入库）
 scripts/tmp_*.py
