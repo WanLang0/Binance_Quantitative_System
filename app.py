@@ -2813,7 +2813,7 @@ def _composite_export_api(market='us'):
     rec = next((t for t in CompositeTrader.list_tasks(market) if t.get('id') == tid), None)
     if not rec:
         abort(404)
-    pfx = _composite_export_prefix(market)
+    pfx = log_prefix(market)
     if typ == 'config':
         content = json.dumps(rec, ensure_ascii=False, indent=2)
         fname, mime = f'{pfx}config_{tid}.json', 'application/json'
