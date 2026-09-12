@@ -10,6 +10,7 @@
 import os
 import base64
 import hashlib
+import json
 import sqlite3
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -120,6 +121,8 @@ def _ensure_email_columns():
             c.execute("ALTER TABLE users ADD COLUMN email TEXT")
         if 'email_auth_enc' not in cols:
             c.execute("ALTER TABLE users ADD COLUMN email_auth_enc TEXT")
+        if 'nav_hidden' not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN nav_hidden TEXT")
 
 
 def save_email_config(username, email, auth_code=None):
@@ -164,3 +167,35 @@ def get_any_email_account():
     except Exception:
         return None
     return row['email'], code
+
+
+# ==================== 顶栏页面显隐配置（设置页可勾选启用/隐藏） ====================
+def get_nav_hidden(username, valid_keys=None):
+    """读取指定用户隐藏的顶栏页面 key 列表（JSON 存储）。返回 list[str]"""
+    _ensure_email_columns()
+    with _conn() as c:
+        row = c.execute("SELECT nav_hidden FROM users WHERE username = ?",
+                        ((username or '').strip(),)).fetchone()
+    if row is None or not row['nav_hidden']:
+        return []
+    try:
+        hidden = json.loads(row['nav_hidden'])
+    except Exception:
+        return []
+    if not isinstance(hidden, list):
+        return []
+    if valid_keys is not None:  # 只保留合法 key，防御脏数据/页面改名残留
+        hidden = [k for k in hidden if k in valid_keys]
+    return hidden
+
+
+def save_nav_hidden(username, hidden):
+    """保存顶栏隐藏页面列表。返回 (是否成功, 提示)"""
+    _ensure_email_columns()
+    with _conn() as c:
+        row = c.execute("SELECT id FROM users WHERE username = ?", ((username or '').strip(),)).fetchone()
+        if row is None:
+            return False, '用户不存在'
+        c.execute("UPDATE users SET nav_hidden = ? WHERE id = ?",
+                  (json.dumps(sorted(set(hidden or [])), ensure_ascii=False), row['id']))
+    return True, '页面显示配置已保存'

@@ -7,6 +7,8 @@
 - 多币种批量拉取实时数据（get_tickers 一次获取全部）
 - 逐币对独立策略信号检测（买点/卖点）
 - 资金管理：每个币对有独立复利池(allocated_fund × ratio)，买入金额 = buy_balance × 0.95（安全系数）
+- 优先匹配模式：总资金均分 n 份为「n槽资金池」，每槽独立复利（占用槽的币对用槽内资金开仓、
+  平仓盈亏滚入槽、释放后由下一个触发币对继承），与回测30槽口径一致；非优先匹配=按币种复利
 - 多币对同时出现买点时，按各自权重(ratio) 计算下单金额，互不占用
 - 买点开多，卖点平多；可选卖点开空(allow_short)
 - 完整交易记录 + 任务状态监控 + 邮件/日志持久化
@@ -305,6 +307,7 @@ class CompositeTrader:
                 'prioritize': self.status.get('prioritize', False),
                 'share_count': self.status.get('share_count', 0),
                 'available_shares': self.status.get('available_shares', 0),
+                'slots': self.status.get('slots') or [],
                 'symbols': [{
                     'symbol': s['symbol'], 'name': s['name'], 'strategy': s['strategy'],
                     'strategies': s.get('strategies') or [s['strategy']],
@@ -383,6 +386,19 @@ class CompositeTrader:
                 s['cur_sl_pct'] = src.get('cur_sl_pct', 0.0)
                 s['atr_tp_close'] = bool(src.get('atr_tp_close', False))
                 s['shares'] = src.get('shares', 0)
+            # n槽资金池恢复（优先匹配）：优先用保存的槽；旧版状态无槽数据时按持仓重建迁移
+            saved_slots = data.get('slots')
+            if isinstance(saved_slots, list) and saved_slots:
+                self.status['slots'] = [{'cash': float(x.get('cash') or 0.0), 'sym': x.get('sym')}
+                                        for x in saved_slots if isinstance(x, dict)]
+            elif self.status.get('prioritize'):
+                n_slots = int(self.status.get('share_count') or 0)
+                unit = (self.status['total_fund'] / n_slots) if n_slots > 0 else 0.0
+                mig = [{'cash': float(s2.get('buy_balance') or unit), 'sym': s2['symbol']}
+                       for s2 in self.status['symbols'] if (s2.get('shares') or 0) > 0]
+                while len(mig) < n_slots:
+                    mig.append({'cash': round(unit, 8), 'sym': None})
+                self.status['slots'] = mig[:n_slots] if n_slots else mig
             self.status['buy_count'] = data.get('buy_count', self.status['buy_count'])
             self.status['sell_count'] = data.get('sell_count', self.status['sell_count'])
             self.status['last_loop_time'] = data.get('last_loop_time')
@@ -393,9 +409,10 @@ class CompositeTrader:
     def _build_symbols(self, symbol_configs, total_fund, buy_pct=DEFAULT_BUY_PCT,
                        prioritize=False, share_count=0):
         """根据前端配置构建币对状态列表。
-        默认模式：按各币对 fund_ratio 分配资金池（复利起点）。
-        优先匹配模式(prioritize)：将总资金平均划分为 n 份份额，每份 = total_fund / n，
-        由触发买点的股票按时间顺序抢占份额（先触发先得），份额用完暂停买入。
+        默认模式：按各币对 fund_ratio 分配资金池（复利起点），按币种复利。
+        优先匹配模式(prioritize)：总资金均分 n 份构建「n槽资金池」（status['slots']），
+        每槽独立复利——触发买点的币对抢占空槽、用槽内资金×0.95开仓、平仓盈亏滚入槽、
+        释放槽位后资金由下一个触发的币对继承（与回测30槽资金池口径一致）。
         """
         symbols = []
         eff_buy_pct = float(buy_pct or DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT
@@ -443,7 +460,7 @@ class CompositeTrader:
                 'timeframe': cfg.get('timeframe') or '1h',
                 'fund_ratio': ratio,
                 'allocated_fund': allocated,
-                'buy_balance': allocated,           # 复利池起点 = 分到的本金
+                'buy_balance': 0.0 if prioritize else allocated,  # 复利池起点（优先匹配=资金在槽上，持仓时同步显示槽资金）
                 'buy_pct': eff_buy_pct,             # 任务级买入安全系数（如 0.95）
                 'long_only': bool(cfg.get('long_only', True)),
                 'allow_short': bool(cfg.get('allow_short', False)),
@@ -473,50 +490,85 @@ class CompositeTrader:
                 'last_error': None,
                 'last_open_ms': 0,                  # 最近一次引擎开仓时间戳(ms)，外部平仓精确记账的查询起点
                 'shares': 0,                        # 优先匹配：当前占用的份额数
-                'share_cap': round(unit, 8) if prioritize else 0.0,  # 优先匹配：一份份额的资金额度，开仓金额硬上限
             })
-        # 优先匹配：写入份额池总量与可用数（关闭时清零）
+        # 优先匹配：写入份额池总量与可用数（关闭时清零），并构建 n 槽资金池
         self.status['prioritize'] = bool(prioritize)
         self.status['share_count'] = n if prioritize else 0
         self.status['available_shares'] = n if prioritize else 0
+        # n槽资金池：钱长在槽上（先到先得占用、平仓滚入盈亏、释放后资金留给下一个占用者）
+        self.status['slots'] = ([{'cash': round(unit, 8), 'sym': None} for _ in range(n)]
+                                if prioritize and n > 0 else [])
         return symbols
 
     def _inv(self, s):
-        """币对当前实际投入金额 = 复利池 × 安全系数(95%)。
-        优先匹配模式下，开仓金额受『一份份额额度 × 安全系数』硬性封顶，避免复利池滚大后
-        名义价值超过该杠杆下允许的最大持仓而触发币安 -2027。"""
-        amount = (s.get('buy_balance') or 0.0) * (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
+        """币对当前实际投入金额（保证金） = 复利载体 × 安全系数(95%)。
+        优先匹配模式：资金在 n 槽资金池上——用该币对占用槽的槽内资金 × buy_pct 开仓，
+        槽资金随盈亏复利（无上限，与回测30槽口径一致）。
+        默认模式：按该币对复利池 buy_balance × buy_pct。"""
+        pct = (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
         if self.status.get('prioritize'):
-            cap = (s.get('share_cap') or 0.0) * (s.get('buy_pct', DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT)
-            if cap > 0:
-                amount = min(amount, cap)
-        return amount
+            slot = self._slot_of(s)
+            return (slot.get('cash') or 0.0) * pct if slot else 0.0
+        return (s.get('buy_balance') or 0.0) * pct
 
-    # ---------- 量化优先匹配：份额授予/回收 ----------
+    # ---------- 量化优先匹配：n槽资金池的占用/回收 ----------
+    def _slot_of(self, s):
+        """返回该币对当前占用的资金槽（无占用返回 None）"""
+        for x in (self.status.get('slots') or []):
+            if x.get('sym') == s['symbol']:
+                return x
+        return None
+
+    def _sync_available(self):
+        slots = self.status.get('slots') or []
+        self.status['available_shares'] = sum(1 for x in slots if x.get('sym') is None)
+
     def _grant_share(self, s):
-        """优先匹配：为触发买点的股票分配 1 份份额。成功返回 True，份额耗尽返回 False。"""
+        """优先匹配：为触发买点的币对抢占一个空资金槽（先到先得）。
+        成功返回 True，槽满返回 False（暂停买入、仅监控卖出）。"""
         if not self.status.get('prioritize'):
             return True
         total = self.status.get('share_count', 0)
-        if self.status.get('available_shares', 0) <= 0:
-            self._log(f"优先匹配: 份额已用完({total}份)，暂停买入 {s['symbol']}，仅监控卖出")
+        slot = next((x for x in (self.status.get('slots') or []) if x.get('sym') is None), None)
+        if slot is None:
+            self._log(f"优先匹配: 资金槽已用完({total}份)，暂停买入 {s['symbol']}，仅监控卖出")
             return False
-        self.status['available_shares'] = self.status.get('available_shares', 0) - 1
-        s['shares'] = s.get('shares', 0) + 1
-        self._log(f"优先匹配: 分配 1 份份额给 {s['symbol']}（剩余 {self.status['available_shares']}/{total} 份）")
+        slot['sym'] = s['symbol']
+        s['shares'] = 1
+        s['buy_balance'] = slot.get('cash') or 0.0   # 展示同步：复利池=当前占用槽资金
+        self._sync_available()
+        self._log(f"优先匹配: {s['symbol']} 占用 1 份资金槽 {slot.get('cash', 0):.2f}U"
+                  f"（剩余 {self.status['available_shares']}/{total} 份）")
         return True
 
     def _release_share(self, s):
-        """优先匹配：卖出完成后回收该股票占用的份额，重新加入候选池。"""
+        """优先匹配：平仓后释放该币对占用的资金槽。槽内资金（含盈亏）保留，留给下一个触发的币对。"""
         if not self.status.get('prioritize'):
             return
-        held = s.get('shares', 0) or 0
-        if held <= 0:
+        slots = self.status.get('slots') or []
+        held = [x for x in slots if x.get('sym') == s['symbol']]
+        if not held:
+            s['shares'] = 0
             return
-        total = self.status.get('share_count', 0)
-        self.status['available_shares'] = min(total, self.status.get('available_shares', 0) + held)
+        for x in held:
+            x['sym'] = None
         s['shares'] = 0
-        self._log(f"优先匹配: 回收 {s['symbol']} 的 {held} 份份额（剩余 {self.status['available_shares']}/{total} 份）")
+        self._sync_available()
+        total = self.status.get('share_count', 0)
+        self._log(f"优先匹配: 释放 {s['symbol']} 的 {len(held)} 份资金槽"
+                  f"（槽资金已滚入盈亏，剩余 {self.status['available_shares']}/{total} 份可用）")
+
+    def _compound_pnl(self, s, pnl):
+        """平仓盈亏滚入复利载体。
+        优先匹配(n槽资金池)：盈亏滚入该币对占用的槽——每槽独立复利、与币种无关（回测口径）；
+        默认模式：滚入该币对自己的复利池 buy_balance。"""
+        if self.status.get('prioritize'):
+            slot = self._slot_of(s)
+            if slot is not None:
+                slot['cash'] = round((slot.get('cash') or 0.0) + pnl, 8)
+                s['buy_balance'] = slot['cash']   # 展示同步
+                return
+        s['buy_balance'] = round((s.get('buy_balance', 0.0) or 0.0) + pnl, 8)
 
     # ---------- 批量价格获取 ----------
     def _refresh_prices(self):
@@ -900,18 +952,23 @@ class CompositeTrader:
                 self._log(f"{s['symbol']} 外部平仓: 无配对已实现盈亏(可能手动加/减仓)，复利池不调整")
                 return
             old = (s.get('buy_balance') or 0.0)
-            s['buy_balance'] = round(old + pnl, 8)
-            self._log(f"{s['symbol']} 外部平仓记账: income实亏{pnl:+.2f}U, 复利池 {old:.2f}→{s['buy_balance']:.2f}U")
+            self._compound_pnl(s, pnl)
+            self._log(f"{s['symbol']} 外部平仓记账: income实亏{pnl:+.2f}U, 复利池 {old:.2f}→{s.get('buy_balance', 0.0):.2f}U")
         except Exception as e:
             self._log(f"{s['symbol']} 外部平仓记账异常(保留原池): {e}")
 
     # ---------- 任务权益与资金曲线 ----------
     def _task_equity(self):
-        """任务当前权益 = Σ各币对复利池(buy_balance) + Σ未实现盈亏。
-        复利池已含历史全部已实现盈亏（平仓即滚入）；开仓占用的保证金平仓后归还，不扣减池。"""
+        """任务当前权益 = 复利载体合计 + Σ未实现盈亏。
+        优先匹配(n槽资金池)：权益=Σ各槽资金(开仓不扣槽、平仓滚入盈亏)+Σ未实现盈亏；
+        默认模式：权益=Σ各币对复利池(buy_balance)+Σ未实现盈亏。"""
         syms = self.status.get('symbols') or []
-        return round(sum(float(s.get('buy_balance') or 0.0) + float(s.get('unrealized_pnl') or 0.0)
-                         for s in syms), 4)
+        unreal = sum(float(s.get('unrealized_pnl') or 0.0) for s in syms)
+        if self.status.get('prioritize'):
+            base = sum(float(x.get('cash') or 0.0) for x in (self.status.get('slots') or []))
+        else:
+            base = sum(float(s.get('buy_balance') or 0.0) for s in syms)
+        return round(base + unreal, 4)
 
     def _record_equity(self, force=False):
         """把任务权益快照落盘（每分钟最多1点，同分钟覆盖保持最新；自动降采样控制体积）。
@@ -968,7 +1025,7 @@ class CompositeTrader:
             s['last_error'] = f"{reason}平仓失败: {err}"
             return
         pnl = s.get('unrealized_pnl', 0.0) or 0.0
-        s['buy_balance'] = round((s.get('buy_balance', 0.0) or 0.0) + pnl, 8)
+        self._compound_pnl(s, pnl)
         s['position'] = 0
         s['side'] = 'none'
         s['entry_price'] = 0.0
@@ -1009,7 +1066,7 @@ class CompositeTrader:
             self._log(f"平仓失败: {err}")
             return
         pnl = s.get('unrealized_pnl', 0.0) or 0.0
-        s['buy_balance'] = round((s.get('buy_balance', 0.0) or 0.0) + pnl, 8)
+        self._compound_pnl(s, pnl)
         s['position'] = 0
         s['side'] = 'none'
         s['entry_price'] = 0.0
@@ -1168,9 +1225,10 @@ class CompositeTrader:
         else:
             self._log("ATR动态止盈止损未开启（使用传统固定比例止盈止损 + 收盘确认口径）")
         if self.status.get('prioritize'):
-            self._log(f"量化优先匹配已开启: 总资金均分为 {self.status.get('share_count', 0)} 份份额，"
-                      f"每份 {self.status['total_fund']/max(self.status.get('share_count', 1), 1):.2f}U，"
-                      f"先触发买点先分配，份额用完暂停买入")
+            self._log(f"量化优先匹配已开启: 总资金均分为 {self.status.get('share_count', 0)} 份资金槽，"
+                      f"每槽 {self.status['total_fund']/max(self.status.get('share_count', 1), 1):.2f}U，"
+                      f"先触发买点先占用槽位，槽满暂停买入；每槽独立复利(平仓盈亏滚入槽、释放后资金留给下一个触发币对，"
+                      f"与回测30槽口径一致)")
         # 任务启动：记录资金曲线起点（初始权益=总资金）
         try:
             self._record_equity(force=True)

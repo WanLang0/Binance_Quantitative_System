@@ -45,11 +45,18 @@ scripts/results/*
 !scripts/results/top30_2021_c3_intraday_1h.json
 !scripts/results/macd_vol_monthly_pos_1h.json
 !scripts/results/ndx_pool_summary_1h.json
+!scripts/results/us93_longonly_summary_1h.json
 
 # 临时回测/验证脚本与中间产物（一次性分析，不入库）
 scripts/tmp_*.py
 scripts/res_*.txt
+scripts/err_*.txt
 scripts/results_*.txt
+_tmp_*.py
+scripts/scripts/
+
+# 运行时资金曲线快照（任务权益历史，本地维护）
+data/*_equity_*.json
 
 # IDE / 工具
 .trae/

@@ -1,0 +1,513 @@
+{% set active_page = nav_key|default('composite_algo') %}
+{% extends "base.html" %}
+
+{% block title %}{{ page_title|default('算法可视化') }}{% endblock %}
+
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js" charset="utf-8"></script>
+<style>
+/* ===== 算法可视化：控制台 + 流水线动画 + 实时图表 ===== */
+.algo-head {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 55%, #0b1220 100%);
+    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
+    color: #e2e8f0; box-shadow: 0 6px 22px rgba(15, 23, 42, .22);
+}
+.algo-head .brand-t {
+    font-size: 1.06rem; font-weight: 700; margin-right: auto;
+    display: flex; align-items: center; gap: 8px; letter-spacing: .3px;
+}
+.algo-head .brand-t .sub { font-size: .74rem; font-weight: 400; color: #94a3b8; }
+.algo-field { display: flex; flex-direction: column; gap: 3px; }
+.algo-field > span { font-size: .7rem; color: #94a3b8; letter-spacing: .4px; }
+.algo-field input, .algo-field select {
+    background: rgba(255, 255, 255, .07); border: 1px solid rgba(255, 255, 255, .16);
+    color: #f1f5f9; border-radius: 6px; padding: 5px 9px; font-family: inherit; font-size: .86rem;
+    min-width: 132px; outline: none; transition: .15s;
+}
+.algo-field input:focus, .algo-field select:focus { border-color: var(--accent); background: rgba(240, 185, 11, .1); }
+.algo-field select option { background: #1e293b; color: #f1f5f9; }
+.algo-btn {
+    border: none; border-radius: 6px; padding: 6px 14px; font-family: inherit; font-size: .86rem;
+    cursor: pointer; transition: .15s; font-weight: 600;
+}
+.algo-btn.run { background: var(--accent); color: #1e293b; }
+.algo-btn.run:hover { background: #ffd24d; }
+.algo-btn.run.paused { background: #475569; color: #f1f5f9; }
+.algo-btn.ghost { background: rgba(255, 255, 255, .1); color: #e2e8f0; border: 1px solid rgba(255, 255, 255, .18); }
+.algo-btn.ghost:hover { background: rgba(255, 255, 255, .18); }
+.algo-live {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 130px;
+}
+.algo-live .px { font-size: 1.24rem; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; transition: color .25s; }
+.algo-live .px.up { color: #4ade80; }
+.algo-live .px.down { color: #f87171; }
+.algo-live .meta { font-size: .7rem; color: #94a3b8; }
+
+/* ===== 流水线 ===== */
+.pipe-card { padding: 14px 16px 10px; }
+.pipe {
+    display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 6px 2px 10px;
+}
+.pipe-step {
+    flex: 1 0 150px; min-width: 150px; position: relative;
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; transition: .35s cubic-bezier(.22, 1, .36, 1);
+}
+.pipe-step .st-idx {
+    position: absolute; top: -8px; left: 9px; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--border-strong); color: #fff; font-size: .7rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; transition: .35s;
+}
+.pipe-step .st-title { font-size: .82rem; font-weight: 700; margin: 4px 0 3px; }
+.pipe-step .st-detail { font-size: .7rem; color: var(--muted); line-height: 1.35; min-height: 30px; }
+.pipe-step .st-value {
+    font-size: .8rem; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums;
+    word-break: break-all;
+}
+/* 状态配色 */
+.pipe-step.pass { border-color: var(--buy); background: var(--buy-bg); box-shadow: 0 0 0 1px rgba(22, 163, 74, .18); }
+.pipe-step.pass .st-idx { background: var(--buy); }
+.pipe-step.pass .st-value { color: var(--buy); }
+.pipe-step.fail { border-color: var(--sell); background: var(--sell-bg); }
+.pipe-step.fail .st-idx { background: var(--sell); }
+.pipe-step.fail .st-value { color: var(--sell); }
+.pipe-step.idle { border-color: var(--border); background: var(--panel-alt); }
+.pipe-step.idle .st-value { color: var(--muted); }
+.pipe-step.skip { border-style: dashed; opacity: .62; }
+.pipe-step.skip .st-idx { background: var(--border-strong); }
+/* 激活脉冲（动画依次点亮时） */
+.pipe-step.active {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 22px rgba(37, 99, 235, .28);
+    border-color: var(--primary);
+}
+.pipe-step.active::after {
+    content: ''; position: absolute; inset: -1px; border-radius: 8px; pointer-events: none;
+    border: 2px solid rgba(37, 99, 235, .55); animation: algoPulse 1s ease-out;
+}
+@keyframes algoPulse {
+    0%   { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.045); }
+}
+/* 连接轨道 + 流动粒子 */
+.pipe-link {
+    flex: 0 0 34px; min-width: 34px; position: relative; align-self: center; height: 3px;
+    background: linear-gradient(90deg, var(--border-strong), var(--border-strong));
+    border-radius: 2px; overflow: hidden; margin: 0 -3px;
+}
+.pipe-link .flow {
+    position: absolute; top: 0; left: -34%; width: 34%; height: 100%;
+    background: linear-gradient(90deg, transparent, var(--primary), transparent);
+    border-radius: 2px; opacity: 0;
+}
+.pipe-link.on .flow { opacity: 1; animation: algoFlow 1.15s linear infinite; }
+@keyframes algoFlow {
+    0%   { left: -34%; }
+    100% { left: 100%; }
+}
+/* 分支标签（买/卖） */
+.st-branch {
+    position: absolute; bottom: -9px; right: 8px; font-size: .66rem; font-weight: 700;
+    border-radius: 999px; padding: 0 7px; color: #fff; line-height: 15px;
+}
+.st-branch.buy { background: var(--buy); }
+.st-branch.sell { background: var(--sell); }
+
+/* 结论条 */
+.algo-verdict {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border-radius: var(--radius); padding: 10px 16px; margin-bottom: 12px;
+    border: 1px solid var(--border); background: var(--panel); box-shadow: var(--shadow);
+}
+.algo-verdict .big { font-size: 1.1rem; font-weight: 800; display: flex; align-items: center; gap: 6px; }
+.algo-verdict .big.buy { color: var(--buy); }
+.algo-verdict .big.sell { color: var(--sell); }
+.algo-verdict .big.flat { color: var(--muted); }
+.algo-verdict .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.tag-chip {
+    font-size: .72rem; border-radius: 999px; padding: 2px 10px;
+    border: 1px solid var(--border-strong); color: var(--muted); background: var(--panel-alt);
+}
+.tag-chip.on { border-color: var(--buy); color: var(--buy); background: var(--buy-bg); }
+.tag-chip.off { opacity: .6; }
+.tag-chip.warn { border-color: var(--sell); color: var(--sell); background: var(--sell-bg); }
+
+/* 图表 */
+.chart-card { padding: 10px 12px; }
+#algo-chart { width: 100%; height: 720px; }
+.chart-fade { animation: algoFade .55s ease-out; }
+@keyframes algoFade { from { opacity: .35; } to { opacity: 1; } }
+.algo-note { font-size: .72rem; color: var(--muted); margin-top: 6px; }
+.sig-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.sig-pill {
+    font-size: .72rem; border-radius: 5px; padding: 1px 7px; font-variant-numeric: tabular-nums;
+    border: 1px solid var(--border); background: var(--panel-alt);
+}
+.sig-pill.buy { color: var(--buy); border-color: var(--buy-border); background: var(--buy-bg); }
+.sig-pill.sell { color: var(--sell); border-color: var(--sell-border); background: var(--sell-bg); }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="wrap">
+
+    <!-- ===== 控制台 ===== -->
+    <div class="algo-head">
+        <div class="brand-t">
+            🧠 {{ brand|default('算法可视化') }}
+            <span class="sub">{{ market_label|default('') }} · 真实行情驱动 · 与实盘引擎同口径</span>
+        </div>
+        <label class="algo-field"><span>标的</span>
+            <input id="f-symbol" list="sym-datalist" value="{{ default_symbol }}" placeholder="如 NVDA 或 NVDA/USDT:USDT" autocomplete="off">
+            <datalist id="sym-datalist">
+                {% for s in symbols %}<option value="{{ s }}">{{ names.get(s.split('/')[0], s.split('/')[0]) }}</option>{% endfor %}
+            </datalist>
+        </label>
+        <label class="algo-field"><span>策略</span>
+            <select id="f-strategy">
+                {% for s in strategy_options %}<option value="{{ s }}" {% if s == default_strategy %}selected{% endif %}>{{ s }}</option>{% endfor %}
+            </select>
+        </label>
+        <label class="algo-field"><span>周期</span>
+            <select id="f-timeframe">
+                {% for label, value in timeframe_options.items() %}<option value="{{ value }}" {% if value == '1h' %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+        </label>
+        <label class="algo-field"><span>网络</span>
+            <select id="f-network">
+                <option value="mainnet" selected>主网（真实行情）</option>
+                <option value="testnet">测试网</option>
+            </select>
+        </label>
+        <label class="algo-field"><span>刷新间隔</span>
+            <select id="f-interval">
+                <option value="10">10 秒</option>
+                <option value="20" selected>20 秒</option>
+                <option value="60">60 秒</option>
+                <option value="0">手动</option>
+            </select>
+        </label>
+        <button class="algo-btn ghost" onclick="algoReload()">↻ 立即计算</button>
+        <button class="algo-btn run" id="btn-run" onclick="algoToggle()">⏸ 暂停轮询</button>
+        <div class="algo-live">
+            <span class="px" id="live-px">—</span>
+            <span class="meta" id="live-meta">等待计算…</span>
+        </div>
+    </div>
+
+    <!-- ===== 结论条 ===== -->
+    <div class="algo-verdict">
+        <div class="big flat" id="vd-signal">—</div>
+        <div style="font-size:.8rem;color:var(--muted)" id="vd-sub"></div>
+        <div class="tags" id="vd-tags"></div>
+    </div>
+
+    <!-- ===== 算法流水线 ===== -->
+    <div class="card pipe-card">
+        <h2 style="font-size:1rem">⚙️ 策略计算流水线
+            <span style="font-size:.76rem;color:var(--muted);font-weight:400">真实K线 · 逐步骤实时复现</span>
+        </h2>
+        <div class="pipe" id="pipe">
+            <div class="empty">正在拉取真实行情并计算…</div>
+        </div>
+        <p class="algo-note" id="pipe-note">信号口径与实盘引擎 composite_trader 严格一致：无前视（背离在 pivot 确认根标记），最后一根为已收盘K线。</p>
+    </div>
+
+    <!-- ===== 实时图表 ===== -->
+    <div class="card chart-card">
+        <h2 style="font-size:1rem">📊 实时K线 · 量能 · MACD
+            <span style="font-size:.76rem;color:var(--muted);font-weight:400" id="chart-range"></span>
+        </h2>
+        <div id="algo-chart"></div>
+        <div class="sig-list" id="sig-list"></div>
+        <p class="algo-note">▲/▼ = 该策略在同一K线上的历史买卖点；◇ = 背离确认点（顶/底）；虚线为放量阈值。窗口显示最近 150 根已收盘K线。</p>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var API_BASE = {{ api_base | tojson }};
+var NAMES = {{ names | tojson }};
+var DEFAULT_STRATEGY = {{ default_strategy | tojson }};
+var CHART_CFG = {responsive: true, displaylogo: false, scrollZoom: true,
+                 modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d']};
+var timer = null, running = true, lastData = null, lastPrice = null, pipeTimers = [];
+
+/* ---------- 工具 ---------- */
+function el(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; }); }
+function fmtTime(ms) {
+    var d = new Date(ms);
+    return d.getMonth() + 1 + '/' + d.getDate() + ' ' +
+           ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+function fmtPx(v) {
+    if (v == null || isNaN(v)) return '—';
+    var a = Math.abs(v);
+    var nd = a >= 1000 ? 2 : (a >= 1 ? 4 : (a >= 0.01 ? 6 : 8));
+    return Number(v).toFixed(nd);
+}
+
+/* ---------- 流水线渲染 + 依次点亮动画 ---------- */
+function renderPipe(steps) {
+    pipeTimers.forEach(clearTimeout); pipeTimers = [];
+    var html = '';
+    steps.forEach(function (s, i) {
+        if (i > 0) html += '<div class="pipe-link" data-link="' + i + '"><span class="flow"></span></div>';
+        var cls = 'pipe-step ' + (s.state || 'idle');
+        var branch = s.branch ? '<span class="st-branch ' + s.branch + '">' + (s.branch === 'buy' ? '买' : '卖') + '</span>' : '';
+        html += '<div class="' + cls + '" data-step="' + i + '">'
+              + '<span class="st-idx">' + (i + 1) + '</span>'
+              + '<div class="st-title">' + esc(s.title) + '</div>'
+              + '<div class="st-detail">' + esc(s.detail) + '</div>'
+              + '<div class="st-value">' + esc(s.value) + '</div>'
+              + branch + '</div>';
+    });
+    el('pipe').innerHTML = html;
+    // 依次点亮：模拟数据在流水线中流动
+    var cards = el('pipe').querySelectorAll('.pipe-step');
+    var links = el('pipe').querySelectorAll('.pipe-link');
+    cards.forEach(function (c) {
+        c.style.opacity = '0'; c.style.transform = 'translateX(-8px)';
+    });
+    cards.forEach(function (c, i) {
+        pipeTimers.push(setTimeout(function () {
+            c.style.transition = 'opacity .3s, transform .3s, box-shadow .35s, border-color .35s';
+            c.style.opacity = '1'; c.style.transform = 'none'; c.classList.add('active');
+            pipeTimers.push(setTimeout(function () { c.classList.remove('active'); }, 900));
+            if (links[i]) {
+                links[i].classList.add('on');
+                pipeTimers.push(setTimeout(function () { links[i].classList.remove('on'); }, 700));
+            }
+        }, 130 * i));
+    });
+}
+
+/* ---------- 结论条 ---------- */
+function renderVerdict(d) {
+    var f = d.final || {}, p = d.params || {};
+    var cls = f.signal > 0 ? 'buy' : (f.signal < 0 ? 'sell' : 'flat');
+    var txt = f.signal > 0 ? '▲ 买入信号' : (f.signal < 0 ? '▼ 卖出信号' : '— 观望（无信号）');
+    var box = el('vd-signal');
+    box.className = 'big ' + cls;
+    box.textContent = txt;
+    el('vd-sub').textContent = d.symbol + ' · ' + d.strategy + ' · ' + d.timeframe +
+        ' · 最新已收盘 ' + fmtPx(p.close) + ' @ ' + fmtTime(d.last_close_time);
+    var tags = [
+        ['金叉/死叉', f.buy_raw || f.sell_raw, f.buy_raw ? '触发(买)' : (f.sell_raw ? '触发(卖)' : '无')],
+        ['量能过滤', !!p.use_vol, p.use_vol ? (f.buy_pass || f.sell_pass ? '通过' : '未通过') : '未启用'],
+        ['均线过滤', !!p.use_ma, p.use_ma ? '启用' : '未启用'],
+        ['背离', !!p.use_div, p.use_div ? '启用' : '未启用'],
+        ['ATR' + (p.atr_period || 14), true, '止损 ' + (p.sl_pct * 100).toFixed(2) + '% / 止盈 ' + (p.tp_pct * 100).toFixed(2) + '%']
+    ];
+    el('vd-tags').innerHTML = tags.map(function (t) {
+        var on = t[1] ? 'on' : 'off';
+        if (t[0] === '量能过滤' && p.use_vol && !f.buy_pass && !f.sell_pass) on = 'warn';
+        return '<span class="tag-chip ' + on + '">' + esc(t[0]) + '：' + esc(t[2]) + '</span>';
+    }).join('');
+}
+
+/* ---------- 图表 ---------- */
+function renderChart(d) {
+    var t = d.time.map(function (ms) { return new Date(ms); });
+    var c = d.candles;
+    var traces = [];
+
+    traces.push({
+        x: t, open: c.open, high: c.high, low: c.low, close: c.close,
+        type: 'candlestick', name: d.symbol, xaxis: 'x', yaxis: 'y',
+        increasing: {line: {color: '#16a34a', width: 1}, fillcolor: '#16a34a'},
+        decreasing: {line: {color: '#dc2626', width: 1}, fillcolor: '#dc2626'},
+        hoverlabel: {namelength: 0}
+    });
+    if (d.sma20) {
+        traces.push({x: t, y: d.sma20, type: 'scatter', mode: 'lines', name: 'SMA20',
+            line: {color: '#f0b90b', width: 1.6}, xaxis: 'x', yaxis: 'y', hoverinfo: 'skip'});
+    }
+    if (d.buy_marks && d.buy_marks.length) {
+        traces.push({x: d.buy_marks.map(function (m) { return new Date(m.t); }),
+            y: d.buy_marks.map(function (m) { return m.p; }),
+            type: 'scatter', mode: 'markers', name: '买点',
+            marker: {symbol: 'triangle-up', size: 11, color: '#16a34a',
+                     line: {color: '#fff', width: 1}},
+            text: d.buy_marks.map(function (m) { return '买 ' + fmtTime(m.t); }),
+            xaxis: 'x', yaxis: 'y', hoverinfo: 'text'});
+    }
+    if (d.sell_marks && d.sell_marks.length) {
+        traces.push({x: d.sell_marks.map(function (m) { return new Date(m.t); }),
+            y: d.sell_marks.map(function (m) { return m.p; }),
+            type: 'scatter', mode: 'markers', name: '卖点',
+            marker: {symbol: 'triangle-down', size: 11, color: '#dc2626',
+                     line: {color: '#fff', width: 1}},
+            text: d.sell_marks.map(function (m) { return '卖 ' + fmtTime(m.t); }),
+            xaxis: 'x', yaxis: 'y', hoverinfo: 'text'});
+    }
+    if (d.div_marks && d.div_marks.length) {
+        traces.push({x: d.div_marks.map(function (m) { return new Date(m.t); }),
+            y: d.div_marks.map(function (m) { return m.p; }),
+            type: 'scatter', mode: 'markers', name: '背离确认',
+            marker: {symbol: 'diamond-open', size: 10, color: '#2563eb',
+                     line: {color: '#2563eb', width: 1.6}},
+            text: d.div_marks.map(function (m) { return (m.kind === 'bot' ? '底背离' : '顶背离') + ' ' + fmtTime(m.t); }),
+            xaxis: 'x', yaxis: 'y', hoverinfo: 'text'});
+    }
+
+    /* 量能（第2行） */
+    var volColors = c.close.map(function (cl, i) {
+        return (i > 0 && cl >= c.open[i]) ? 'rgba(22,163,74,.55)' : 'rgba(220,38,38,.55)';
+    });
+    traces.push({x: t, y: d.volume, type: 'bar', name: '成交量',
+        marker: {color: volColors}, xaxis: 'x2', yaxis: 'y2', hoverinfo: 'y'});
+    if (d.vol_ma20) {
+        traces.push({x: t, y: d.vol_ma20, type: 'scatter', mode: 'lines', name: '量MA20',
+            line: {color: '#64748b', width: 1.4}, xaxis: 'x2', yaxis: 'y2', hoverinfo: 'skip'});
+    }
+    if (d.vol_threshold) {
+        traces.push({x: t, y: d.vol_threshold, type: 'scatter', mode: 'lines', name: '放量阈值',
+            line: {color: '#f0b90b', width: 1.2, dash: 'dot'}, xaxis: 'x2', yaxis: 'y2', hoverinfo: 'skip'});
+    }
+
+    /* MACD（第3行） */
+    var m = d.macd || {};
+    var histColors = (m.hist || []).map(function (v) {
+        return v == null ? '#94a3b8' : (v >= 0 ? 'rgba(22,163,74,.65)' : 'rgba(220,38,38,.65)');
+    });
+    traces.push({x: t, y: m.hist, type: 'bar', name: 'MACD柱',
+        marker: {color: histColors}, xaxis: 'x3', yaxis: 'y3', hoverinfo: 'y'});
+    traces.push({x: t, y: m.dif, type: 'scatter', mode: 'lines', name: 'DIF',
+        line: {color: '#2563eb', width: 1.6}, xaxis: 'x3', yaxis: 'y3'});
+    traces.push({x: t, y: m.dea, type: 'scatter', mode: 'lines', name: 'DEA',
+        line: {color: '#f97316', width: 1.6}, xaxis: 'x3', yaxis: 'y3'});
+
+    var layout = {
+        margin: {l: 58, r: 18, t: 8, b: 34},
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: '#fff',
+        font: {size: 11, color: '#1e293b'},
+        showlegend: false,
+        hovermode: 'x unified',
+        hoverlabel: {bgcolor: 'rgba(30,30,30,.92)', font: {color: '#fff', size: 11}},
+        dragmode: 'pan',
+        grid: {rows: 3, columns: 1, subplots: [['xy'], ['xy2'], ['xy3']], roworder: 'top to bottom'},
+        xaxis:  {gridcolor: '#eef1f5', rangeslider: {visible: false}, showticklabels: false,
+                 anchor: 'y',  domain: [0, 1]},
+        xaxis2: {gridcolor: '#eef1f5', rangeslider: {visible: false}, showticklabels: false,
+                 anchor: 'y2', matches: 'x'},
+        xaxis3: {gridcolor: '#eef1f5', anchor: 'y3', matches: 'x', tickformat: '%m/%d %H:%M'},
+        yaxis:  {gridcolor: '#eef1f5', side: 'right', tickformat: '.4~g', domain: [0.42, 1.0], title: {text: '价格', font: {size: 10}}},
+        yaxis2: {gridcolor: '#eef1f5', side: 'right', domain: [0.24, 0.38], title: {text: '量', font: {size: 10}}},
+        yaxis3: {gridcolor: '#eef1f5', side: 'right', domain: [0, 0.20], title: {text: 'MACD', font: {size: 10}}},
+        shapes: [],
+        annotations: []
+    };
+    // 最新已收盘K线的垂直标记线
+    if (t.length) {
+        layout.shapes.push({type: 'line', x0: t[t.length - 1], x1: t[t.length - 1], y0: 0, y1: 1,
+            xref: 'x', yref: 'paper', line: {color: 'rgba(37,99,235,.45)', width: 1, dash: 'dot'}});
+        layout.annotations.push({x: t[t.length - 1], y: 1, xref: 'x', yref: 'paper', showarrow: false,
+            text: '最新收盘', font: {size: 9, color: '#2563eb'}, yshift: 8});
+    }
+
+    Plotly.react('algo-chart', traces, layout, CHART_CFG);
+    el('algo-chart').classList.remove('chart-fade');
+    void el('algo-chart').offsetWidth;
+    el('algo-chart').classList.add('chart-fade');
+
+    var first = t.length ? t[0] : null, last = t.length ? t[t.length - 1] : null;
+    el('chart-range').textContent = first ? ('窗口 ' + fmtTime(first.getTime()) + ' ~ ' + fmtTime(last.getTime()) +
+        '（' + t.length + ' 根 ' + d.timeframe + '）') : '';
+}
+
+/* ---------- 历史信号列表 ---------- */
+function renderSigList(d) {
+    var list = (d.recent_signals || []).slice().reverse();
+    if (!list.length) { el('sig-list').innerHTML = ''; return; }
+    el('sig-list').innerHTML = '<span style="font-size:.72rem;color:var(--muted);align-self:center">最近信号：</span>' +
+        list.map(function (s) {
+            return '<span class="sig-pill ' + (s.s > 0 ? 'buy' : 'sell') + '">' +
+                (s.s > 0 ? '▲' : '▼') + ' ' + fmtTime(s.t) + ' @ ' + fmtPx(s.p) + '</span>';
+        }).join('');
+}
+
+/* ---------- 实时价闪烁 ---------- */
+function renderLive(d) {
+    var px = (d.live_price != null ? d.live_price : (d.params || {}).close);
+    var box = el('live-px');
+    var diff = (lastPrice != null && px != null) ? px - lastPrice : 0;
+    box.textContent = px != null ? fmtPx(px) : '—';
+    box.classList.remove('up', 'down');
+    if (diff > 0) box.classList.add('up');
+    else if (diff < 0) box.classList.add('down');
+    lastPrice = px;
+    el('live-meta').textContent = (d.name ? d.name + ' · ' : '') + '更新 ' + (d.updated_at || '—') +
+        ' · 收盘 ' + fmtPx((d.params || {}).close);
+}
+
+/* ---------- 主流程 ---------- */
+function algoParams() {
+    return {
+        symbol: el('f-symbol').value.trim(),
+        strategy: el('f-strategy').value,
+        timeframe: el('f-timeframe').value,
+        network: el('f-network').value
+    };
+}
+
+function algoFetch() {
+    var p = algoParams();
+    if (!p.symbol) { alert('请输入标的'); return; }
+    var q = API_BASE + '/api/flow?symbol=' + encodeURIComponent(p.symbol) +
+            '&strategy=' + encodeURIComponent(p.strategy) +
+            '&timeframe=' + encodeURIComponent(p.timeframe) +
+            '&network=' + encodeURIComponent(p.network);
+    fetch(q).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.error) {
+            el('pipe').innerHTML = '<div class="empty">⚠ ' + esc(d.error) + '</div>';
+            el('live-meta').textContent = '拉取失败';
+            return;
+        }
+        lastData = d;
+        renderPipe(d.steps || []);
+        renderVerdict(d);
+        renderChart(d);
+        renderSigList(d);
+        renderLive(d);
+    }).catch(function (e) {
+        el('pipe').innerHTML = '<div class="empty">⚠ 请求失败：' + esc(e) + '</div>';
+    });
+}
+
+function algoReload() { lastPrice = lastPrice; algoFetch(); }
+
+function schedule() {
+    if (timer) { clearInterval(timer); timer = null; }
+    var sec = parseInt(el('f-interval').value, 10);
+    if (running && sec > 0) timer = setInterval(algoFetch, sec * 1000);
+}
+
+function algoToggle() {
+    running = !running;
+    var b = el('btn-run');
+    b.textContent = running ? '⏸ 暂停轮询' : '▶ 开始轮询';
+    b.classList.toggle('paused', !running);
+    schedule();
+}
+
+['f-symbol', 'f-strategy', 'f-timeframe', 'f-network'].forEach(function (id) {
+    el(id).addEventListener('change', function () { lastPrice = null; algoFetch(); });
+});
+el('f-interval').addEventListener('change', schedule);
+
+if (DEFAULT_STRATEGY) {
+    var sel = el('f-strategy');
+    for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === DEFAULT_STRATEGY) { sel.selectedIndex = i; break; }
+    }
+}
+algoFetch();
+schedule();
+</script>
+{% endblock %}

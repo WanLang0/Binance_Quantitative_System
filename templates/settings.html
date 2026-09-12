@@ -61,6 +61,26 @@
         {% endif %}
     </div>
 
+    <!-- 顶栏页面显隐 -->
+    <div class="card">
+        <h2>🧭 顶栏页面显示</h2>
+        <form method="POST" action="/settings">
+            <input type="hidden" name="action" value="save_nav">
+            <div class="form-grid">
+                <div class="field" style="grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px 18px">
+                    {% for key, path, label in nav_pages %}
+                    <label style="display:flex;align-items:center;gap:6px;font-size:.92rem">
+                        <input type="checkbox" name="nav_page" value="{{ key }}" {% if key not in nav_hidden %}checked{% endif %} style="width:auto">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+                <button type="submit" class="btn btn-primary">保存页面显示配置</button>
+            </div>
+        </form>
+        <p class="info-note">勾选的页面显示在顶部导航栏，取消勾选即隐藏（页面仍可通过网址直接访问）。「设置」页始终显示，避免隐藏后无法恢复。配置按账号保存，重启不丢失。</p>
+    </div>
+
     <!-- 修改密码 -->
     <div class="card">
         <h2>🔒 修改登录密码</h2>

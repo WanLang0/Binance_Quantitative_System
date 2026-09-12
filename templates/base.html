@@ -12,13 +12,16 @@
     <div class="topbar-inner">
         <a class="topbar-brand" href="/"><span class="dot">●</span> 币安量化系统</a>
         <div class="topbar-nav">
-            <a href="/" class="{{ 'active' if active_page == 'index' }}">回测系统</a>
-            <a href="/demo" class="{{ 'active' if active_page == 'demo' }}">模拟现货</a>
-            <a href="/auto" class="{{ 'active' if active_page == 'auto' }}">自动现货</a>
-            <a href="/futures" class="{{ 'active' if active_page == 'futures' }}">自动合约</a>
-            <a href="/composite" class="{{ 'active' if active_page == 'composite' }}">美股综合量化</a>
-            <a href="/crypto-composite" class="{{ 'active' if active_page == 'crypto_composite' }}">虚拟币综合量化</a>
-            <a href="/strategies" class="{{ 'active' if active_page == 'strategies' }}">最优策略</a>
+            {% set hidden = nav_hidden|default([]) %}
+            {% if 'index' not in hidden %}<a href="/" class="{{ 'active' if active_page == 'index' }}">回测系统</a>{% endif %}
+            {% if 'demo' not in hidden %}<a href="/demo" class="{{ 'active' if active_page == 'demo' }}">模拟现货</a>{% endif %}
+            {% if 'auto' not in hidden %}<a href="/auto" class="{{ 'active' if active_page == 'auto' }}">自动现货</a>{% endif %}
+            {% if 'futures' not in hidden %}<a href="/futures" class="{{ 'active' if active_page == 'futures' }}">自动合约</a>{% endif %}
+            {% if 'composite' not in hidden %}<a href="/composite" class="{{ 'active' if active_page == 'composite' }}">美股综合量化</a>{% endif %}
+            {% if 'crypto_composite' not in hidden %}<a href="/crypto-composite" class="{{ 'active' if active_page == 'crypto_composite' }}">虚拟币综合量化</a>{% endif %}
+            {% if 'composite_algo' not in hidden %}<a href="/composite/algorithm" class="{{ 'active' if active_page == 'composite_algo' }}">美股算法可视化</a>{% endif %}
+            {% if 'crypto_composite_algo' not in hidden %}<a href="/crypto-composite/algorithm" class="{{ 'active' if active_page == 'crypto_composite_algo' }}">虚拟币算法可视化</a>{% endif %}
+            {% if 'strategies' not in hidden %}<a href="/strategies" class="{{ 'active' if active_page == 'strategies' }}">最优策略</a>{% endif %}
             <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">设置</a>
         </div>
         <div class="topbar-user">

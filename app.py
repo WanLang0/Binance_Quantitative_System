@@ -28,10 +28,27 @@ app = Flask(__name__)
 
 from changelog import APP_VERSION, CHANGELOG
 
+# 顶栏页面清单（key, 路径, 名称）：设置页可勾选启用/隐藏；「设置」本身不提供隐藏，防止锁死自己
+NAV_PAGES = [
+    ('index', '/', '回测系统'),
+    ('demo', '/demo', '模拟现货'),
+    ('auto', '/auto', '自动现货'),
+    ('futures', '/futures', '自动合约'),
+    ('composite', '/composite', '美股综合量化'),
+    ('crypto_composite', '/crypto-composite', '虚拟币综合量化'),
+    ('composite_algo', '/composite/algorithm', '美股算法可视化'),
+    ('crypto_composite_algo', '/crypto-composite/algorithm', '虚拟币算法可视化'),
+    ('strategies', '/strategies', '最优策略'),
+]
+NAV_KEYS = {k for k, _, _ in NAV_PAGES}
+
+
 @app.context_processor
 def _inject_version():
-    """全模板可用 APP_VERSION（顶栏显示）"""
-    return {'APP_VERSION': APP_VERSION}
+    """全模板可用 APP_VERSION（顶栏显示）+ nav_hidden（顶栏页面显隐，按用户存库）"""
+    user = session.get('user')
+    hidden = _auth.get_nav_hidden(user, NAV_KEYS) if user else []
+    return {'APP_VERSION': APP_VERSION, 'nav_hidden': set(hidden)}
 
 
 def _load_secret_key():
@@ -78,7 +95,9 @@ def _require_login():
     # AJAX 接口未登录返回 401 JSON（避免前端拿到登录页 HTML 解析报错刷屏）
     if request.path.startswith('/futures/api/') or request.path.startswith('/demo/api/') \
             or request.path.startswith('/auto/api/') or request.path.startswith('/composite/api/') \
-            or request.path.startswith('/crypto-composite/api/'):
+            or request.path.startswith('/crypto-composite/api/') \
+            or request.path.startswith('/composite/algorithm/api/') \
+            or request.path.startswith('/crypto-composite/algorithm/api/'):
         from flask import jsonify
         return jsonify({'error': 'unauthorized'}), 401
     return redirect(url_for('login'))
@@ -1386,6 +1405,12 @@ def settings():
                 enabled=request.form.get("daily_report_enabled") == "on",
                 report_time=request.form.get("daily_report_time", "").strip() or None)
             error, message = (None, msg) if ok else (msg, None)
+        elif action == "save_nav":
+            # 勾选=显示，未勾选=隐藏（隐藏列表存库，顶栏按用户过滤）
+            checked = {k.strip() for k in request.form.getlist("nav_page") if k.strip()}
+            hidden = [k for k in NAV_KEYS if k not in checked]
+            ok, msg = _auth.save_nav_hidden(session.get('user', ''), hidden)
+            error, message = (None, msg) if ok else (msg, None)
         elif action == "test_daily_report":
             ok, msg = _daily_report.run_daily_report(force=True)
             error, message = (None, msg) if ok else (msg, None)
@@ -1394,7 +1419,9 @@ def settings():
     error = request.args.get('_error') or None
     message = request.args.get('_message') or None
     alert_email = (_auth.get_email_config(session.get('user', '')) or {}).get('email')
+    nav_hidden = _auth.get_nav_hidden(session.get('user', ''), NAV_KEYS)
     return render_template("settings.html", error=error, message=message, alert_email=alert_email,
+                           nav_pages=NAV_PAGES, nav_hidden=set(nav_hidden),
                            daily_report=_daily_report.get_config(), changelog=CHANGELOG)
 
 
@@ -1802,26 +1829,45 @@ def _load_macd_matrix():
         return None
 
 
-def _load_us_macd_matrix():
-    """美股代币 × 三种MACD组合策略 全配置回测矩阵（最优策略页表格展示）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'us_macd_div_summary_2024_2026.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
 def _load_ndx_pool():
-    """纳指100成分股（96只）与 2024年初权重前30 × 三种MACD参数 × 30槽资金池组合回测（最优策略页表格展示）"""
+    """币安合约美股93只(90只有效) × 三种MACD参数 × 30槽资金池 · 只做多回测（最优策略页表格展示）
+    数据源: scripts/results/us93_longonly_summary_1h.json, 转换为 groups/strategies/configs 展示结构"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'ndx_pool_summary_1h.json')
+                        'scripts', 'results', 'us93_longonly_summary_1h.json')
     try:
         with open(path, encoding='utf-8') as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:
         return None
+    by_param = {}
+    for r in raw.get('results', []):
+        by_param.setdefault(r['params'], []).append(r)
+    strategies = []
+    for pname in ('12/16/7', '12/16/5', '12/26/9'):
+        rows = by_param.get(pname) or []
+        if not rows:
+            continue
+        strategies.append({
+            'name': f'MACD {pname} · 量能1.2x(vol20) · ATR14止1.5/盈2.0截断[1%,8%] · 收盘确认',
+            'configs': [{'lev': r['lev'], 'mode': '收盘确认', 'ret': r['ret'], 'mdd': r['mdd'],
+                         'trades': r['trades'], 'win': r['win'], 'peak': r.get('peak', 0),
+                         'skipped': r.get('skipped', 0), 'tp': r.get('tp', 0), 'sl': r.get('sl', 0),
+                         'rev': r.get('rev', 0), 'liq': r.get('liq', 0),
+                         'yearly': r.get('yearly', {})} for r in rows],
+        })
+    raw['groups'] = [{
+        'name': '币安合约美股93只（有效90只）· 只做多 · 30槽资金池 · 2024-01~2026-09',
+        'note': '金叉+量能1.2x开多、死叉平多不反手；总资金1万分30槽、每槽独立复利、先到先得、池满等待；'
+                '90/93只有效（SKHYNIX/CXMT/UNITREE 无Yahoo 1h数据被剔除）；11只因Yahoo 1h 730天上限或晚上市自2024-09后纳入。',
+        'strategies': strategies,
+    }]
+    raw['meta']['conclusion'] = ('只做多×收盘确认在币安美股池(90只)表现稳健：1x 全参数组合MDD仅 -6.1~-6.7%、'
+                                 '总收益 +522%~+614%、三个年度全部为正；2x MDD 放大到 -14%~-18%；'
+                                 '4x 收益弹性极大(+10.3万%~+43.4万%)但MDD -37%~-52%、各有2次爆仓，需严格控仓。'
+                                 '信号最疏的12/26/9池满跳过最少(120次)且4x总收益最高；12/16/5交易最密(7621笔)但4x回撤最深(-51.7%)。'
+                                 '注意：池内含TQQQ/SOXL/NVDL/TSLL等杠杆ETF与高波动标的，收益与波动均被放大；'
+                                 '回测未计资金费率与滑点，手续费按名义值0.05%/边（随杠杆放大）。')
+    return raw
 
 
 def _load_recommended():
@@ -1990,7 +2036,6 @@ def strategies_summary():
                            sort=sort, order=order, cat=cat, sector=sector,
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
-                           us_macd_matrix=_load_us_macd_matrix(),
                            ndx_pool=_load_ndx_pool(),
                            tp_close_matrix=_load_tp_close_matrix(),
                            macd_vol_monthly=_load_macd_vol_monthly(),
@@ -2355,6 +2400,11 @@ _COMPOSITE_CTX = {
             'nav_key': 'composite', 'api_base': '/composite',
             'page_title': '美股综合量化交易系统', 'brand': '🧩 美股综合量化',
             'all_btn_name': '全部美股', 'task_name_default': '美股七姐妹综合',
+            # 纳指前100股票默认策略：MACD 12/16/7 + 量能1.2x，ATR14动态止盈止损默认开启、
+            # 止损1.5×ATR/止盈2.0×ATR（截断[1%,8%]），止盈默认收盘确认（可取消勾选切盘中确认）
+            'default_strategy': 'macd 12/16/7+量能',
+            'atr_default_on': True,
+            'atr_tp_close_default': True,
             'presets': [['NVDA/USDT:USDT', '英伟达'], ['QQQ/USDT:USDT', '纳指100'], ['TQQQ/USDT:USDT', '纳指3倍做多'],
                         ['MU/USDT:USDT', '美光'], ['AAPL/USDT:USDT', '苹果'], ['MSFT/USDT:USDT', '微软'],
                         ['GOOGL/USDT:USDT', '谷歌'], ['AMZN/USDT:USDT', '亚马逊'], ['META/USDT:USDT', 'Meta'],
@@ -2661,9 +2711,29 @@ def _composite_status_api(market='us'):
                     })
                 cur = {**rec, 'running': False, 'symbols': syms,
                        'log': _composite_log_lines(tid, market) or ['（该任务暂无日志）']}
+                # 已停止任务：从该任务状态快照回填 n槽资金池（优先匹配的复利池状态）供前端展示
+                cur['slots'] = _composite_slots_from_state(market, tid)
                 # 已停止任务：从资金曲线历史文件回填资金摘要（无历史时回退初始资金）
                 cur.update(_equity_summary_from_history(market, tid, total))
     return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+def _composite_slots_from_state(market, task_id):
+    """从任务状态快照文件读取 n槽资金池（优先匹配复利池状态）；无文件/无槽返回 []"""
+    from composite_trader import state_file
+    try:
+        path = state_file(market, task_id)
+        if not path or not os.path.exists(path):
+            return []
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        slots = data.get('slots')
+        if not isinstance(slots, list):
+            return []
+        return [{'cash': float(x.get('cash') or 0.0), 'sym': x.get('sym')}
+                for x in slots if isinstance(x, dict)]
+    except Exception:
+        return []
 
 
 def _equity_summary_from_history(market, task_id, total_fund):
@@ -2753,6 +2823,267 @@ def _composite_export_api(market='us'):
         fname, mime = f'{pfx}log_{tid}.log', 'text/plain'
     return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
                      download_name=fname, mimetype=mime)
+
+
+# ==================== 算法可视化：策略计算流程动态演示 ====================
+# 独立页面（美股 / 虚拟币各一个），用真实实时行情逐步复现信号计算流程：
+# 拉K线 → MACD → 金叉死叉 → 量能过滤 → 均线/背离共振 → ATR风控 → 最终信号。
+# 口径与实盘引擎 composite_trader._compute_signal 完全一致（复用 divergence_signals）。
+
+# 可视化可选策略：统一为 MACD 框架族（与两个综合量化页的默认策略一致）
+# 末尾 'MACD' = 纯 MACD 金叉死叉（无背离/均线/量能过滤），便于对照无过滤时的原始信号
+ALGO_STRATEGIES = ["macd 12/16/7+量能", "macd 12/16/5+量能", "macd 12/26/9+量能", "macd+量能",
+                   "macd+背离", "macd+背离+量能", "macd+背离+均线+量能", "MACD"]
+
+# 算法可视化页配置（us=美股 / crypto=虚拟币；同一模板复用）
+_ALGO_CTX = {
+    'us': {
+        'nav_key': 'composite_algo', 'api_base': '/composite/algorithm',
+        'page_title': '美股综合量化 · 算法可视化', 'brand': '🧠 美股算法可视化',
+        'market_label': '美股代币永续', 'default_symbol': 'NVDA/USDT:USDT',
+    },
+    'crypto': {
+        'nav_key': 'crypto_composite_algo', 'api_base': '/crypto-composite/algorithm',
+        'page_title': '虚拟币综合量化 · 算法可视化', 'brand': '🧠 虚拟币算法可视化',
+        'market_label': '主流币 USDT 永续', 'default_symbol': 'BTC/USDT',
+    },
+}
+
+# 公共行情交易器缓存（按网络）：未绑定 API 密钥时也能拉公开K线做演示
+_algo_market_traders = {}
+
+
+def _algo_market_trader(network):
+    """算法可视化的行情交易器：优先复用已绑定密钥的实例，否则用免密钥的公共实例（仅拉公开K线）"""
+    testnet = network != 'mainnet'
+    api_key = session.get("futures_api_key", DEFAULT_FUTURES_API_KEY)
+    api_secret = session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET)
+    if api_key and api_secret:
+        t = _get_futures_trader(api_key, api_secret,
+                                _to_int(session.get("futures_leverage"), FUTURES_LEVERAGE), testnet)
+        if t:
+            return t
+    t = _algo_market_traders.get(network)
+    if t is None:
+        t = FuturesTrader('', '', testnet=testnet, leverage=1)
+        _algo_market_traders[network] = t
+        threading.Thread(target=_prewarm_trader, args=(t,), daemon=True).start()
+    return t
+
+
+def _algo_flow_payload(market, symbol, strategy, timeframe='1h', network='mainnet', limit=240):
+    """拉真实已收盘K线，逐步复现该策略的信号计算流程（与实盘引擎口径一致）。
+
+    返回 (payload, None) 或 (None, 错误提示)。
+    """
+    import divergence_signals as dvg
+    trader = _algo_market_trader(network)
+    candles, err = trader.get_ohlcv(symbol, timeframe, limit=limit)
+    if err or not candles:
+        return None, err or f"{symbol} 无K线数据（请确认标的与所选网络是否匹配）"
+    df = pd.DataFrame(candles)
+    df['timestamp'] = pd.to_datetime(df['ts'], unit='ms')
+    df = df.set_index('timestamp')[['open', 'high', 'low', 'close', 'volume']]
+
+    key = dvg._normalize(strategy)
+    # 复用实盘同一份策略开关表；'MACD'（纯金叉死叉）不在表中 → 三个过滤全关
+    flags = dvg.DIVERGENCE_VARIANTS.get(key, (False, False, False))
+    use_div, use_ma, use_vol = flags
+    fast, slow, sig_p = dvg.VARIANT_MACD_PARAMS.get(key, (dvg.MACD_FAST, dvg.MACD_SLOW, dvg.MACD_SIGNAL))
+    vol_mult = dvg.VARIANT_VOL_MULT.get(key, dvg.VOL_MULT)
+    dfd, signals = dvg.build_variant_signals(df, use_div, use_ma, use_vol, (fast, slow, sig_p), vol_mult)
+
+    # ATR14 动态止盈止损（与实盘 _set_atr_tpsl 同口径：倍数×ATR/价格，截断[1%,8%]）
+    atr_period, atr_sl_mult, atr_tp_mult = 14, 1.5, 2.0
+    atr_series = TechnicalIndicators.calculate_atr(dfd, atr_period)
+    atr_last = float(atr_series.iloc[-1]) if len(atr_series) and atr_series.iloc[-1] == atr_series.iloc[-1] else 0.0
+
+    def _f(col, idx):
+        """取单元格浮点值；NaN/缺失返回 None"""
+        try:
+            v = dfd[col].iloc[idx]
+            return None if v != v else float(v)
+        except Exception:
+            return None
+
+    close_last = float(dfd['close'].iloc[-1])
+    if atr_last > 0 and close_last > 0:
+        sl_pct = max(0.01, min(0.08, atr_sl_mult * atr_last / close_last))
+        tp_pct = max(0.01, min(0.08, atr_tp_mult * atr_last / close_last))
+    else:
+        sl_pct = tp_pct = 0.05   # ATR 失效兜底（与实盘一致）
+
+    # 最新一根已收盘K线的逐步中间量
+    cur_macd, cur_dea = _f('MACD', -1), _f('MACD_signal', -1)
+    prv_macd, prv_dea = _f('MACD', -2), _f('MACD_signal', -2)
+    golden = cur_macd is not None and prv_macd is not None and cur_macd > cur_dea and prv_macd <= prv_dea
+    dead = cur_macd is not None and prv_macd is not None and cur_macd < cur_dea and prv_macd >= prv_dea
+    vol_last, vma_last = _f('volume', -1), _f('vol_ma20', -1)
+    vol_th = (vma_last * vol_mult) if vma_last else None
+    vol_ok = bool(vol_last and vol_th and vol_last > vol_th)
+    sma_last = _f('sma20', -1)
+    ma_ok_buy = bool(sma_last and close_last > sma_last)
+    ma_ok_sell = bool(sma_last and close_last < sma_last)
+    bot_div = bool(dfd['bot_div'].iloc[-1]) if 'bot_div' in dfd.columns else False
+    top_div = bool(dfd['top_div'].iloc[-1]) if 'top_div' in dfd.columns else False
+    final_sig = int(signals.iloc[-1])
+    buy_raw = golden or bot_div
+    sell_raw = dead or top_div
+    buy_pass = buy_raw and (ma_ok_buy or not use_ma) and (vol_ok or not use_vol)
+    sell_pass = sell_raw and (ma_ok_sell or not use_ma) and (vol_ok or not use_vol)
+
+    steps = [
+        {'key': 'data', 'title': '① 拉取真实行情', 'detail': f'{symbol} · {timeframe} · 已收盘K线 {len(dfd)} 根',
+         'value': f'最新收盘 {close_last:.6f}', 'state': 'pass'},
+        {'key': 'macd', 'title': f'② MACD 指标', 'detail': f'快线 EMA{fast} / 慢线 EMA{slow} / 信号 DEA{sig_p}',
+         'value': f'DIF {cur_macd:+.6f} · DEA {cur_dea:+.6f} · 柱 {cur_macd - cur_dea:+.6f}',
+         'state': 'pass'},
+        {'key': 'cross', 'title': '③ 金叉 / 死叉', 'detail': 'DIF 上穿 DEA → 金叉；下穿 → 死叉',
+         'value': '金叉 ✓' if golden else ('死叉 ✓' if dead else '未交叉'),
+         'state': 'pass' if (golden or dead) else 'idle', 'branch': 'buy' if golden else ('sell' if dead else '')},
+        {'key': 'vol', 'title': '④ 量能过滤', 'detail': f'成交量 > MA20 × {vol_mult}x' + ('' if use_vol else '（本策略未启用）'),
+         'value': (f'{vol_last:,.0f} vs 阈值 {vol_th:,.0f}' if vol_last and vol_th else '—'),
+         'state': ('skip' if not use_vol else ('pass' if vol_ok else 'fail'))},
+        {'key': 'resonance', 'title': '⑤ 均线 / 背离共振',
+         'detail': (f'背离 PIVOT_ORDER={dvg.PIVOT_ORDER} 确认根标记；' if use_div else '本策略无背离；')
+                   + (f'收盘 {close_last:.6f} vs SMA20 {sma_last:.6f}' if (sma_last and use_ma) else
+                      ('本策略无均线过滤' if not use_ma else '均线数据不足')),
+         'value': ('底背离 ✓' if bot_div else ('顶背离 ✓' if top_div else '无背离')) if use_div else
+                  (('价在均线上方 ✓' if ma_ok_buy else '价在均线下方 ✓') if (sma_last and use_ma) else '—'),
+         'state': ('skip' if not (use_div or use_ma) else 'pass')},
+        {'key': 'atr', 'title': f'⑥ ATR{atr_period} 动态风控',
+         'detail': f'止损 {atr_sl_mult}×ATR / 止盈 {atr_tp_mult}×ATR，截断[1%,8%]',
+         'value': f'ATR {atr_last:.6f} → 止损 {sl_pct * 100:.2f}% / 止盈 {tp_pct * 100:.2f}%',
+         'state': 'pass' if atr_last > 0 else 'fail'},
+        {'key': 'signal', 'title': '⑦ 最终信号',
+         'detail': '买点开多 / 卖点平多（勾选做空则空仓开空）',
+         'value': '买入 ▲' if final_sig > 0 else ('卖出 ▼' if final_sig < 0 else '观望 —'),
+         'state': 'pass' if final_sig != 0 else 'idle',
+         'branch': 'buy' if final_sig > 0 else ('sell' if final_sig < 0 else '')},
+    ]
+
+    # 图表窗口：仅返回最近 W 根，各序列按同一窗口对齐
+    W = 150
+    n = len(dfd)
+    s = max(0, n - W)
+
+    def _series(col, nd=8):
+        if col not in dfd.columns:
+            return None
+        out = []
+        for v in dfd[col].iloc[s:]:
+            out.append(None if v != v else round(float(v), nd))
+        return out
+
+    sig_win = [int(v) for v in signals.iloc[s:]]
+    idx_win = dfd.index[s:]
+    payload = {
+        'symbol': symbol, 'strategy': strategy, 'timeframe': timeframe, 'network': network,
+        'market': _ALGO_CTX.get(market, _ALGO_CTX['us'])['market_label'],
+        'time': [int(t.timestamp() * 1000) for t in idx_win],
+        'candles': {
+            'open': _series('open'), 'high': _series('high'),
+            'low': _series('low'), 'close': _series('close'),
+        },
+        'sma20': _series('sma20'),
+        'volume': _series('volume', 4),
+        'vol_ma20': _series('vol_ma20', 4),
+        'vol_threshold': [None if v is None else round(v * vol_mult, 4) for v in (_series('vol_ma20', 4) or [])] or None,
+        'macd': {'dif': _series('MACD'), 'dea': _series('MACD_signal'),
+                 'hist': [None if (a is None or b is None) else round(a - b, 8)
+                          for a, b in zip(_series('MACD') or [], _series('MACD_signal') or [])]},
+        'signals': sig_win,
+        'buy_marks': [{'t': int(idx_win[i].timestamp() * 1000), 'p': float(dfd['low'].iloc[s + i])}
+                      for i, v in enumerate(sig_win) if v > 0],
+        'sell_marks': [{'t': int(idx_win[i].timestamp() * 1000), 'p': float(dfd['high'].iloc[s + i])}
+                       for i, v in enumerate(sig_win) if v < 0],
+        'div_marks': ([{'t': int(idx_win[i].timestamp() * 1000), 'p': float(dfd['low'].iloc[s + i]), 'kind': 'bot'}
+                       for i in range(len(sig_win)) if dfd['bot_div'].iloc[s + i]]
+                      + [{'t': int(idx_win[i].timestamp() * 1000), 'p': float(dfd['high'].iloc[s + i]), 'kind': 'top'}
+                         for i in range(len(sig_win)) if dfd['top_div'].iloc[s + i]]) if use_div else [],
+        'params': {'fast': fast, 'slow': slow, 'signal': sig_p, 'vol_mult': vol_mult,
+                   'use_div': use_div, 'use_ma': use_ma, 'use_vol': use_vol,
+                   'atr_period': atr_period, 'sl_pct': round(sl_pct, 6), 'tp_pct': round(tp_pct, 6),
+                   'atr': round(atr_last, 8), 'close': close_last},
+        'steps': steps,
+        'final': {'signal': final_sig, 'buy_raw': bool(buy_raw), 'sell_raw': bool(sell_raw),
+                  'buy_pass': bool(buy_pass), 'sell_pass': bool(sell_pass)},
+        'recent_signals': [{'t': int(idx_win[i].timestamp() * 1000), 'p': float(dfd['close'].iloc[s + i]), 's': v}
+                           for i, v in enumerate(sig_win) if v != 0][-12:],
+        'last_close_time': int(idx_win[-1].timestamp() * 1000),
+        'updated_at': datetime.now().strftime('%H:%M:%S'),
+    }
+    # 实时最新价（未收盘），让页面有"行情在跳"的感觉；失败不影响主数据
+    try:
+        price, _perr = trader.get_ticker(symbol)
+        payload['live_price'] = price
+    except Exception:
+        payload['live_price'] = None
+    return payload, None
+
+
+def _algorithm_page(market='us'):
+    """算法可视化页面（美股 / 虚拟币共用模板）"""
+    ctx = _ALGO_CTX.get(market, _ALGO_CTX['us'])
+    comp = _COMPOSITE_CTX.get(market, _COMPOSITE_CTX['us'])
+    page = comp['page']
+    return render_template(
+        "algorithm.html",
+        nav_key=ctx['nav_key'], api_base=ctx['api_base'],
+        page_title=ctx['page_title'], brand=ctx['brand'],
+        market_label=ctx['market_label'], market=market,
+        symbols=comp['symbols'](), names=comp['names'],
+        strategy_options=ALGO_STRATEGIES,
+        default_strategy=page.get('default_strategy', 'macd 12/16/7+量能'),
+        default_symbol=ctx['default_symbol'],
+        presets=page.get('presets', []),
+        timeframe_options=TIMEFRAME_OPTIONS,
+    )
+
+
+def _algorithm_flow_api(market='us'):
+    """JSON 接口：返回算法可视化所需的K线/指标/信号/流水线数据"""
+    from flask import jsonify
+    ctx = _ALGO_CTX.get(market, _ALGO_CTX['us'])
+    raw = (request.args.get('symbol') or ctx['default_symbol']).strip()
+    base = raw.split('/')[0].split(':')[0].upper()
+    symbol = f'{base}/USDT:USDT' if market == 'us' else f'{base}/USDT'
+    strategy = request.args.get('strategy') or ALGO_STRATEGIES[0]
+    if strategy not in ALGO_STRATEGIES:
+        strategy = ALGO_STRATEGIES[0]
+    timeframe = request.args.get('timeframe', '1h')
+    network = request.args.get('network', 'mainnet')
+    if network not in ('mainnet', 'testnet'):
+        network = 'mainnet'
+    payload, err = _algo_flow_payload(market, symbol, strategy, timeframe, network)
+    if err:
+        return jsonify({'error': err, 'symbol': symbol, 'strategy': strategy})
+    payload['name'] = _COMPOSITE_CTX.get(market, _COMPOSITE_CTX['us'])['names'].get(base, base)
+    return jsonify(payload)
+
+
+@app.route("/composite/algorithm")
+def composite_algorithm():
+    """美股综合量化 · 算法可视化页面"""
+    return _algorithm_page('us')
+
+
+@app.route("/crypto-composite/algorithm")
+def crypto_composite_algorithm():
+    """虚拟币综合量化 · 算法可视化页面"""
+    return _algorithm_page('crypto')
+
+
+@app.route("/composite/algorithm/api/flow")
+def composite_algorithm_flow():
+    """JSON 接口：美股算法可视化数据"""
+    return _algorithm_flow_api('us')
+
+
+@app.route("/crypto-composite/algorithm/api/flow")
+def crypto_composite_algorithm_flow():
+    """JSON 接口：虚拟币算法可视化数据"""
+    return _algorithm_flow_api('crypto')
 
 
 @app.route("/demo", methods=["GET", "POST"])

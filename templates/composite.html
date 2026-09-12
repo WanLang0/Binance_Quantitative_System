@@ -67,6 +67,18 @@
 .sig-sell { color: var(--sell); }
 td.long, td.pos { color: var(--buy); }
 td.short, td.neg { color: var(--sell); }
+
+/* 优先匹配：n槽资金池（复利池）状态卡片 */
+.slot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+.slot-item {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+    background: var(--panel-alt); display: flex; flex-direction: column; gap: 2px;
+}
+.slot-item.busy { border-color: var(--primary); background: var(--primary-soft); }
+.slot-idx { font-size: .68rem; color: var(--muted); }
+.slot-sym { font-size: .8rem; font-weight: 600; color: var(--muted); }
+.slot-item.busy .slot-sym { color: var(--primary); }
+.slot-cash { font-size: .8rem; color: #4caf50; }
 </style>
 {% endblock %}
 
@@ -131,10 +143,10 @@ td.short, td.neg { color: var(--sell); }
                 </div>
                 <div class="field">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                        <input type="checkbox" id="atr-chk" onchange="toggleAtr()">
+                        <input type="checkbox" id="atr-chk" onchange="toggleAtr()" {% if atr_default_on|default(false) %}checked{% endif %}>
                         启用 ATR 动态止盈止损（C判定）
                     </label>
-                    <div id="atr-opts" style="display:none;margin-top:6px">
+                    <div id="atr-opts" style="display:{% if atr_default_on|default(false) %}block{% else %}none{% endif %};margin-top:6px">
                         <label>ATR周期
                             <input type="number" name="atr_period" step="1" min="2" value="14">
                         </label>
@@ -145,25 +157,28 @@ td.short, td.neg { color: var(--sell); }
                             <input type="number" name="atr_tp_mult" step="0.1" min="0.1" value="2.0">
                         </label>
                         <label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer">
-                            <input type="checkbox" name="atr_tp_close" value="1">
+                            <input type="checkbox" name="atr_tp_close" value="1" {% if atr_tp_close_default|default(false) %}checked{% endif %}>
                             止盈按收盘确认（让利润奔跑）
                         </label>
                         <div style="font-size:.78rem;color:var(--muted);margin-top:4px">止盈=倍数×ATR/价格（截断1%~8%），开仓时锁定；默认止盈按实时价盘中触发（吃插针），止损按K线收盘确认（防插针打损）。勾选后止盈也改为收盘价确认（1.2x量能回测：收益多数更高但胜率约-7pp、回撤略深，详见最优策略页）。冠军策略建议：macd+量能 · 4h · 双向 · 14/1.5/2.0 · 轮询5秒。</div>
                     </div>
-                    <input type="hidden" name="atr_enable" id="atr_enable" value="0">
+                    <input type="hidden" name="atr_enable" id="atr_enable" value="{% if atr_default_on|default(false) %}1{% else %}0{% endif %}">
                 </div>
                 <div class="field">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                        <input type="checkbox" id="prioritize-chk" onchange="togglePrioritize()">
-                        开启量化优先匹配
+                    <label style="display:flex;align-items:center;gap:6px;{% if nav_key == 'crypto_composite' %}cursor:not-allowed;opacity:.55{% else %}cursor:pointer{% endif %}">
+                        <input type="checkbox" id="prioritize-chk" onchange="togglePrioritize()"
+                               {% if nav_key == 'crypto_composite' %}disabled title="该功能当前仅美股综合量化支持"{% endif %}>
+                        开启量化优先匹配{% if nav_key == 'crypto_composite' %}<span style="font-size:.75rem;color:var(--muted);margin-left:6px">（仅美股综合量化支持）</span>{% endif %}
                     </label>
+                    {% if nav_key != 'crypto_composite' %}
                     <div id="prioritize-opts" style="display:none;margin-top:6px">
                         <label>份额数 n
                             <input type="number" name="share_count" id="share-count" step="1" min="1" value="" placeholder="默认=币对数" oninput="onShareChange()">
                         </label>
-                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份份额，每份为独立投资单位；标的触发买点按时间顺序抢占份额（先触发先得），份额用完暂停买入、仅监控卖出，卖出后份额回收。n = 最多同时持有的支数。</div>
+                        <div style="font-size:.78rem;color:var(--muted);margin-top:4px">总资金均分为 n 份资金槽（如30槽），每槽独立复利：触发买点的标的按时间顺序抢占槽位（先触发先得），用槽内资金×安全系数开仓，平仓盈亏滚入槽、释放槽位后资金由下一个触发标的继承（与回测30槽资金池口径一致）；槽满暂停买入、仅监控卖出。n = 最多同时持有的支数。</div>
                         <div id="share-hint" style="font-size:.78rem;color:var(--primary);margin-top:4px"></div>
                     </div>
+                    {% endif %}
                     <input type="hidden" name="prioritize" id="prioritize" value="0">
                 </div>
 
@@ -302,6 +317,25 @@ td.short, td.neg { color: var(--sell); }
             {% if status.last_error %}
             <div class="alert alert-error" style="margin-top:8px" id="st-error">上次错误：{{ status.last_error }}</div>
             {% endif %}
+            </div>
+        </div>
+
+        <!-- 优先匹配：n槽资金池（复利池）实时状态；仅开启优先匹配时显示 -->
+        {% set _slots = (status.slots if status and status.prioritize and status.slots is defined and status.slots else []) %}
+        <div class="card card-foldable" id="slot-card" style="display:{{ '' if _slots else 'none' }}">
+            <h2>🧩 复利池状态（<span id="slot-busy">{{ _slots | selectattr('sym') | list | length }}</span>/<span id="slot-total">{{ _slots | length }}</span> 占用）
+                <span style="font-size:.8rem;color:var(--muted);font-weight:400">每槽独立复利 · 先到先得</span></h2>
+            <div class="card-body">
+                <div class="slot-grid" id="slot-grid">
+                    {% for sl in _slots %}
+                    <div class="slot-item {{ 'busy' if sl.sym else '' }}">
+                        <span class="slot-idx">#{{ loop.index }}</span>
+                        <span class="slot-sym">{{ sl.sym.split('/')[0] if sl.sym else '空闲' }}</span>
+                        <span class="slot-cash">{{ '%.2f' | format(sl.cash or 0) }}U</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                <p class="info-note" style="font-size:.78rem;margin-top:8px">共 <b id="slot-count-note">{{ _slots | length }}</b> 个资金槽，每槽初始 = 总资金 ÷ 槽数；开仓占用槽、平仓盈亏滚入该槽（独立复利），释放后由下一个触发标的继承。权益合计 = Σ各槽资金 + Σ未实现盈亏。</p>
             </div>
         </div>
 
@@ -445,6 +479,8 @@ var API_BASE = {{ (api_base|default('/composite')) | tojson }};
 // 「一键全部添加」使用的清单：虚拟币页=市值前30回测标的；美股页（未传时）=全部可选
 var SYM_ADD_ALL = {{ (add_all_symbols if add_all_symbols is defined else symbols) | tojson }};
 var NAMES = {{ names | tojson }};
+// 新增币对默认勾选的策略（美股页=macd 12/16/7+量能；虚拟币页=EMA）
+var DEFAULT_STRATEGY = {{ (default_strategy|default('EMA')) | tojson }};
 var ACCOUNT_BALANCE = {{ (account_balance if account_balance is defined and account_balance is not none and account_balance != '' else none) | tojson }};
 
 var PRESETS = {{ presets | tojson }};
@@ -527,8 +563,8 @@ function addSymRow(symbol) {
     var inp = row.querySelector('.sym-inp');
     inp.value = symbol || '';
     if (symbol) setSymName(row, symbol);
-    // 默认勾选 EMA（单策略）；用户可再勾选其他策略组合（AND 逻辑）
-    row.querySelectorAll('.cs-strat-chk').forEach(function (c) { c.checked = (c.value === 'EMA'); });
+    // 默认勾选该页默认策略（美股页=macd 12/16/7+量能；虚拟币页=EMA）；用户可再勾选其他策略组合（AND 逻辑）
+    row.querySelectorAll('.cs-strat-chk').forEach(function (c) { c.checked = (c.value === DEFAULT_STRATEGY); });
     updateStrategies(row);
     var tfSel = row.querySelector('select[name="cs_timeframe"]');
     if (tfSel) tfSel.value = '1h';
@@ -808,6 +844,31 @@ function escapeHtml(s) {
 
 function sideText(s) { return s === 'long' ? '做多' : (s === 'short' ? '做空' : '空仓'); }
 
+// 复利池状态卡片：优先匹配(n槽资金池)开启时逐槽展示 #序号 / 占用标的 / 槽内资金。
+// 槽数据来自后端 status['slots']（每槽 {cash, sym}，sym=null 表示空闲）。
+function renderSlots(data) {
+    var card = document.getElementById('slot-card');
+    var grid = document.getElementById('slot-grid');
+    if (!card || !grid) return;
+    var slots = (data && data.prioritize && data.slots) ? data.slots : null;
+    if (!slots || !slots.length) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    var busy = 0;
+    grid.innerHTML = slots.map(function (sl, i) {
+        var sym = sl && sl.sym ? String(sl.sym) : '';
+        if (sym) busy++;
+        var cash = Number((sl && sl.cash) || 0);
+        return '<div class="slot-item' + (sym ? ' busy' : '') + '">'
+            + '<span class="slot-idx">#' + (i + 1) + '</span>'
+            + '<span class="slot-sym">' + escapeHtml(sym ? sym.split('/')[0] : '空闲') + '</span>'
+            + '<span class="slot-cash">' + cash.toFixed(2) + 'U</span>'
+            + '</div>';
+    }).join('');
+    var bt = document.getElementById('slot-busy'); if (bt) bt.textContent = busy;
+    var tt = document.getElementById('slot-total'); if (tt) tt.textContent = slots.length;
+    var cn = document.getElementById('slot-count-note'); if (cn) cn.textContent = slots.length;
+}
+
 function updateStatus(data) {
     var m = {
         'st-name': data.name || '—',
@@ -854,6 +915,8 @@ function updateStatus(data) {
             shareBox.style.display = 'none';
         }
     }
+    // 复利池状态（n槽资金池）：仅优先匹配时显示，逐槽渲染占用标的与槽内资金
+    renderSlots(data);
     var bal = document.getElementById('st-balance');
     if (bal) bal.textContent = (data.account_balance != null) ? Number(data.account_balance).toFixed(2) : '—';
     var hb = document.getElementById('st-heartbeat');
