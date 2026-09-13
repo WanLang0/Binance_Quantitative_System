@@ -46,7 +46,7 @@ def simulate(df, signals, initial, atr, lev, t0, k_sl=K_SL, k_tp=K_TP, tp_mode='
             if equity <= maint:
                 liquidated = True
             elif hit_sl_c:
-                exit_price = sl_lvl
+                exit_price = price
             elif hit_tp:
                 exit_price = tp_lvl if tp_mode == 'intraday' else price
             if liquidated or exit_price is not None:

@@ -1,0 +1,330 @@
+{% set active_page = 'momentum' %}
+{% extends "base.html" %}
+
+{% block title %}横截面动量回测{% endblock %}
+
+{% block head %}
+<style>
+/* ===== 横截面动量：左侧配置 + 右侧回测结果 ===== */
+.momentum-sidebar { width: 360px; min-width: 360px; }
+.param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; }
+.param-grid .field-full { grid-column: 1 / -1; }
+.chk-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.chk-row label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: .88rem; color: var(--text); }
+.big-num { font-size: 1.15rem; font-weight: 700; }
+.caption { font-size: .72rem; color: var(--muted); }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="app">
+    <aside class="sidebar momentum-sidebar">
+        <div class="brand">📈 横截面动量</div>
+
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+        <form method="POST" action="/momentum">
+            <div class="form-group">
+                <div class="group-label">⚙️ 策略参数</div>
+                <div class="param-grid">
+                    <div class="field">
+                        <label>调仓周期</label>
+                        <select name="rebal_n">
+                            {% for v in [1, 3, 5, 7, 10] %}
+                            <option value="{{ v }}" {% if form_state.rebal_n == v %}selected{% endif %}>{{ v }} 日</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>选股比例</label>
+                        <select name="top_frac">
+                            {% for v, lbl in [(0.05, 'Top 5%'), (0.10, 'Top 10%'), (0.20, 'Top 20%'), (0.30, 'Top 30%')] %}
+                            <option value="{{ v }}" {% if form_state.top_frac == v %}selected{% endif %}>{{ lbl }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>流动性阈值</label>
+                        <select name="liq_min">
+                            {% for v, lbl in [(100000000, '100M'), (300000000, '300M'), (500000000, '500M')] %}
+                            <option value="{{ v }}" {% if form_state.liq_min == v %}selected{% endif %}>{{ lbl }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>杠杆</label>
+                        <input type="number" name="leverage" step="0.1" min="1" max="5" value="{{ form_state.leverage }}">
+                    </div>
+                    <div class="field field-full">
+                        <label>滑点（bps / 边，叠加 5bps 手续费）</label>
+                        <select name="slippage">
+                            {% for v in [0, 5, 10, 20, 30, 40] %}
+                            <option value="{{ v }}" {% if form_state.slippage_bps == v %}selected{% endif %}>{{ v }} bps</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="group-label">🎛 高级过滤</div>
+                <div class="param-grid">
+                    <div class="field">
+                        <label>信号模式</label>
+                        <select name="mode">
+                            <option value="r14" {% if form_state.mode == 'r14' %}selected{% endif %}>R14 动量</option>
+                            <option value="composite" {% if form_state.mode == 'composite' %}selected{% endif %}>复合 R7/R14/R30</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>波动率过滤</label>
+                        <select name="vol_max">
+                            <option value="0" {% if form_state.vol_max_pct == 0 %}selected{% endif %}>无</option>
+                            {% for v in [100, 120, 150, 200] %}
+                            <option value="{{ v }}" {% if form_state.vol_max_pct == v %}selected{% endif %}>{{ v }}%</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div class="chk-row" style="margin-top:6px">
+                    <label><input type="checkbox" name="abs_mom" value="1" {% if form_state.abs_mom %}checked{% endif %}> 绝对动量闸门</label>
+                    <label><input type="checkbox" name="long_only" value="1" {% if form_state.long_only %}checked{% endif %}> 只做多</label>
+                </div>
+            </div>
+
+            <button type="submit" name="run" value="1" class="btn btn-primary btn-block">▶ 运行回测</button>
+        </form>
+
+        <p class="info-note">
+            <b>口径</b>：PIT 30币（动态宇宙，各币上市满30天自然进入）· R14 排名 Top/Bottom 对称做多做空 · dollar-neutral · 1x · 收盘信号次日开盘成交（无前视）· 真实逐8h资金费 · 手续费 5bps/边。<br><br>
+            <b>默认即当前最优</b>：Top20% · 5日调仓 · 100M 流动性 · 1x · 30bps 滑点。回测区间 2024-01 ~ 2026-08（币安历史缓存）。收益率与本金无关（dollar-neutral，初始资金固定 10000 USDT）。
+        </p>
+    </aside>
+
+    <div class="content">
+        <h1>📡 横截面动量 · 回测结果</h1>
+
+        {% if result %}
+        {% set s = result.stat %}
+
+        <!-- 核心指标 -->
+        <div class="card">
+            <h2>核心指标 <span class="caption">（滑点 {{ form_state.slippage_bps }}bps 口径）</span></h2>
+            <div class="stat-grid">
+                <div class="stat-box"><div class="lbl">总收益</div><div class="val {{ 'pos' if s.ret >= 0 else 'neg' }}">{{ '%+.1f'|format(s.ret) }}%</div></div>
+                <div class="stat-box"><div class="lbl">年化收益</div><div class="val {{ 'pos' if s.cagr >= 0 else 'neg' }}">{{ '%+.1f'|format(s.cagr) }}%</div></div>
+                <div class="stat-box"><div class="lbl">最大回撤</div><div class="val neg">{{ '%.1f'|format(s.mdd) }}%</div></div>
+                <div class="stat-box"><div class="lbl">夏普比率</div><div class="val {{ 'pos' if s.sharpe >= 0 else 'neg' }}">{{ '%.2f'|format(s.sharpe) }}</div></div>
+                <div class="stat-box"><div class="lbl">交易笔数</div><div class="val">{{ s.trades }}</div></div>
+                <div class="stat-box"><div class="lbl">日均候选币</div><div class="val">{{ s.avg_elig }}</div></div>
+                <div class="stat-box"><div class="lbl">Top1 贡献</div><div class="val">{{ s.top1_coin }} {{ '%.0f'|format(s.top1_share) }}%</div></div>
+                <div class="stat-box"><div class="lbl">Top5 贡献</div><div class="val">{{ '%.0f'|format(s.top5_share) }}%</div></div>
+                <div class="stat-box"><div class="lbl">去 ZEC 收益</div><div class="val {{ 'pos' if s.drop_zec >= 0 else 'neg' }}">{{ '%+.0f'|format(s.drop_zec) }}%</div></div>
+                <div class="stat-box"><div class="lbl">年化换手</div><div class="val">{{ s.annual_turnover }}x</div></div>
+                <div class="stat-box"><div class="lbl">平均持仓天</div><div class="val">{{ s.avg_hold_days }}</div></div>
+                <div class="stat-box"><div class="lbl">月胜率</div><div class="val">{{ result.month_stats.win_rate }}%</div></div>
+            </div>
+            {% if s.liq_date %}<div class="alert alert-error" style="margin-top:8px">⚠ 触发强平（{{ s.liq_date }}），回测提前终止</div>{% endif %}
+        </div>
+
+        <!-- 净值曲线 -->
+        <div class="card">
+            <h2>📈 净值曲线 <span class="caption">右轴=相对初始资金收益率</span></h2>
+            <div style="position:relative">
+                <canvas id="eq-chart" style="width:100%;height:280px"></canvas>
+                <div id="eq-tip" style="display:none;position:absolute;background:rgba(30,30,30,.92);color:#fff;padding:3px 8px;border-radius:4px;font-size:.75rem;pointer-events:none;white-space:nowrap"></div>
+            </div>
+        </div>
+
+        <!-- 滑点梯度 -->
+        <div class="card card-foldable">
+            <h2>🧪 滑点梯度（收益% / Sharpe / MDD%）</h2>
+            <div class="table-wrap">
+                <table class="table">
+                    <tr><th>滑点</th><th>收益</th><th>Sharpe</th><th>MDD</th></tr>
+                    {% for g in result.slip_gradient %}
+                    <tr {% if form_state.slippage_bps|string == g.tag %}style="background:var(--primary-soft)"{% endif %}>
+                        <td><b>{{ g.tag }} bps</b></td>
+                        <td class="{{ 'pos' if g.ret >= 0 else 'neg' }}">{{ '%+.1f'|format(g.ret) }}%</td>
+                        <td class="{{ 'pos' if g.sharpe >= 0 else 'neg' }}">{{ '%.2f'|format(g.sharpe) }}</td>
+                        <td class="neg">{{ '%.1f'|format(g.mdd) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+
+        <!-- 逐年收益 -->
+        <div class="card card-foldable">
+            <h2>📅 逐年收益</h2>
+            <div class="stat-grid">
+                {% for y in ['2024', '2025', '2026'] %}
+                {% set d = result.yearly[y] %}
+                <div class="stat-box">
+                    <div class="lbl">{{ y }}</div>
+                    {% if d %}
+                    <div class="val {{ 'pos' if d.ret >= 0 else 'neg' }}">{{ '%+.1f'|format(d.ret) }}%</div>
+                    <div class="caption">MDD {{ '%.1f'|format(d.mdd) }}% · Sharpe {{ '%.2f'|format(d.sharpe) }}</div>
+                    {% else %}
+                    <div class="val">—</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- 逐月收益 -->
+        <div class="card card-foldable">
+            <h2>🗓 逐月收益 <span class="caption">总收益 = 多头 + 空头 + Funding + Fee（占月初权益%）</span></h2>
+            <div class="table-wrap">
+                <table class="table">
+                    <tr><th>月份</th><th>总收益</th><th>多头</th><th>空头</th><th>Funding</th><th>Fee</th></tr>
+                    {% for m in result.monthly %}
+                    <tr>
+                        <td><b>{{ m.month }}</b></td>
+                        <td class="{{ 'pos' if m.ret >= 0 else 'neg' }}">{{ '%+.1f'|format(m.ret) }}%</td>
+                        <td class="{{ 'pos' if m.long >= 0 else 'neg' }}">{{ '%+.1f'|format(m.long) }}%</td>
+                        <td class="{{ 'pos' if m.short >= 0 else 'neg' }}">{{ '%+.1f'|format(m.short) }}%</td>
+                        <td class="{{ 'pos' if m.fund >= 0 else 'neg' }}">{{ '%+.1f'|format(m.fund) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(m.fee) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+
+        <!-- 逐币种贡献 -->
+        <div class="card card-foldable">
+            <h2>🪙 逐币种贡献 <span class="caption">按累计价格盈亏降序；占比=盈亏÷净利润</span></h2>
+            <div class="table-wrap">
+                <table class="table">
+                    <tr><th>#</th><th>币种</th><th>名称</th><th>累计盈亏(USDT)</th><th>占净利润</th></tr>
+                    {% for c in result.coins %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><b>{{ c.base }}</b></td>
+                        <td class="muted">{{ names.get(c.base, c.base) }}</td>
+                        <td class="{{ 'pos' if c.pnl >= 0 else 'neg' }}">{{ '%+.2f'|format(c.pnl) }}</td>
+                        <td class="{{ 'pos' if c.share >= 0 else 'neg' }}">{{ '%+.1f'|format(c.share) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+
+        {% else %}
+        <div class="card">
+            <p class="empty">请在左侧设置策略参数，点击「▶ 运行回测」查看结果。默认即当前最优口径（Top20% · 5日调仓 · 100M · 1x · 30bps）。</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ===== 净值曲线（复用综合量化资金曲线的 canvas 绘制方式，数据由后端直出） =====
+var EQ_POINTS = {{ (result.equity_points | tojson) if result else '[]' }};
+var EQ_INIT = {{ (result.initial) if result else 10000 }};
+var EQ_HOVER = -1;
+
+function fmtTs(ts) {
+    var d = new Date(ts * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+function drawEquity() {
+    var cv = document.getElementById('eq-chart');
+    if (!cv) return;
+    var pts = EQ_POINTS;
+    if (!pts.length) { return; }
+    var wrap = cv.parentElement, W = wrap.clientWidth || 800, H = 280;
+    var dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    var ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var PL = 66, PR = 72, PT = 14, PB = 26, iw = W - PL - PR, ih = H - PT - PB;
+    var t0 = pts[0][0], t1 = pts[pts.length - 1][0] || (t0 + 1);
+    var vmin = Infinity, vmax = -Infinity;
+    pts.forEach(function (p) { if (p[1] < vmin) vmin = p[1]; if (p[1] > vmax) vmax = p[1]; });
+    if (EQ_INIT > 0) { vmin = Math.min(vmin, EQ_INIT); vmax = Math.max(vmax, EQ_INIT); }
+    if (vmax - vmin < 1e-9) vmax = vmin + 1;
+    var padV = (vmax - vmin) * 0.08; vmin -= padV; vmax += padV;
+    function X(t) { return PL + (t - t0) / (t1 - t0) * iw; }
+    function Y(v) { return PT + (1 - (v - vmin) / (vmax - vmin)) * ih; }
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#999';
+    for (var g = 0; g <= 4; g++) {
+        var gv = vmin + (vmax - vmin) * g / 4, gy = Y(gv);
+        ctx.strokeStyle = 'rgba(128,128,128,.18)';
+        ctx.beginPath(); ctx.moveTo(PL, gy); ctx.lineTo(W - PR, gy); ctx.stroke();
+        var rp = EQ_INIT > 0 ? (gv / EQ_INIT - 1) * 100 : 0;
+        ctx.textAlign = 'right'; ctx.fillText(gv.toFixed(0), PL - 6, gy + 3);
+        ctx.textAlign = 'left'; ctx.fillText((rp >= 0 ? '+' : '') + rp.toFixed(1) + '%', W - PR + 6, gy + 3);
+    }
+    ctx.textAlign = 'center';
+    for (var k = 0; k <= 5; k++) {
+        var gt = t0 + (t1 - t0) * k / 5;
+        ctx.fillText(fmtTs(gt), X(gt), H - 8);
+    }
+    if (EQ_INIT > vmin && EQ_INIT < vmax) {
+        ctx.save(); ctx.strokeStyle = 'rgba(240,185,11,.55)'; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(PL, Y(EQ_INIT)); ctx.lineTo(W - PR, Y(EQ_INIT)); ctx.stroke(); ctx.restore();
+    }
+    var grad = ctx.createLinearGradient(0, PT, 0, H - PB);
+    grad.addColorStop(0, 'rgba(25,118,210,.28)'); grad.addColorStop(1, 'rgba(25,118,210,0)');
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.lineTo(X(pts[pts.length - 1][0]), H - PB); ctx.lineTo(X(pts[0][0]), H - PB); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = '#1976d2'; ctx.lineWidth = 1.6; ctx.stroke();
+    var tip = document.getElementById('eq-tip');
+    if (EQ_HOVER >= 0 && EQ_HOVER < pts.length) {
+        var hp = pts[EQ_HOVER], hx = X(hp[0]), hy = Y(hp[1]);
+        ctx.save(); ctx.strokeStyle = 'rgba(128,128,128,.5)'; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(hx, PT); ctx.lineTo(hx, H - PB); ctx.stroke(); ctx.restore();
+        ctx.fillStyle = '#1976d2'; ctx.beginPath(); ctx.arc(hx, hy, 3.2, 0, 7); ctx.fill();
+        if (tip) {
+            var rp2 = EQ_INIT > 0 ? (hp[1] / EQ_INIT - 1) * 100 : 0;
+            tip.style.display = '';
+            tip.textContent = fmtTs(hp[0]) + ' · ' + hp[1].toFixed(2) + 'U (' + (rp2 >= 0 ? '+' : '') + rp2.toFixed(2) + '%)';
+            var tw = tip.offsetWidth;
+            tip.style.left = Math.min(Math.max(hx - tw / 2, 4), W - tw - 4) + 'px';
+            tip.style.top = (PT + 2) + 'px';
+        }
+    } else if (tip) { tip.style.display = 'none'; }
+}
+
+(function () {
+    var cv = document.getElementById('eq-chart');
+    if (!cv) return;
+    cv.addEventListener('mousemove', function (ev) {
+        if (!EQ_POINTS.length) return;
+        var rect = cv.getBoundingClientRect();
+        var x = ev.clientX - rect.left, PL = 66, PR = 72, iw = cv.clientWidth - PL - PR;
+        var t0 = EQ_POINTS[0][0], t1 = EQ_POINTS[EQ_POINTS.length - 1][0];
+        var t = t0 + Math.max(0, Math.min(1, (x - PL) / iw)) * (t1 - t0);
+        var best = 0, bd = Infinity;
+        EQ_POINTS.forEach(function (p, i) { var dd = Math.abs(p[0] - t); if (dd < bd) { bd = dd; best = i; } });
+        EQ_HOVER = best; drawEquity();
+    });
+    cv.addEventListener('mouseleave', function () { EQ_HOVER = -1; drawEquity(); });
+    window.addEventListener('resize', drawEquity);
+    drawEquity();
+})();
+
+// ===== 可折叠卡片 =====
+document.querySelectorAll('.card-foldable > h2').forEach(function (h2) {
+    h2.addEventListener('click', function (ev) {
+        if (ev.target.closest('button, select, input, a')) return;
+        var card = h2.parentElement;
+        card.classList.toggle('folded');
+        if (!card.classList.contains('folded') && card.querySelector('#eq-chart') && typeof drawEquity === 'function') {
+            setTimeout(drawEquity, 0);
+        }
+    });
+});
+</script>
+{% endblock %}

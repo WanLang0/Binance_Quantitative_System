@@ -82,7 +82,7 @@ def simulate_lev(df, signals, initial, atr, k_sl, k_tp, lev, t0):
             if equity <= maint:
                 liquidated = True
             elif hit_sl_c:
-                exit_price = sl_lvl
+                exit_price = price
             elif hit_tp_i:
                 exit_price = tp_lvl
             if liquidated or exit_price is not None:

@@ -58,7 +58,7 @@ def manual_replay(df, sig, lev, k_sl, k_tp, tp_mode, atr):
                 pos = None
                 continue
             if hit_sl:
-                px = sl_lvl
+                px = price
             elif hit_tp:
                 px = tp_lvl if tp_mode == 'intraday' else price
             else:

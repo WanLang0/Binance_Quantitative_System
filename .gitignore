@@ -38,14 +38,6 @@ scripts/cache_1s/
 scripts/results/*
 !scripts/results/*_summary_2024_2026.json
 !scripts/results/recommended_configs.json
-!scripts/results/macd_vol_1_2x_summary.json
-!scripts/results/tp_close_vs_intraday_summary.json
-# 最优策略页直接加载的展示数据（必须随仓库分发，否则生产端缺表）
-!scripts/results/macd_c3_lev_1h.json
-!scripts/results/top30_2021_c3_intraday_1h.json
-!scripts/results/macd_vol_monthly_pos_1h.json
-!scripts/results/ndx_pool_summary_1h.json
-!scripts/results/us93_longonly_summary_1h.json
 
 # 临时回测/验证脚本与中间产物（一次性分析，不入库）
 scripts/tmp_*.py

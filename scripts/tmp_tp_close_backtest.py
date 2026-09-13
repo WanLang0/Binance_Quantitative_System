@@ -90,7 +90,7 @@ def simulate_lev(df, signals, initial, atr, k_sl, k_tp, lev, t0, tp_mode='intrad
             if equity <= maint:
                 liquidated = True
             elif hit_sl_c:
-                exit_price = sl_lvl
+                exit_price = price
             elif hit_tp:
                 # 盘中触发按止盈价成交; 收盘确认按收盘价市价成交(可能优于止盈位)
                 exit_price = tp_lvl if tp_mode == 'intraday' else price

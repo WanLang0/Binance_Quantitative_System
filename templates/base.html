@@ -22,6 +22,8 @@
             {% if 'composite_algo' not in hidden %}<a href="/composite/algorithm" class="{{ 'active' if active_page == 'composite_algo' }}">美股算法可视化</a>{% endif %}
             {% if 'crypto_composite_algo' not in hidden %}<a href="/crypto-composite/algorithm" class="{{ 'active' if active_page == 'crypto_composite_algo' }}">虚拟币算法可视化</a>{% endif %}
             {% if 'strategies' not in hidden %}<a href="/strategies" class="{{ 'active' if active_page == 'strategies' }}">最优策略</a>{% endif %}
+            {% if 'momentum' not in hidden %}<a href="/momentum" class="{{ 'active' if active_page == 'momentum' }}">横截面动量</a>{% endif %}
+            {% if 'crypto_momentum' not in hidden %}<a href="/crypto-momentum" class="{{ 'active' if active_page == 'crypto_momentum' }}">横截面动量量化</a>{% endif %}
             <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">设置</a>
         </div>
         <div class="topbar-user">

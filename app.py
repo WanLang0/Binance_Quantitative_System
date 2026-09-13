@@ -23,6 +23,8 @@ import auth as _auth
 import strategies_store as _store
 import daily_signal_report as _daily_report
 import mailer
+import momentum_service
+import momentum_live_trader
 
 app = Flask(__name__)
 
@@ -39,6 +41,8 @@ NAV_PAGES = [
     ('composite_algo', '/composite/algorithm', '美股算法可视化'),
     ('crypto_composite_algo', '/crypto-composite/algorithm', '虚拟币算法可视化'),
     ('strategies', '/strategies', '最优策略'),
+    ('momentum', '/momentum', '横截面动量'),
+    ('crypto_momentum', '/crypto-momentum', '横截面动量量化'),
 ]
 NAV_KEYS = {k for k, _, _ in NAV_PAGES}
 
@@ -96,6 +100,7 @@ def _require_login():
     if request.path.startswith('/futures/api/') or request.path.startswith('/demo/api/') \
             or request.path.startswith('/auto/api/') or request.path.startswith('/composite/api/') \
             or request.path.startswith('/crypto-composite/api/') \
+            or request.path.startswith('/crypto-momentum/api/') \
             or request.path.startswith('/composite/algorithm/api/') \
             or request.path.startswith('/crypto-composite/algorithm/api/'):
         from flask import jsonify
@@ -645,6 +650,363 @@ def download_trades():
         download_name="trades.csv",
         mimetype="text/csv"
     )
+
+
+# ==================== 横截面动量回测页 ====================
+# 基于 scripts/tmp_xsec_mom_longshort.py 的研究引擎，独立封装在 momentum_service.py。
+# 布局仿照「虚拟币综合量化」：左侧参数配置 + 右侧结果监控（指标卡/净值曲线/逐月/逐币/滑点）。
+@app.route("/momentum", methods=["GET", "POST"])
+def momentum():
+    form = request.form
+    params = dict(momentum_service.DEFAULTS)
+
+    if request.method == "POST":
+        params['rebal_n'] = _to_int(form.get("rebal_n"), params['rebal_n'])
+        params['top_frac'] = _to_float(form.get("top_frac"), params['top_frac'])
+        params['liq_min'] = _to_float(form.get("liq_min"), params['liq_min'])
+        params['leverage'] = _to_float(form.get("leverage"), params['leverage'])
+        slippage_bps = _to_float(form.get("slippage"), 30)
+        params['slippage'] = slippage_bps / 10000.0
+        params['mode'] = form.get("mode") or params['mode']
+        vol_pct = form.get("vol_max") or ""
+        vol_val = _to_float(vol_pct, None)
+        params['vol_max'] = (vol_val / 100.0) if (vol_val and vol_val > 0) else None
+        params['abs_mom'] = form.get("abs_mom") == "1"
+        params['long_only'] = form.get("long_only") == "1"
+
+    result = None
+    error = None
+    if request.method == "POST":
+        try:
+            result = momentum_service.run(params)
+        except Exception as e:
+            error = f"回测出错: {e}"
+
+    # 供模板渲染下拉框默认值（浮点/百分比 → 展示用离散值）
+    form_state = dict(
+        rebal_n=params['rebal_n'],
+        top_frac=params['top_frac'],
+        liq_min=params['liq_min'],
+        leverage=params['leverage'],
+        slippage_bps=int(round(params['slippage'] * 10000)),
+        mode=params['mode'],
+        vol_max_pct=int(round(params['vol_max'] * 100)) if params['vol_max'] else 0,
+        abs_mom=params['abs_mom'],
+        long_only=params['long_only'],
+    )
+
+    return render_template("momentum.html",
+                           active_page='momentum',
+                           form_state=form_state,
+                           result=result,
+                           error=error,
+                           names=CRYPTO_COMPOSITE_NAMES)
+
+
+# ==================== 横截面动量量化（实盘/模拟交易任务） ====================
+# 与「横截面动量回测」共用同一策略口径，但作为量化任务运行：接入币安 USDT 永续合约
+# （测试网模拟 / 主网真实资金），定期横截面排名 + dollar-neutral 调仓。
+# 独立引擎封装在 momentum_live_trader.py；布局仿照「虚拟币综合量化」。
+
+_crypto_momentum_engines = {}
+
+
+def _crypto_momentum_running_engines():
+    return [e for tid, e in sorted(_crypto_momentum_engines.items(), reverse=True)
+            if e.status.get('running')]
+
+
+def _crypto_momentum_tasks_view():
+    tasks = momentum_live_trader.MomentumTrader.list_tasks()
+    for t in tasks:
+        eng = _crypto_momentum_engines.get(t.get('id'))
+        t['is_running'] = bool(eng and eng.status.get('running'))
+    return tasks
+
+
+def _crypto_momentum_log_lines(task_id):
+    if not task_id or not str(task_id).isdigit():
+        return []
+    path = os.path.join('data', 'logs', f"{momentum_live_trader.log_prefix()}{task_id}.log")
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return [ln.rstrip('\n') for ln in f if ln.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _crypto_momentum_fix_stale_running():
+    try:
+        tasks = momentum_live_trader.MomentumTrader.list_tasks()
+        changed = False
+        for t in tasks:
+            if t.get('status') == 'running' and t.get('id') not in _crypto_momentum_engines:
+                t['status'] = 'stopped'
+                changed = True
+        if changed:
+            with open(momentum_live_trader.tasks_file(), 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min, long_only,
+                                abs_mom, vol_max, interval, buy_pct, api_key, api_secret,
+                                shared_trader, leverage, testnet, task_id=None):
+    if task_id and _crypto_momentum_engines.get(task_id) and _crypto_momentum_engines[task_id].status.get('running'):
+        return False, "该任务已在运行中，请先停止后再启动"
+    if shared_trader:
+        bal_err = _check_avail_balance(shared_trader, float(total_fund), testnet, '横截面动量')
+        if bal_err:
+            return False, bal_err
+    eng = momentum_live_trader.MomentumTrader(api_key, api_secret, trader=shared_trader,
+                                              leverage=leverage, testnet=testnet)
+    ok, msg = eng.start(name, total_fund, rebal_days=rebal_days, top_frac=top_frac,
+                        liq_min=liq_min, long_only=long_only, abs_mom=abs_mom,
+                        vol_max=vol_max, interval=interval, buy_pct=buy_pct, task_id=task_id)
+    if ok:
+        _crypto_momentum_engines[eng._task_id] = eng
+    return ok, msg
+
+
+def _crypto_momentum_stop_task(task_id):
+    eng = _crypto_momentum_engines.pop(task_id, None)
+    if not eng:
+        return False, f"任务未在运行: {task_id}"
+    return eng.stop()
+
+
+def _default_momentum_symbols():
+    return [{'symbol': f'{b}/USDT', 'name': momentum_live_trader.NAMES.get(b, b),
+             'r14': 0.0, 'side': 'none', 'position': 0, 'entry_price': 0.0,
+             'last_price': 0.0, 'unrealized_pnl': 0.0, 'pnl_pct': 0.0}
+            for b in momentum_live_trader.BASES]
+
+
+def _momentum_equity_summary(task_id, total_fund):
+    pts = momentum_live_trader.load_equity_points(task_id)
+    total_fund = float(total_fund or 0)
+    cur = pts[-1][1] if pts else total_fund
+    anchor = total_fund
+    if pts:
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        before = [v for t, v in pts if t < midnight]
+        anchor = before[-1] if before else pts[0][1]
+    return {
+        'initial_fund': round(total_fund, 2),
+        'current_fund': round(cur, 2),
+        'total_return_pct': round((cur - total_fund) / total_fund * 100, 2) if total_fund > 0 else 0.0,
+        'today_pnl': round(cur - anchor, 2),
+        'today_pnl_pct': round((cur - anchor) / anchor * 100, 2) if anchor > 0 else 0.0,
+    }
+
+
+@app.route("/crypto-momentum", methods=["GET", "POST"])
+def crypto_momentum():
+    form = request.form
+    api_key = (form.get("api_key") or session.get("futures_api_key", DEFAULT_FUTURES_API_KEY)).strip()
+    api_secret = (form.get("api_secret") or session.get("futures_api_secret", DEFAULT_FUTURES_API_SECRET)).strip()
+    leverage = _to_int(form.get("leverage"), session.get("futures_leverage", FUTURES_LEVERAGE))
+    network = form.get("network") or session.get("futures_network", "testnet")
+    testnet = network != "mainnet"
+    error = None
+    message = None
+
+    if form.get("save_keys"):
+        session["futures_api_key"] = api_key
+        session["futures_api_secret"] = api_secret
+        session["futures_leverage"] = leverage
+        session["futures_network"] = network
+        return redirect(url_for('crypto_momentum', _saved='1'))
+
+    if not api_key or not api_secret:
+        return render_template("momentum_live.html", error="请输入合约 API 密钥",
+                              message=None, running=False, status=None,
+                              leverage=leverage, network=network,
+                              tasks=None, running_count=0, cur_task_id=None, log_lines=[],
+                              bases=momentum_live_trader.BASES,
+                              names=CRYPTO_COMPOSITE_NAMES,
+                              alert_email=(_auth.get_email_config(session.get('user', '')) or {}).get('email'))
+
+    shared_trader = _get_futures_trader(api_key, api_secret, leverage, testnet)
+    if shared_trader:
+        shared_trader.leverage = leverage
+
+    if request.method == "GET":
+        _crypto_momentum_fix_stale_running()
+
+    if request.args.get('_saved') == '1':
+        try:
+            bal_list, bErr = shared_trader.get_balance() if shared_trader else ([], '无密钥')
+            if bErr:
+                raise RuntimeError(bErr)
+            usdt = next((b for b in bal_list if b['asset'] == 'USDT'), None)
+            message = f"API 密钥绑定成功！合约账户 USDT 余额：{float(usdt['free'] if usdt else 0):.2f} USDT"
+        except Exception as e:
+            error = f"API 密钥绑定失败，请检查密钥/IP/合约权限：{e}"
+
+    arg_error = request.args.get('_error', '') or None
+    if arg_error:
+        error = arg_error
+
+    if request.method == "POST" and form.get("action") == "start":
+        name = form.get("name", '横截面动量量化任务')
+        total_fund = _to_float(form.get("total_fund"), 10000)
+        rebal_days = _to_int(form.get("rebal_days"), 5)
+        top_frac = _to_float(form.get("top_frac"), 20) / 100.0
+        liq_min = _to_float(form.get("liq_min"), 100_000_000)
+        long_only = form.get("long_only") == "1"
+        abs_mom = form.get("abs_mom") == "1"
+        vol_pct = form.get("vol_max") or ""
+        vol_val = _to_float(vol_pct, None)
+        vol_max = (vol_val / 100.0) if (vol_val and vol_val > 0) else None
+        interval = _to_int(form.get("interval"), 30)
+        buy_pct = _to_float(form.get("buy_pct"), 95) / 100
+        ok, msg = _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
+                                              long_only, abs_mom, vol_max, interval, buy_pct,
+                                              api_key, api_secret, shared_trader, leverage, testnet)
+        return redirect(url_for('crypto_momentum', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop_task":
+        ok, msg = _crypto_momentum_stop_task(form.get("task_id"))
+        return redirect(url_for('crypto_momentum', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "delete_task":
+        tid = form.get("task_id")
+        if tid in _crypto_momentum_engines and _crypto_momentum_engines[tid].status.get('running'):
+            return redirect(url_for('crypto_momentum', _error='任务运行中，请先停止再删除'))
+        ok, msg = momentum_live_trader.MomentumTrader.delete_task(tid)
+        return redirect(url_for('crypto_momentum', _error='' if ok else msg))
+
+    elif request.method == "POST" and form.get("action") == "stop":
+        stopped = 0
+        for tid in list(_crypto_momentum_engines.keys()):
+            ok, _msg = _crypto_momentum_stop_task(tid)
+            if ok:
+                stopped += 1
+        return redirect(url_for('crypto_momentum', _error='' if stopped else '没有运行中的任务'))
+
+    tasks = _crypto_momentum_tasks_view()
+    engines = _crypto_momentum_running_engines()
+    if engines:
+        status = engines[0].get_status()
+        status['id'] = engines[0]._task_id
+        cur_task_id = status['id']
+    else:
+        status = None
+        cur_task_id = tasks[0]['id'] if tasks else None
+    log_lines = _crypto_momentum_log_lines(cur_task_id) if cur_task_id else []
+
+    account_balance = None
+    if shared_trader:
+        try:
+            bal_list, bErr = shared_trader.get_balance()
+            if not bErr and bal_list:
+                usdt = next((b for b in bal_list if b.get('asset') == 'USDT'), None)
+                if usdt is not None:
+                    account_balance = float(usdt.get('free') or 0)
+        except Exception:
+            pass
+
+    return render_template("momentum_live.html", error=error, message=message,
+                          running=bool(engines), status=status,
+                          leverage=leverage, network=network, tasks=tasks,
+                          running_count=len(engines), cur_task_id=cur_task_id,
+                          log_lines=log_lines, api_key=api_key, api_secret=api_secret,
+                          account_balance=account_balance,
+                          bases=momentum_live_trader.BASES,
+                          names=CRYPTO_COMPOSITE_NAMES)
+
+
+@app.route("/crypto-momentum/api/status")
+def crypto_momentum_status():
+    from flask import jsonify
+    tid = request.args.get('task_id')
+    tasks = _crypto_momentum_tasks_view()
+    brief = [{'id': t.get('id'), 'name': t.get('name'), 'total_fund': t.get('total_fund'),
+              'rebal_days': t.get('rebal_days'), 'leverage': t.get('leverage'),
+              'long_only': t.get('long_only'), 'testnet': t.get('testnet'),
+              'started_at': t.get('started_at'), 'is_running': t.get('is_running', False)}
+             for t in tasks]
+    eng = None
+    if tid:
+        eng = _crypto_momentum_engines.get(tid)
+    else:
+        engines = _crypto_momentum_running_engines()
+        eng = engines[0] if engines else None
+    if eng:
+        try:
+            eng._refresh_positions_and_balance()
+            eng._refresh_prices()
+        except Exception:
+            pass
+        cur = eng.get_status()
+        cur['id'] = eng._task_id
+        disk = _crypto_momentum_log_lines(eng._task_id)
+        if disk:
+            cur['log'] = disk
+    else:
+        cur = {'running': False, 'log': ['未启动'], 'name': '—', 'total_fund': 0,
+               'leverage': 1, 'rebal_days': 5, 'top_frac': 0.20, 'liq_min': 100000000,
+               'long_only': False, 'abs_mom': False, 'vol_max': None,
+               'longs': [], 'shorts': [], 'n_eligible': 0, 'dispersion': 0.0,
+               'symbols': [], 'signal': '—', 'buy_count': 0, 'sell_count': 0,
+               'account_balance': 0.0, 'last_loop_time': None, 'last_rebalance_time': None,
+               'next_rebalance_time': None, 'initial_fund': 0, 'current_fund': 0,
+               'total_return_pct': 0, 'today_pnl': 0, 'today_pnl_pct': 0}
+        if tid:
+            rec = next((t for t in tasks if t.get('id') == tid), None)
+            if rec:
+                cur = {**rec, 'running': False, 'symbols': _default_momentum_symbols(),
+                       'longs': [], 'shorts': [], 'n_eligible': 0, 'dispersion': 0.0,
+                       'buy_count': 0, 'sell_count': 0,
+                       'log': _crypto_momentum_log_lines(tid) or ['（该任务暂无日志）']}
+                cur.update(_momentum_equity_summary(tid, rec.get('total_fund') or 0))
+    return jsonify({'tasks': brief, 'running_count': sum(1 for b in brief if b['is_running']), **cur})
+
+
+@app.route("/crypto-momentum/api/equity")
+def crypto_momentum_equity():
+    from flask import jsonify
+    tid = request.args.get('task_id') or ''
+    start = request.args.get('start', type=float)
+    end = request.args.get('end', type=float)
+    rec = next((t for t in _crypto_momentum_tasks_view() if t.get('id') == tid), None)
+    init_fund = float(rec.get('total_fund') or 0) if rec else 0.0
+    pts = momentum_live_trader.load_equity_points(tid) if tid else []
+    if start is not None:
+        pts = [p for p in pts if p[0] >= start]
+    if end is not None:
+        pts = [p for p in pts if p[0] <= end]
+    eng = _crypto_momentum_engines.get(tid)
+    if eng and getattr(eng, '_running', False):
+        pts = pts + [[round(time.time(), 3), eng._task_equity()]]
+    if len(pts) > 1500:
+        step = (len(pts) - 1) / 1499.0
+        idxs = sorted({int(i * step) for i in range(1500)} | {len(pts) - 1})
+        pts = [pts[i] for i in idxs]
+    return jsonify({'task_id': tid, 'initial_fund': round(init_fund, 2), 'count': len(pts),
+                    'points': [[round(t, 3), round(v, 4)] for t, v in pts]})
+
+
+@app.route("/crypto-momentum/api/export")
+def crypto_momentum_export():
+    tid = request.args.get('task_id', '')
+    typ = request.args.get('type', 'log')
+    rec = next((t for t in momentum_live_trader.MomentumTrader.list_tasks() if t.get('id') == tid), None)
+    if not rec:
+        abort(404)
+    if typ == 'config':
+        content = json.dumps(rec, ensure_ascii=False, indent=2)
+        fname, mime = f"momentum_config_{tid}.json", 'application/json'
+    else:
+        lines = _crypto_momentum_log_lines(tid)
+        content = '\n'.join(lines) if lines else '（该任务暂无日志）'
+        fname, mime = f"momentum_log_{tid}.log", 'text/plain'
+    return send_file(io.BytesIO(content.encode('utf-8')), as_attachment=True,
+                     download_name=fname, mimetype=mime)
 
 
 # ==================== 美股代币 base 名 ====================
@@ -1829,47 +2191,6 @@ def _load_macd_matrix():
         return None
 
 
-def _load_ndx_pool():
-    """币安合约美股93只(90只有效) × 三种MACD参数 × 30槽资金池 · 只做多回测（最优策略页表格展示）
-    数据源: scripts/results/us93_longonly_summary_1h.json, 转换为 groups/strategies/configs 展示结构"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'us93_longonly_summary_1h.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            raw = json.load(f)
-    except Exception:
-        return None
-    by_param = {}
-    for r in raw.get('results', []):
-        by_param.setdefault(r['params'], []).append(r)
-    strategies = []
-    for pname in ('12/16/7', '12/16/5', '12/26/9'):
-        rows = by_param.get(pname) or []
-        if not rows:
-            continue
-        strategies.append({
-            'name': f'MACD {pname} · 量能1.2x(vol20) · ATR14止1.5/盈2.0截断[1%,8%] · 收盘确认',
-            'configs': [{'lev': r['lev'], 'mode': '收盘确认', 'ret': r['ret'], 'mdd': r['mdd'],
-                         'trades': r['trades'], 'win': r['win'], 'peak': r.get('peak', 0),
-                         'skipped': r.get('skipped', 0), 'tp': r.get('tp', 0), 'sl': r.get('sl', 0),
-                         'rev': r.get('rev', 0), 'liq': r.get('liq', 0),
-                         'yearly': r.get('yearly', {})} for r in rows],
-        })
-    raw['groups'] = [{
-        'name': '币安合约美股93只（有效90只）· 只做多 · 30槽资金池 · 2024-01~2026-09',
-        'note': '金叉+量能1.2x开多、死叉平多不反手；总资金1万分30槽、每槽独立复利、先到先得、池满等待；'
-                '90/93只有效（SKHYNIX/CXMT/UNITREE 无Yahoo 1h数据被剔除）；11只因Yahoo 1h 730天上限或晚上市自2024-09后纳入。',
-        'strategies': strategies,
-    }]
-    raw['meta']['conclusion'] = ('只做多×收盘确认在币安美股池(90只)表现稳健：1x 全参数组合MDD仅 -6.1~-6.7%、'
-                                 '总收益 +522%~+614%、三个年度全部为正；2x MDD 放大到 -14%~-18%；'
-                                 '4x 收益弹性极大(+10.3万%~+43.4万%)但MDD -37%~-52%、各有2次爆仓，需严格控仓。'
-                                 '信号最疏的12/26/9池满跳过最少(120次)且4x总收益最高；12/16/5交易最密(7621笔)但4x回撤最深(-51.7%)。'
-                                 '注意：池内含TQQQ/SOXL/NVDL/TSLL等杠杆ETF与高波动标的，收益与波动均被放大；'
-                                 '回测未计资金费率与滑点，手续费按名义值0.05%/边（随杠杆放大）。')
-    return raw
-
-
 def _load_recommended():
     """实盘推荐配置（虚拟币/美股 各三档，风险低→高）"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1879,44 +2200,6 @@ def _load_recommended():
             return json.load(f)
     except Exception:
         return None
-
-
-def _load_tp_close_matrix():
-    """MACD 量能1.2x · 止盈口径对照（盘中触发 vs 收盘确认）回测汇总（最优策略页表格展示）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'tp_close_vs_intraday_summary.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_macd_vol_monthly():
-    """MACD 量能1.2x · 盘中触发 · 逐月收益+持币份数（1h · 1x/2x/4x）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'macd_vol_monthly_pos_1h.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_c3_matrix():
-    """C3 紧止损口径（止损1.0×ATR/止盈1.2×ATR·盘中触发）三种MACD × 1/2/4x 杠杆，
-    两时代对照：2021-2023（26币池）与 2024-2026（30币池）。
-    返回 {'2021': {...}, '2024': {...}}；文件缺失的时段为 None。"""
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'results')
-    out = {}
-    for key, fn in (('2021', 'top30_2021_c3_intraday_1h.json'),
-                    ('2024', 'macd_c3_lev_1h.json')):
-        try:
-            with open(os.path.join(base, fn), encoding='utf-8') as f:
-                out[key] = json.load(f)
-        except Exception:
-            out[key] = None
-    return out if any(out.values()) else None
 
 
 _NOTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'strategy_notes.json')
@@ -2036,10 +2319,6 @@ def strategies_summary():
                            sort=sort, order=order, cat=cat, sector=sector,
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
-                           ndx_pool=_load_ndx_pool(),
-                           tp_close_matrix=_load_tp_close_matrix(),
-                           macd_vol_monthly=_load_macd_vol_monthly(),
-                           c3_matrix=_load_c3_matrix(),
                            strategy_notes=_load_strategy_notes(),
                            recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
