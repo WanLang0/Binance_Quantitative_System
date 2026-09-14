@@ -675,7 +675,7 @@ def momentum():
         params['long_only'] = form.get("long_only") == "1"
 
     result = None
-    error = None
+    error = None if momentum_service.available() else momentum_service.MISSING_MSG
     if request.method == "POST":
         try:
             result = momentum_service.run(params)

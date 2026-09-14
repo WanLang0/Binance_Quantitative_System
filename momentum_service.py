@@ -18,13 +18,30 @@ if _SCRIPTS not in sys.path:
 import numpy as np
 import pandas as pd
 
-from tmp_xsec_mom_longshort import (
-    load as _load,
-    backtest as _backtest,
-    stat_core as _stat_core,
-    INIT,
-    monthly_breakdown as _monthly_breakdown,
-)
+# 研究引擎位于 scripts/tmp_xsec_mom_longshort.py，且依赖本机 scripts/cache/*.pkl
+# 回测缓存——两者均不入库（.gitignore 排除），生产/服务器拉代码后可能不存在。
+# 缺失时不阻断 app 启动：回测页显示提示，实盘页 /crypto-momentum 不受影响。
+try:
+    from tmp_xsec_mom_longshort import (
+        load as _load,
+        backtest as _backtest,
+        stat_core as _stat_core,
+        INIT,
+        monthly_breakdown as _monthly_breakdown,
+    )
+    _ENGINE_OK = True
+except ImportError:
+    _load = _backtest = _stat_core = _monthly_breakdown = None
+    INIT = 10000.0
+    _ENGINE_OK = False
+
+MISSING_MSG = ("本机缺少回测研究引擎（scripts/tmp_xsec_mom_longshort.py）或"
+               "日线缓存（scripts/cache/*.pkl），回测功能不可用。"
+               "实盘页「横截面动量量化」不受影响，可正常使用。")
+
+
+def available():
+    return _ENGINE_OK
 
 # 默认最优参数（与脚本 tmp_xsec_holding.py 的 FIXED 一致）
 DEFAULTS = dict(
@@ -48,6 +65,8 @@ _data_cache = {}
 
 def load_data(exclude=None):
     """加载 PIT 30币宇宙 + 逐8h funding（带缓存）。"""
+    if not _ENGINE_OK:
+        raise RuntimeError(MISSING_MSG)
     key = (DEFAULTS['min_len'], DEFAULTS['funding_mode'], tuple(exclude or []))
     if key not in _data_cache:
         _data_cache[key] = _load(min_len=key[0], funding_mode=key[1], exclude=exclude)
