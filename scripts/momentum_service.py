@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""横截面动量回测服务：封装 scripts/tmp_xsec_mom_longshort.py 研究引擎，供 Web 页面调用。
+"""横截面动量回测服务（研究/回测代码，归属 scripts/，不入生产依赖链）。
+
+封装同目录研究引擎 tmp_xsec_mom_longshort.py，供 Web 回测页 /momentum 调用。
+实盘执行代码 momentum_live_trader.py 位于项目根目录，不依赖本模块及 scripts/ 下任何文件。
 
 最优口径（默认）:
   PIT 30币(动态宇宙) · R14 · Top20% · 5D调仓 · Liquidity 100M · 1x
@@ -11,7 +14,7 @@
 import os
 import sys
 
-_SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
+_SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 

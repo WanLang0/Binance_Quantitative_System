@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import threading
@@ -23,7 +24,6 @@ import auth as _auth
 import strategies_store as _store
 import daily_signal_report as _daily_report
 import mailer
-import momentum_service
 import momentum_live_trader
 
 app = Flask(__name__)
@@ -653,12 +653,41 @@ def download_trades():
 
 
 # ==================== 横截面动量回测页 ====================
-# 基于 scripts/tmp_xsec_mom_longshort.py 的研究引擎，独立封装在 momentum_service.py。
-# 布局仿照「虚拟币综合量化」：左侧参数配置 + 右侧结果监控（指标卡/净值曲线/逐月/逐币/滑点）。
+# 回测属于研究代码：服务层位于 scripts/momentum_service.py，依赖同目录研究引擎
+# tmp_xsec_mom_longshort.py 与本机日线缓存（均不入库）。此处延迟可选加载——
+# 缺失时回测页显示提示，app 与实盘模块 momentum_live_trader 照常运行。
+_MOMENTUM_BACKTEST_MISSING = ("本机缺少回测研究引擎（scripts/tmp_xsec_mom_longshort.py）或"
+                              "日线缓存（scripts/cache/*.pkl），回测功能不可用。"
+                              "实盘页「横截面动量量化」不受影响，可正常使用。")
+_momentum_backtest = None
+_momentum_backtest_loaded = False
+
+
+def _get_momentum_backtest():
+    """延迟加载 scripts/momentum_service.py（回测服务）；不可用时返回 None。"""
+    global _momentum_backtest, _momentum_backtest_loaded
+    if _momentum_backtest_loaded:
+        return _momentum_backtest
+    _momentum_backtest_loaded = True
+    try:
+        _scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
+        if _scripts_dir not in sys.path:
+            sys.path.insert(0, _scripts_dir)
+        import momentum_service as _ms
+        _momentum_backtest = _ms if _ms.available() else None
+    except Exception:
+        _momentum_backtest = None
+    return _momentum_backtest
+
+
 @app.route("/momentum", methods=["GET", "POST"])
 def momentum():
     form = request.form
-    params = dict(momentum_service.DEFAULTS)
+    ms = _get_momentum_backtest()
+    params = dict(ms.DEFAULTS) if ms else dict(
+        rebal_n=5, top_frac=0.20, liq_min=100_000_000.0, leverage=1.0,
+        slippage=0.003, mode='r14', vol_max=None, abs_mom=False, long_only=False,
+    )
 
     if request.method == "POST":
         params['rebal_n'] = _to_int(form.get("rebal_n"), params['rebal_n'])
@@ -675,12 +704,15 @@ def momentum():
         params['long_only'] = form.get("long_only") == "1"
 
     result = None
-    error = None if momentum_service.available() else momentum_service.MISSING_MSG
+    error = None if ms else _MOMENTUM_BACKTEST_MISSING
     if request.method == "POST":
-        try:
-            result = momentum_service.run(params)
-        except Exception as e:
-            error = f"回测出错: {e}"
+        if not ms:
+            error = _MOMENTUM_BACKTEST_MISSING
+        else:
+            try:
+                result = ms.run(params)
+            except Exception as e:
+                error = f"回测出错: {e}"
 
     # 供模板渲染下拉框默认值（浮点/百分比 → 展示用离散值）
     form_state = dict(
