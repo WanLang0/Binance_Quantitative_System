@@ -4,9 +4,8 @@
 与「横截面动量回测」共用同一策略口径（R14 排名，Top/Bottom 对称，dollar-neutral）：
   - R14 = close / close.shift(14) - 1
   - 流动性过滤：24h 成交额 = volume × close > liq_min（默认 100M USDT）
-  - 波动率过滤：20d 年化波动率（vol20 = pct_change().rolling(20).std() × sqrt(365)）
   - 排名：按 R14 降序，Top n 做多、Bottom n 做空（n = 候选数 × top_frac）
-  - 绝对动量闸门（abs_mom）：只做多 R14>0、做空 R14<0（震荡期自动空仓）
+  - 市场趋势闸门（V2 冻结口径）：Top30 等权指数 > MA60 才交易，否则全部空仓
   - 资金分配：dollar-neutral，每个仓位名义 = 权益 × 杠杆 / (多头数 + 空头数)
 
 与「虚拟币综合量化」同为量化任务：独立后台线程、启停、状态快照、日志、
@@ -28,10 +27,23 @@ from futures_trader import FuturesTrader
 LOG_DIR = os.path.join('data', 'logs')
 TASKS_FILE = os.path.join('data', 'momentum_tasks.json')
 
-# 候选币池：市值前30回测标的 ∩ 币安 USDT 永续（与回测 BASES 完全一致）
+# 候选币池（universe_mode='fixed' 时的名单）：市值前30回测标的 ∩ 币安 USDT 永续
+# 注意：此为旧 V2 口径（存在幸存者偏差，R5-R8 已审计）。生产推荐 universe_mode='u8'。
 BASES = ['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'TRX', 'HYPE', 'ZEC', 'DOGE', 'XMR',
          'LINK', 'ADA', 'XLM', 'BCH', 'CC', 'LTC', 'UNI', 'GRAM', 'HBAR', 'AVAX',
          'SUI', 'NEAR', 'M', 'TAO', 'ASTER', 'AAVE', 'ONDO', 'MORPHO', 'DOT', 'ICP']
+
+# U8 动态宇宙（V2@U8 生产口径，R7-R14 审计冻结）：
+#   ADV30 ≥ adv_min 且 上市年龄 ≥ age_min 天 且 当日成交额 > liq_floor，
+#   按 ADV30 降序取前 top_n。每个调仓日重算（PIT，无幸存者偏差）。
+U8_PARAMS = {
+    'adv_min': 100_000_000.0,   # 30日均成交额下限（USDT）
+    'age_min': 365,             # 上市天数下限
+    'liq_floor': 10_000_000.0,  # 当日成交额下限（USDT）
+    'top_n': 50,                # ADV30 排名截断
+    'adv_win': 30,              # ADV 均值窗口（天）
+}
+ONBOARD_CACHE_FILE = os.path.join('data', 'momentum_onboard.json')
 
 NAMES = {
     'BTC': '比特币', 'ETH': '以太坊', 'BNB': '币安币', 'XRP': '瑞波币', 'SOL': 'Solana',
@@ -109,16 +121,16 @@ class MomentumTrader:
             'rebal_days': 5,             # 调仓周期（自然日）
             'top_frac': 0.20,            # Top/Bottom 比例
             'liq_min': 100_000_000.0,    # 流动性阈值（USDT 24h 成交额）
-            'long_only': False,          # 只做多（砍掉做空腿）
-            'abs_mom': False,            # 绝对动量闸门
-            'vol_max': None,             # 波动率过滤（年化，None=关闭）
+            'ma_gate': 60,               # 市场趋势闸门（V2：等权指数>MA_N 才交易，0=关闭）
+            'universe_mode': 'fixed',    # 'fixed'=BASES 名单 | 'u8'=PIT 动态宇宙（生产推荐）
             'interval': 30,              # 轮询间隔（秒）
             'buy_pct': DEFAULT_BUY_PCT,
             'symbols': [],               # 候选币状态
             'longs': [],                 # 当前做多名单
             'shorts': [],                # 当前做空名单
-            'n_eligible': 0,             # 通过流动性/波动率过滤的候选数
+            'n_eligible': 0,             # 通过流动性过滤的候选数
             'dispersion': 0.0,           # 横截面离散度 std(R14)
+            'gate_on': None,             # 趋势闸门状态（True=开仓允许/False=空仓/None=未判断）
             'realized_pnl': 0.0,         # 累计已实现盈亏
             'account_balance': 0.0,
             'last_loop_time': None,
@@ -177,9 +189,7 @@ class MomentumTrader:
             'rebal_days': self.status['rebal_days'],
             'top_frac': self.status['top_frac'],
             'liq_min': self.status['liq_min'],
-            'long_only': self.status['long_only'],
-            'abs_mom': self.status['abs_mom'],
-            'vol_max': self.status['vol_max'],
+            'ma_gate': self.status['ma_gate'],
             'interval': self.status['interval'],
             'buy_pct': self.status['buy_pct'],
             'testnet': bool(self.testnet),
@@ -232,9 +242,8 @@ class MomentumTrader:
                 'rebal_days': self.status['rebal_days'],
                 'top_frac': self.status['top_frac'],
                 'liq_min': self.status['liq_min'],
-                'long_only': self.status['long_only'],
-                'abs_mom': self.status['abs_mom'],
-                'vol_max': self.status['vol_max'],
+                'ma_gate': self.status['ma_gate'],
+                'universe_mode': self.status['universe_mode'],
                 'interval': self.status['interval'],
                 'buy_pct': self.status['buy_pct'],
                 'longs': self.status['longs'],
@@ -243,6 +252,7 @@ class MomentumTrader:
                 'buy_count': self.status['buy_count'],
                 'sell_count': self.status['sell_count'],
                 'last_rebalance_time': self.status['last_rebalance_time'],
+                'gate_hist': self.status.get('gate_hist') or [],   # 阶梯指数历史（重启后闸门立即可用）
                 'symbols': [{
                     'symbol': s['symbol'], 'side': s['side'], 'position': s['position'],
                     'entry_price': s['entry_price'],
@@ -260,7 +270,7 @@ class MomentumTrader:
             with open(self.state_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             for k in ('name', 'total_fund', 'leverage', 'rebal_days', 'top_frac',
-                      'liq_min', 'long_only', 'abs_mom', 'vol_max', 'interval', 'buy_pct'):
+                      'liq_min', 'ma_gate', 'universe_mode', 'interval', 'buy_pct'):
                 if k in data:
                     self.status[k] = data[k]
             self.status['longs'] = data.get('longs') or []
@@ -269,6 +279,9 @@ class MomentumTrader:
             self.status['buy_count'] = int(data.get('buy_count') or 0)
             self.status['sell_count'] = int(data.get('sell_count') or 0)
             self.status['last_rebalance_time'] = data.get('last_rebalance_time')
+            if isinstance(data.get('gate_hist'), list):
+                self.status['gate_hist'] = [
+                    [str(d), float(m)] for d, m in data['gate_hist'] if m == m]
             saved = {s['symbol']: s for s in (data.get('symbols') or [])}
             for s in self.status['symbols']:
                 src = saved.get(s['symbol'])
@@ -280,24 +293,143 @@ class MomentumTrader:
             pass
 
     # ---------- 候选池构建 ----------
-    def _build_symbols(self):
+    def _build_symbols(self, bases=None):
+        bases = bases if bases is not None else BASES
         return [{
             'symbol': f'{b}/USDT',
             'name': NAMES.get(b, b),
             'r14': 0.0,
             'liq': 0.0,
-            'vol20': 0.0,
             'side': 'none',
             'position': 0,
             'entry_price': 0.0,
             'last_price': 0.0,
             'unrealized_pnl': 0.0,
             'pnl_pct': 0.0,
-        } for b in BASES]
+        } for b in bases]
+
+    # ---------- U8 动态宇宙（V2@U8 生产口径） ----------
+    def _load_onboard_cache(self):
+        try:
+            if os.path.exists(ONBOARD_CACHE_FILE):
+                with open(ONBOARD_CACHE_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def _save_onboard_cache(self, cache):
+        try:
+            os.makedirs(os.path.dirname(ONBOARD_CACHE_FILE), exist_ok=True)
+            with open(ONBOARD_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache, f)
+        except Exception:
+            pass
+
+    def _u8_pool(self, now_ms=None):
+        """U8 PIT 动态宇宙：全市场 USDT 永续 → ADV30/年龄/当日流动性过滤 → ADV30 Top N。
+        仅在调仓日调用（全市场扫描，约几百次 klines 请求）。"""
+        p = U8_PARAMS
+        now_ms = now_ms or int(time.time() * 1000)
+        onboard = self._load_onboard_cache()
+        markets = {}
+        try:
+            markets = self.trader.exchange.markets or {}
+        except Exception:
+            markets = {}
+        if not markets:
+            try:
+                markets = self.trader.exchange.load_markets() or {}
+            except Exception:
+                markets = {}
+        # 候选：活跃 USDT 永续；onboardDate 补缓存
+        cands = []
+        for sym, m in markets.items():
+            if not (m.get('swap') and m.get('quote') == 'USDT' and m.get('active', True)):
+                continue
+            base = m.get('base')
+            if not base:
+                continue
+            obd = (m.get('info') or {}).get('onboardDate')
+            if obd and base not in onboard:
+                onboard[base] = int(obd)
+            cands.append(base)
+        if onboard:
+            self._save_onboard_cache(onboard)
+        rows = []
+        n_scan = 0
+        for base in sorted(set(cands)):
+            sym = f'{base}/USDT'
+            try:
+                candles, err = self.trader.get_ohlcv(sym, '1d', limit=p['adv_win'] + 5)
+            except Exception:
+                continue
+            if err or not candles:
+                continue
+            n_scan += 1
+            df = pd.DataFrame(candles)
+            close = df['close'].astype(float)
+            qv = df['volume'].astype(float) * close
+            if not len(qv):
+                continue
+            # R7 冻结语义：ADV30 用可用 bars 计算（新上市不足 30 根也参与排名，
+            # 会占 Top-N 名额但被 age 过滤挡掉——与回测 pool_at 完全同构）
+            adv = float(qv.iloc[-p['adv_win']:].mean())
+            liq = float(qv.iloc[-1])
+            ob_ms = onboard.get(base)
+            if not ob_ms:
+                continue  # 无上市日期（保守排除）
+            age_days = (now_ms - int(ob_ms)) / 86400_000.0
+            if liq > p['liq_floor']:
+                rows.append((base, adv, age_days))
+        # R7 冻结语义：先按 ADV30 降序取 Top N，再过滤 adv_min/age_min（不回填）
+        rows.sort(key=lambda x: -x[1])
+        pool = [b for b, a, g in rows[:p['top_n']] if a >= p['adv_min'] and g >= p['age_min']]
+        self._log(f"U8 动态宇宙: 扫描{n_scan}个USDT永续 → 候选{len(rows)} → "
+                  f"Top{p['top_n']}过adv/age → 池{len(pool)}: "
+                  f"{', '.join(pool[:15])}{'...' if len(pool) > 15 else ''}")
+        return pool
+
+    def _refresh_universe(self, now_ms=None):
+        """u8 模式：重算宇宙并重建 symbols（保留现有持仓信息）。
+        跌出池但仍有持仓的币必须保留在 symbols 中，否则 _rebalance 的
+        平仓循环遍历不到 → 幽灵持仓（R15 Replay 抓获的 bug）。"""
+        old = {s['symbol']: s for s in self.status['symbols']}
+        pool = self._u8_pool(now_ms=now_ms)
+        keep = set(pool)
+        bases = list(pool)
+        for sym, s in old.items():
+            base = sym.split('/')[0]
+            if (s.get('position') or 0) > 0 and base not in keep:
+                bases.append(base)
+                self._log(f"{base} 跌出 U8 池但仍有持仓，保留待平仓")
+        new_syms = self._build_symbols(bases)
+        for s in new_syms:
+            src = old.get(s['symbol'])
+            if src:
+                for k in ('side', 'position', 'entry_price', 'last_price',
+                          'unrealized_pnl', 'pnl_pct'):
+                    s[k] = src[k]
+        self.status['symbols'] = new_syms
+        return pool
 
     # ---------- 权益 ----------
     def _task_equity(self):
-        unreal = sum(float(s.get('unrealized_pnl') or 0.0) for s in self.status['symbols'])
+        """权益 = 账户可用余额 + 保证金占用 + 未实现盈亏。
+        优先用交易所真实账户（现金口径，天然含手续费与 funding 扣减），
+        与回测 cash + 持仓市值 的会计同构；不可用时退回本地记账。"""
+        bal = float(self.status.get('account_balance') or 0.0)
+        margin = 0.0
+        unreal = 0.0
+        for s in self.status['symbols']:
+            p = float(s.get('position') or 0.0)
+            if p > 0:
+                unreal += float(s.get('unrealized_pnl') or 0.0)
+                entry = float(s.get('entry_price') or 0.0)
+                margin += entry * p / max(1.0, float(self.leverage or 1))
+        if bal > 0:
+            # 保证金占用已在开仓时从可用余额中划出（逐仓），权益 = 可用 + 占用 + 浮盈亏
+            return round(bal + margin + unreal, 4)
         return round(self.status['total_fund'] + self.status.get('realized_pnl', 0.0) + unreal, 4)
 
     # ---------- 资金曲线 ----------
@@ -384,13 +516,30 @@ class MomentumTrader:
                 s['pnl_pct'] = round(s['unrealized_pnl'] / _base * 100, 2) if _base > 0 else 0.0
 
     # ---------- 横截面信号 ----------
-    def _compute_target(self):
-        """拉取候选池日线 → 计算 R14 → 流动性/波动率过滤 → Top/Bottom 名单。
-        返回 (longs, shorts, n_eligible, dispersion)。"""
+    def _compute_target(self, now_ts=None):
+        """拉取候选池日线 → 计算 R14 → 流动性过滤 → Top/Bottom 名单 → V2 趋势闸门。
+        universe_mode='u8'：先全市场重算 U8 动态宇宙（PIT，年龄按 now_ts 计算），
+        池内流动性阈值用 U8 口径；跌出池的幽灵持仓币不参与排名（仅保留待平仓）。
+        趋势闸门（V2 冻结口径）：调仓网格点（每 rebal_days 一点）的池等权日收益
+        累乘成阶梯指数，指数 > MA_N 才交易。与 R7 回测 build_gate 完全同构。
+        闸门不通过（或 MA 未就绪）则全部空仓。
+        返回 (longs, shorts, n_eligible, dispersion, gate_on)。"""
+        u8_mode = self.status.get('universe_mode') == 'u8'
+        pool = None
+        if u8_mode:
+            pool = set(self._refresh_universe(now_ms=(now_ts * 1000) if now_ts else None))
+        liq_min = U8_PARAMS['liq_floor'] if u8_mode else self.status['liq_min']
+        ma_n = int(self.status.get('ma_gate') or 0)
+        limit = max(60, ma_n + 15)
         rows = []
+        rets = {}   # base -> 当日收益（池等权指数成分）
+        last_ts = 0
         for s in self.status['symbols']:
+            base = s['symbol'].split('/')[0]
+            if pool is not None and base not in pool:
+                continue   # 幽灵持仓：仅保留待平仓，不参与排名/闸门
             sym = s['symbol']
-            candles, err = self.trader.get_ohlcv(sym, '1d', limit=60)
+            candles, err = self.trader.get_ohlcv(sym, '1d', limit=limit)
             if err or not candles:
                 continue
             df = pd.DataFrame(candles)
@@ -399,23 +548,21 @@ class MomentumTrader:
             close = df['close'].astype(float)
             r14 = float(close.iloc[-1] / close.iloc[-15] - 1.0) if close.iloc[-15] else np.nan
             liq = float(df['volume'].astype(float).iloc[-1] * close.iloc[-1])
-            vol20 = float(close.pct_change().rolling(20).std().iloc[-1] * np.sqrt(365)) if len(close) >= 21 else np.nan
             s['r14'] = r14 if np.isfinite(r14) else 0.0
             s['liq'] = liq if np.isfinite(liq) else 0.0
-            s['vol20'] = vol20 if np.isfinite(vol20) else 0.0
+            if len(close) >= 2 and close.iloc[-2]:
+                r1 = float(close.iloc[-1] / close.iloc[-2] - 1.0)
+                if np.isfinite(r1):
+                    rets[base] = r1
+            last_ts = max(last_ts, int(df['ts'].iloc[-1]))
             if np.isfinite(r14) and np.isfinite(liq):
-                rows.append((s['symbol'].split('/')[0], r14, liq, vol20 if np.isfinite(vol20) else np.nan))
+                rows.append((base, r14, liq))
         if not rows:
-            return [], [], 0, 0.0
+            return [], [], 0, 0.0, None
         # 流动性过滤
-        rows = [r for r in rows if r[2] > self.status['liq_min']]
+        rows = [r for r in rows if r[2] > liq_min]
         if not rows:
-            return [], [], 0, 0.0
-        # 波动率过滤
-        if self.status['vol_max'] is not None:
-            rows = [r for r in rows if not np.isfinite(r[3]) or r[3] <= self.status['vol_max']]
-        if not rows:
-            return [], [], 0, 0.0
+            return [], [], 0, 0.0, None
         disp = float(np.std([r[1] for r in rows]))
         rows.sort(key=lambda x: x[1], reverse=True)
         n = int(len(rows) * self.status['top_frac'])
@@ -423,12 +570,30 @@ class MomentumTrader:
             n = 1
         longs = [r[0] for r in rows[:n]]
         shorts = [r[0] for r in rows[-n:]] if n > 0 else []
-        if self.status['abs_mom']:
-            longs = [b for b in longs if next((r[1] for r in rows if r[0] == b), 0.0) > 0]
-            shorts = [b for b in shorts if next((r[1] for r in rows if r[0] == b), 0.0) < 0]
-        if self.status['long_only']:
-            shorts = []
-        return longs, shorts, len(rows), disp
+        # V2 趋势闸门：阶梯指数（每调仓日一点）> MA_N 才交易（R7 build_gate 同构）
+        gate_on = True
+        if ma_n > 0:
+            hist = self.status.setdefault('gate_hist', [])
+            if rets:
+                d_str = datetime.utcfromtimestamp(last_ts / 1000.0).strftime('%Y-%m-%d')
+                mkt = float(np.mean(list(rets.values())))
+                if hist and hist[-1][0] == d_str:
+                    hist[-1][1] = mkt
+                else:
+                    hist.append([d_str, mkt])
+                self.status['gate_hist'] = hist[-(ma_n + 60):]   # 有界增长
+            idx_series = np.cumprod([1.0] + [1.0 + m for _, m in self.status['gate_hist']])[1:]
+            if len(idx_series) >= ma_n:
+                ma = float(np.mean(idx_series[-ma_n:]))
+                gate_on = bool(idx_series[-1] > ma)
+                self.status['gate_index'] = round(float(idx_series[-1]), 6)
+                self.status['gate_ma'] = round(ma, 6)
+            else:
+                # MA 未就绪（需 ma_n 个调仓点）：与回测一致，空仓等待
+                return [], [], len(rows), disp, False
+            if not gate_on:
+                return [], [], len(rows), disp, False
+        return longs, shorts, len(rows), disp, gate_on
 
     # ---------- 下单 ----------
     def _close_symbol(self, s, reason):
@@ -459,6 +624,16 @@ class MomentumTrader:
         if price <= 0:
             self._log(f"开仓跳过({s['symbol']}): 无有效价格")
             return
+        # U8 池换入的新币可能未设置杠杆（start 时按旧名单设置），开仓前确保
+        if not s.get('lev_set'):
+            try:
+                ok, err = self.trader.set_leverage(self.leverage, s['symbol'])
+                if ok:
+                    s['lev_set'] = True
+                else:
+                    self._log(f"设置杠杆失败({s['symbol']}): {err}")
+            except Exception as e:
+                self._log(f"设置杠杆失败({s['symbol']}): {e}")
         contracts = self.trader.round_amount(s['symbol'], per / price)
         if contracts <= 0:
             self._log(f"开仓跳过({s['symbol']}): 张数为0（分配 {per:.2f}U @ {price}）")
@@ -507,16 +682,55 @@ class MomentumTrader:
         self._refresh_positions_and_balance()
         self.save_state()
 
+    # ---------- 单次调仓判断（主循环与历史 Replay 共用） ----------
+    def tick(self, now_ts=None, force_rebalance=False):
+        """一轮监测：刷新持仓/价格；到达调仓日则重算信号并执行。
+        now_ts 可注入（历史 Replay 用），默认真实时间。返回是否执行了调仓。"""
+        now_ts = now_ts if now_ts is not None else time.time()
+        self.trader.wait_ip_ban()
+        self._refresh_positions_and_balance()
+        self._refresh_prices()
+        due = (not self._last_rebalance_ts) or \
+              (now_ts - self._last_rebalance_ts) >= self.status['rebal_days'] * 86400
+        if force_rebalance or due:
+            self._log("到达调仓日，计算横截面动量排名...")
+            longs, shorts, n_elig, disp, gate_on = self._compute_target(now_ts=now_ts)
+            self.status['longs'] = longs
+            self.status['shorts'] = shorts
+            self.status['n_eligible'] = n_elig
+            self.status['dispersion'] = round(disp, 4)
+            self.status['gate_on'] = gate_on
+            if gate_on is False:
+                gi = self.status.get('gate_index')
+                gm = self.status.get('gate_ma')
+                self._log(f"趋势闸门关闭: 等权指数{gi} ≤ MA{self.status['ma_gate']}({gm})，全部空仓")
+                self.status['signal'] = f"闸门空仓（指数≤MA{self.status['ma_gate']}）"
+            else:
+                self._log(f"信号: 做多{len(longs)} {longs} / 做空{len(shorts)} {shorts} / 候选{n_elig} / 离散度{disp:.4f}")
+                self.status['signal'] = f"多头{len(longs)} · 空头{len(shorts)}"
+            self._rebalance(longs, shorts)
+            self._last_rebalance_ts = now_ts
+            self.status['last_rebalance_time'] = datetime.utcfromtimestamp(now_ts).isoformat()
+            self.status['next_rebalance_time'] = (
+                datetime.utcfromtimestamp(now_ts + self.status['rebal_days'] * 86400)).isoformat()
+            return True
+        return False
+
     # ---------- 主循环 ----------
     def _run_loop(self):
         self._running = True
         self.status['running'] = True
         self.status['started_at'] = datetime.now().isoformat()
-        self._log(f"横截面动量任务已启动: {self.status['name']} · 总资金{self.status['total_fund']}U · "
+        self._log(f"横截面动量V2任务已启动: {self.status['name']} · 总资金{self.status['total_fund']}U · "
                   f"杠杆{self.status['leverage']}x · 调仓周期{self.status['rebal_days']}日 · "
-                  f"Top/Bottom {self.status['top_frac']*100:.0f}% · 流动性>{self.status['liq_min']/1e6:.0f}M · "
-                  f"{'只做多' if self.status['long_only'] else '多空'} · 轮询{self.status['interval']}s")
-        self._log(f"候选池({len(self.status['symbols'])}个): {', '.join(BASES)}")
+                  f"Top/Bottom {self.status['top_frac']*100:.0f}% · 宇宙模式{self.status['universe_mode']}"
+                  f"{'(U8 PIT动态)' if self.status['universe_mode'] == 'u8' else ''} · "
+                  f"趋势闸门{'指数>MA' + str(self.status['ma_gate']) if self.status['ma_gate'] else '关闭'} · "
+                  f"轮询{self.status['interval']}s")
+        if self.status['universe_mode'] == 'u8':
+            self._log(f"U8 动态宇宙参数: {U8_PARAMS}")
+        else:
+            self._log(f"候选池({len(self.status['symbols'])}个): {', '.join(BASES)}")
         self._log(f"网络: {'测试网(模拟)' if self.testnet else '主网(真实资金)'}")
 
         # 逐币设置杠杆与逐仓保证金模式（与回测逐仓口径一致）
@@ -525,6 +739,8 @@ class MomentumTrader:
                 ok, err = self.trader.set_leverage(self.leverage, s['symbol'])
                 if not ok:
                     self._log(f"设置杠杆失败({s['symbol']}): {err}")
+                else:
+                    s['lev_set'] = True
             except Exception as e:
                 self._log(f"设置杠杆失败({s['symbol']}): {e}")
 
@@ -535,26 +751,7 @@ class MomentumTrader:
 
         while not self._stop_event.is_set():
             try:
-                self.trader.wait_ip_ban()
-                # 刷新真实持仓 + 价格
-                self._refresh_positions_and_balance()
-                self._refresh_prices()
-                # 调仓判断：距上次调仓满 rebal_days 自然日
-                now = time.time()
-                if not self._last_rebalance_ts or (now - self._last_rebalance_ts) >= self.status['rebal_days'] * 86400:
-                    self._log("到达调仓日，计算横截面动量排名...")
-                    longs, shorts, n_elig, disp = self._compute_target()
-                    self.status['longs'] = longs
-                    self.status['shorts'] = shorts
-                    self.status['n_eligible'] = n_elig
-                    self.status['dispersion'] = round(disp, 4)
-                    self._log(f"信号: 做多{len(longs)} {longs} / 做空{len(shorts)} {shorts} / 候选{n_elig} / 离散度{disp:.4f}")
-                    self.status['signal'] = f"多头{len(longs)} · 空头{len(shorts)}"
-                    self._rebalance(longs, shorts)
-                    self._last_rebalance_ts = now
-                    self.status['last_rebalance_time'] = datetime.now().isoformat()
-                    self.status['next_rebalance_time'] = (
-                        datetime.now() + timedelta(days=self.status['rebal_days'])).isoformat()
+                self.tick()
                 # 记录权益快照
                 try:
                     self._record_equity()
@@ -575,8 +772,8 @@ class MomentumTrader:
 
     # ---------- 启停 ----------
     def start(self, name, total_fund, rebal_days=5, top_frac=0.20, liq_min=100_000_000.0,
-              long_only=False, abs_mom=False, vol_max=None, interval=30, buy_pct=DEFAULT_BUY_PCT,
-              task_id=None):
+              ma_gate=60, interval=30, buy_pct=DEFAULT_BUY_PCT,
+              task_id=None, universe_mode='fixed'):
         with self._lock:
             if self._running:
                 return False, '已在运行中'
@@ -586,9 +783,8 @@ class MomentumTrader:
             self.status['rebal_days'] = max(1, int(rebal_days or 5))
             self.status['top_frac'] = float(top_frac or 0.20)
             self.status['liq_min'] = float(liq_min or 100_000_000.0)
-            self.status['long_only'] = bool(long_only)
-            self.status['abs_mom'] = bool(abs_mom)
-            self.status['vol_max'] = float(vol_max) if vol_max else None
+            self.status['ma_gate'] = max(0, int(ma_gate or 0))
+            self.status['universe_mode'] = 'u8' if universe_mode == 'u8' else 'fixed'
             self.status['interval'] = max(5, int(interval or 30))
             self.status['buy_pct'] = float(buy_pct or DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT
             self.status['symbols'] = self._build_symbols()

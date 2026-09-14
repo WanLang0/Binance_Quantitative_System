@@ -402,6 +402,55 @@
         </div>
         <div class="info-note" style="font-size:.8rem">MA30–120 夏普 <b>1.72–1.84</b>，平坦无尖峰——有效的是「中期趋势过滤」机制而非 MA60 这个数字；维持预注册 MA60，不做事后改参。V1 后半程夏普衰减 1.93→0.71，V2 全程稳定 1.98→1.65。</div>
 
+        {% if xr.leverage %}
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">第六轮：杠杆审计 A/B/C/D（V2，名义敞口·费用·Funding·强平逐项核验）</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <div style="flex:1.2;min-width:340px">
+                <div style="font-size:.88rem;color:#aab4c4;margin-bottom:4px">账户级回测（30/40bps 滑点双口径；名义随权益复利超线性放大）</div>
+                <div class="table-wrap">
+                <table class="table bordered">
+                    <tr><th>杠杆</th><th>滑点</th><th>总收益</th><th>夏普</th><th>回撤</th><th>最差周</th><th>最差3周</th><th>手续费</th><th>Funding净额</th></tr>
+                    {% for a in xr.leverage.account %}
+                    <tr{% if a.lev == 1 and a.slip == 30 %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                        <td><b>{{ a.lev }}x</b>{% if a.lev == 1 %} <span style="font-size:.72rem;color:#3fb950">建议</span>{% endif %}</td>
+                        <td>{{ a.slip }}bps</td>
+                        <td class="pos">{{ '%+.0f'|format(a.ret) }}%</td>
+                        <td class="pos">{{ '%+.2f'|format(a.sharpe) }}</td>
+                        <td class="neg">{{ '%.1f'|format(a.mdd) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(a.worst_week) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(a.worst3) }}%</td>
+                        <td>{{ '%.0f'|format(a.fee) + 'U' if a.fee is defined and a.fee is not none else '—' }}</td>
+                        <td>{{ ('%+.0f'|format(a.fund_out - a.fund_in) + 'U') if a.fund_out is defined and a.fund_out is not none else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                </div>
+            </div>
+            <div style="flex:1;min-width:300px">
+                <div style="font-size:.88rem;color:#aab4c4;margin-bottom:4px">逐仓 isolated 模拟（30bps；爆仓价 = entry×(1∓(1/L−MMR))，触及即清算该仓）</div>
+                <div class="table-wrap">
+                <table class="table bordered">
+                    <tr><th>杠杆</th><th>爆仓距离</th><th>爆仓次数</th><th>爆仓损失</th><th>总收益</th><th>夏普</th><th>回撤</th></tr>
+                    {% set liq_dist = {1: '±99.5%', 2: '±49.5%', 3: '±32.8%', 4: '±24.5%'} %}
+                    {% for i in xr.leverage.isolated %}
+                    <tr{% if i.lev == 1 %} style="background:rgba(63,185,80,.07)"{% endif %}{% if i.lev == 3 or i.lev == 4 %} style="color:#8a94a6"{% endif %}>
+                        <td><b>{{ i.lev }}x</b>{% if i.lev == 1 %} <span style="font-size:.72rem;color:#3fb950">Paper</span>{% elif i.lev == 2 %} <span style="font-size:.72rem;color:#f0b90b">可接受</span>{% else %} <span style="font-size:.72rem;color:#f85149">不建议</span>{% endif %}</td>
+                        <td>{{ liq_dist[i.lev] if i.lev in liq_dist else '—' }}</td>
+                        <td>{{ i.n_liq }}</td>
+                        <td class="{{ 'neg' if i.liq_loss > 0 }}">{{ '%.1f'|format(i.liq_loss / 10000) }}万U</td>
+                        <td class="pos">{{ '%+.0f'|format(i.ret) }}%</td>
+                        <td class="pos">{{ '%+.2f'|format(i.sharpe) }}</td>
+                        <td class="neg">{{ '%.1f'|format(i.mdd) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                </div>
+            </div>
+        </div>
+        <div class="info-note" style="font-size:.8rem">审计结论：A 名义敞口 <b>equity×L÷n</b> 与 B 手续费、C Funding（真实 8h 费率×实际名义）均通过；D 原回测为账户级口径，逐仓模拟显示 2x 起 2 次爆仓 / 4x 达 22 次（损失 29.6 万U、回撤 -61.7%）。<b>建议 Paper Trading 用 1x，2x 可接受，3x/4x 不建议。</b>逐仓模拟仍有简化：日线 low/high 触及判定、统一 MMR 0.5%、无维持费/强平费、爆仓后下次调仓才补仓。</div>
+        {% endif %}
+
+
         <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">第四轮：交易环境过滤全景（30bps，按夏普降序）</div>
         <div class="table-wrap" style="max-height:300px;overflow-y:auto">
         <table class="table bordered">

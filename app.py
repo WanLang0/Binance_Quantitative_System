@@ -784,9 +784,10 @@ def _crypto_momentum_fix_stale_running():
         pass
 
 
-def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min, long_only,
-                                abs_mom, vol_max, interval, buy_pct, api_key, api_secret,
-                                shared_trader, leverage, testnet, task_id=None):
+def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
+                                ma_gate, interval, buy_pct, api_key, api_secret,
+                                shared_trader, leverage, testnet, task_id=None,
+                                universe_mode='u8'):
     if task_id and _crypto_momentum_engines.get(task_id) and _crypto_momentum_engines[task_id].status.get('running'):
         return False, "该任务已在运行中，请先停止后再启动"
     if shared_trader:
@@ -796,8 +797,9 @@ def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
     eng = momentum_live_trader.MomentumTrader(api_key, api_secret, trader=shared_trader,
                                               leverage=leverage, testnet=testnet)
     ok, msg = eng.start(name, total_fund, rebal_days=rebal_days, top_frac=top_frac,
-                        liq_min=liq_min, long_only=long_only, abs_mom=abs_mom,
-                        vol_max=vol_max, interval=interval, buy_pct=buy_pct, task_id=task_id)
+                        liq_min=liq_min, ma_gate=ma_gate,
+                        interval=interval, buy_pct=buy_pct, task_id=task_id,
+                        universe_mode=universe_mode)
     if ok:
         _crypto_momentum_engines[eng._task_id] = eng
     return ok, msg
@@ -889,16 +891,14 @@ def crypto_momentum():
         rebal_days = _to_int(form.get("rebal_days"), 5)
         top_frac = _to_float(form.get("top_frac"), 20) / 100.0
         liq_min = _to_float(form.get("liq_min"), 100_000_000)
-        long_only = form.get("long_only") == "1"
-        abs_mom = form.get("abs_mom") == "1"
-        vol_pct = form.get("vol_max") or ""
-        vol_val = _to_float(vol_pct, None)
-        vol_max = (vol_val / 100.0) if (vol_val and vol_val > 0) else None
+        ma_gate = _to_int(form.get("ma_gate"), 60)
         interval = _to_int(form.get("interval"), 30)
         buy_pct = _to_float(form.get("buy_pct"), 95) / 100
+        universe_mode = form.get("universe_mode") or 'u8'   # V2@U8 生产口径为默认
         ok, msg = _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
-                                              long_only, abs_mom, vol_max, interval, buy_pct,
-                                              api_key, api_secret, shared_trader, leverage, testnet)
+                                              ma_gate, interval, buy_pct,
+                                              api_key, api_secret, shared_trader, leverage, testnet,
+                                              universe_mode=universe_mode)
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop_task":
@@ -982,7 +982,7 @@ def crypto_momentum_status():
     else:
         cur = {'running': False, 'log': ['未启动'], 'name': '—', 'total_fund': 0,
                'leverage': 1, 'rebal_days': 5, 'top_frac': 0.20, 'liq_min': 100000000,
-               'long_only': False, 'abs_mom': False, 'vol_max': None,
+               'ma_gate': 60,
                'longs': [], 'shorts': [], 'n_eligible': 0, 'dispersion': 0.0,
                'symbols': [], 'signal': '—', 'buy_count': 0, 'sell_count': 0,
                'account_balance': 0.0, 'last_loop_time': None, 'last_rebalance_time': None,

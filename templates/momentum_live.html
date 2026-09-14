@@ -14,11 +14,6 @@
 td.long, td.pos { color: var(--buy); }
 td.short, td.neg { color: var(--sell); }
 
-/* 策略开关（只做多/绝对动量） */
-.switch-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px; }
-.switch-row label { display: flex; align-items: center; gap: 5px; font-size: .82rem; color: var(--text); cursor: pointer; }
-.switch-row input { width: 15px; height: 15px; }
-
 /* 候选池徽标 */
 .candidate-pool { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .candidate-chip {
@@ -71,7 +66,7 @@ td.short, td.neg { color: var(--sell); }
             <form method="POST" action="/crypto-momentum" id="task-form">
                 <div class="field">
                     <label>任务名称</label>
-                    <input type="text" name="name" value="横截面动量量化任务" placeholder="横截面动量量化任务">
+                    <input type="text" name="name" value="横截面动量V2" placeholder="横截面动量V2">
                 </div>
                 <div class="field">
                     <label>任务总资金 (USDT)</label>
@@ -93,8 +88,15 @@ td.short, td.neg { color: var(--sell); }
                     <input type="number" name="liq_min" step="any" min="0" value="100000000">
                 </div>
                 <div class="field">
-                    <label>波动率过滤（年化，%，留空不过滤）</label>
-                    <input type="number" name="vol_max" step="1" min="0" value="" placeholder="如 120">
+                    <label>趋势闸门 MA_N（等权指数&gt;MA_N 才交易，0=关闭）</label>
+                    <input type="number" name="ma_gate" step="1" min="0" max="250" value="60">
+                </div>
+                <div class="field">
+                    <label>候选池模式（U8=PIT 动态宇宙，无幸存者偏差）</label>
+                    <select name="universe_mode" id="universe-mode">
+                        <option value="u8" selected>U8 动态宇宙（V2@U8 生产口径，推荐）</option>
+                        <option value="fixed">固定名单（旧 V2 口径，有偏差）</option>
+                    </select>
                 </div>
                 <div class="field">
                     <label>轮询间隔（秒）</label>
@@ -103,10 +105,6 @@ td.short, td.neg { color: var(--sell); }
                 <div class="field">
                     <label>买入安全系数 %（名义留保证金缓冲）</label>
                     <input type="number" name="buy_pct" step="1" min="1" max="100" value="95">
-                </div>
-                <div class="switch-row">
-                    <label><input type="checkbox" name="long_only" value="1"> 只做多（不做空腿）</label>
-                    <label><input type="checkbox" name="abs_mom" value="1"> 绝对动量闸门（多 R14&gt;0 / 空 R14&lt;0）</label>
                 </div>
 
                 <div class="side-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
@@ -117,7 +115,7 @@ td.short, td.neg { color: var(--sell); }
                 <span id="run-tag" class="run-tag {% if running_count %}on{% endif %}">
                     {% if running_count %}● {{ running_count }} 个任务运行中{% else %}○ 未运行{% endif %}
                 </span>
-                <p class="info-note" style="font-size:.8rem">候选池固定为市值靠前的 {{ bases | length }} 个主流币。每个调仓日按 R14（14 日动量）排名，做多前 N、做空后 N（N = 通过过滤的候选数 × Top/Bottom 比例），其余空仓；每仓名义 = 权益 × 杠杆 × 安全系数 ÷ 总仓位数，天然多空对冲。</p>
+                <p class="info-note" style="font-size:.8rem">V2 冻结口径：候选池固定为市值靠前的 {{ bases | length }} 个主流币；每个调仓日按 R14（14 日动量）排名，做多前 N、做空后 N（N = 通过流动性过滤的候选数 × Top/Bottom 比例）；<b>趋势闸门</b>：候选池等权指数 &gt; MA_N（默认 60）才开仓，否则全部空仓；每仓名义 = 权益 × 杠杆 × 安全系数 ÷ 总仓位数，天然多空对冲。</p>
             </form>
         </div>
 
@@ -146,6 +144,7 @@ td.short, td.neg { color: var(--sell); }
                 <div class="stat-box"><div class="lbl">多头数</div><div class="val pos" id="st-nlong">{{ status.longs | length if status.longs is defined else '—' }}</div></div>
                 <div class="stat-box"><div class="lbl">空头数</div><div class="val neg" id="st-nshort">{{ status.shorts | length if status.shorts is defined else '—' }}</div></div>
                 <div class="stat-box"><div class="lbl">离散度</div><div class="val" id="st-disp">{{ '%.4f' | format(status.dispersion) if status.dispersion is defined else '—' }}</div></div>
+                <div class="stat-box"><div class="lbl">趋势闸门</div><div class="val" id="st-gate" style="font-size:.9rem">{% if status.gate_on is true %}<span class="pos">开放（指数&gt;MA{{ status.ma_gate }}）</span>{% elif status.gate_on is false %}<span class="neg">空仓（指数≤MA{{ status.ma_gate }}）</span>{% elif status.ma_gate %}MA{{ status.ma_gate }}{% else %}关闭{% endif %}</div></div>
                 <div class="stat-box"><div class="lbl">杠杆</div><div class="val" id="st-lev">{{ status.leverage }}x</div></div>
                 <div class="stat-box"><div class="lbl">调仓周期</div><div class="val" id="st-rebal">{{ status.rebal_days }} 日</div></div>
                 <div class="stat-box"><div class="lbl">安全系数</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '95' }}%</div></div>
@@ -225,7 +224,7 @@ td.short, td.neg { color: var(--sell); }
             <div class="card-body">
             <div class="table-wrap" style="max-height:260px;overflow-y:auto">
             <table class="table">
-                <tr><th>启动时间</th><th>任务名</th><th>总资金</th><th>调仓周期</th><th>Top/Bottom</th><th>网络</th><th>杠杆</th><th>状态</th><th>操作</th></tr>
+                <tr><th>启动时间</th><th>任务名</th><th>总资金</th><th>调仓周期</th><th>Top/Bottom</th><th>闸门</th><th>网络</th><th>杠杆</th><th>状态</th><th>操作</th></tr>
                 {% for t in tasks %}
                 <tr data-id="{{ t.id }}">
                     <td>{{ t.started_at }}</td>
@@ -233,6 +232,7 @@ td.short, td.neg { color: var(--sell); }
                     <td>{{ t.total_fund }}U</td>
                     <td>{{ t.rebal_days }}日</td>
                     <td>{{ '%.0f' | format((t.top_frac or 0) * 100) }}%</td>
+                    <td>{% if t.ma_gate %}MA{{ t.ma_gate }}{% else %}关{% endif %}</td>
                     <td>{{ '测试网' if t.testnet else '主网' }}</td>
                     <td>{{ t.leverage }}x</td>
                     <td class="t-status">{% if t.is_running %}<span class="pos">● 运行中</span>{% else %}<span class="muted">○ 已停止</span>{% endif %}</td>
@@ -351,6 +351,14 @@ function updateStatus(data) {
         'st-sellc': data.sell_count != null ? data.sell_count : 0
     };
     for (var k in m) { var el = document.getElementById(k); if (el) el.textContent = m[k]; }
+    var gateEl = document.getElementById('st-gate');
+    if (gateEl) {
+        var gn = data.ma_gate || 0;
+        if (!gn) { gateEl.textContent = '关闭'; gateEl.className = 'val'; }
+        else if (data.gate_on === true) { gateEl.innerHTML = '<span class="pos">开放（指数&gt;MA' + gn + '）</span>'; }
+        else if (data.gate_on === false) { gateEl.innerHTML = '<span class="neg">空仓（指数≤MA' + gn + '）</span>'; }
+        else { gateEl.textContent = 'MA' + gn; gateEl.className = 'val'; }
+    }
 
     // 当前资金 / 初始资金 / 累计收益 / 今日盈亏
     var fundEl = document.getElementById('st-fund');
