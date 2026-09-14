@@ -17,6 +17,7 @@ data/composite_state.json
 data/composite_tasks.json
 data/crypto_composite_state.json
 data/crypto_composite_tasks.json
+data/momentum_tasks.json
 data/spot_tasks.json
 data/futures_tasks.json
 data/x.html
