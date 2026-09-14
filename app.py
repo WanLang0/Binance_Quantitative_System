@@ -2234,6 +2234,18 @@ def _load_recommended():
         return None
 
 
+def _load_xsec_momentum():
+    """横截面动量最优结果汇总（最优策略页展示；快照 JSON 随仓库分发，
+    由 scripts/tmp_xsec_summary_gen.py 在研究机生成）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'scripts', 'results', 'xsec_momentum_summary.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 _NOTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'strategy_notes.json')
 
 
@@ -2351,6 +2363,7 @@ def strategies_summary():
                            sort=sort, order=order, cat=cat, sector=sector,
                            sectors=_store.US_SECTOR_LIST,
                            macd_matrix=_load_macd_matrix(),
+                           xsec_momentum=_load_xsec_momentum(),
                            strategy_notes=_load_strategy_notes(),
                            recommended=_load_recommended(),
                            error=request.args.get('_error') or None,

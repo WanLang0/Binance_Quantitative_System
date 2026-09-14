@@ -415,6 +415,109 @@
     </div>
     {% endif %}
 
+    {% if xsec_momentum %}
+    {% set xm = xsec_momentum %}
+    {% set xs = xm.stat %}
+    <div class="card card-foldable">
+        <h2>{{ xm.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ xm.meta.updated }}</span></h2>
+        <div class="info-note">{{ xm.meta.desc }}</div>
+
+        <div style="margin:12px 0 4px;font-weight:600;font-size:1.02rem">最优口径核心指标（初始 {{ '%.0f'|format(xm.initial) }} USDT）</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr><th>总收益</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>下单数</th><th>年均换手</th><th>平均持仓</th><th>候选均值</th><th>保证金缓冲下限</th></tr>
+            <tr>
+                <td class="pos"><b>{{ '%+.1f'|format(xs.ret) }}%</b></td>
+                <td class="pos">{{ '%+.1f'|format(xs.cagr) }}%</td>
+                <td class="neg">{{ '%.1f'|format(xs.mdd) }}%</td>
+                <td class="pos">{{ '%+.2f'|format(xs.sharpe) }}</td>
+                <td>{{ xs.trades }}</td>
+                <td>{{ xs.annual_turnover }}x</td>
+                <td>{{ xs.avg_hold_days }}天</td>
+                <td>{{ xs.avg_elig }}币</td>
+                <td>{{ '%.0f'|format(xs.buffer * 100) if xs.buffer else '—' }}%</td>
+            </tr>
+        </table>
+        </div>
+
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">年度表现</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr><th>年度</th><th>收益</th><th>最大回撤</th><th>夏普</th></tr>
+            {% for y, d in xm.yearly.items() %}
+            {% if d %}
+            <tr>
+                <td>{{ y }}{% if y == '2026' %} YTD{% endif %}</td>
+                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}"><b>{{ '%+.1f'|format(d.ret) }}%</b></td>
+                <td class="neg">{{ '%.1f'|format(d.mdd) }}%</td>
+                <td class="{{ 'pos' if d.sharpe > 0 else 'neg' }}">{{ '%+.2f'|format(d.sharpe) }}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </table>
+        </div>
+
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">参数变体对比（其余同最优口径，滑点30bps）</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr><th>变体</th><th>说明</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>下单数</th></tr>
+            {% for v in xm.variants %}
+            <tr{% if loop.first %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                <td><b>{{ v.name }}</b>{% if loop.first %} <span style="font-size:.72rem;color:#3fb950">✔ 推荐</span>{% endif %}</td>
+                <td style="color:#8a94a6">{{ v.tag }}</td>
+                <td class="{{ 'pos' if v.ret > 0 else 'neg' }}">{{ '%+.1f'|format(v.ret) }}%</td>
+                <td class="{{ 'pos' if v.cagr > 0 else 'neg' }}">{{ '%+.1f'|format(v.cagr) }}%</td>
+                <td class="neg">{{ '%.1f'|format(v.mdd) }}%</td>
+                <td class="{{ 'pos' if v.sharpe > 0 else 'neg' }}">{{ '%+.2f'|format(v.sharpe) }}</td>
+                <td>{{ v.trades }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <div style="flex:1;min-width:280px">
+                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">滑点敏感性（0→40bps）</div>
+                <div class="table-wrap">
+                <table class="table bordered">
+                    <tr><th>滑点</th><th>总收益</th><th>夏普</th><th>回撤</th></tr>
+                    {% for g in xm.slip_gradient %}
+                    <tr{% if g.tag == '30' %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                        <td>{{ g.tag }}bps{% if g.tag == '30' %} <span style="font-size:.72rem;color:#3fb950">默认</span>{% endif %}</td>
+                        <td class="pos">{{ '%+.1f'|format(g.ret) }}%</td>
+                        <td class="pos">{{ '%+.2f'|format(g.sharpe) }}</td>
+                        <td class="neg">{{ '%.1f'|format(g.mdd) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                </div>
+            </div>
+            <div style="flex:1;min-width:280px">
+                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">逐月概览</div>
+                <div class="table-wrap">
+                <table class="table bordered">
+                    <tr><th>胜率</th><th>最好月</th><th>最差月</th><th>月度波动</th><th>最差3月合计</th></tr>
+                    <tr>
+                        <td class="pos">{{ '%.0f'|format(xm.month_stats.win_rate) }}%</td>
+                        <td class="pos">+{{ '%.1f'|format(xm.month_stats.best) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(xm.month_stats.worst) }}%</td>
+                        <td>±{{ '%.1f'|format(xm.month_stats.std) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(xm.month_stats.worst3) }}%</td>
+                    </tr>
+                </table>
+                </div>
+                <div style="margin-top:6px;font-size:.82rem;color:#8a94a6">贡献最大：{% for c in xm.coins_top[:5] %}<span class="pos">{{ c.base }} +{{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}<br>拖累最大：{% for c in xm.coins_bottom[:3] %}<span class="neg">{{ c.base }} {{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}（占总净盈亏比例；去ZEC后总收益 <b class="pos">{{ '%+.0f'|format(xs.drop_zec) }}%</b>）</div>
+            </div>
+        </div>
+
+        <div class="alert alert-warn" style="margin:10px 0 0"><b>结论：</b>{{ xm.meta.conclusion }}</div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn" href="/momentum">查看动量回测详情 →</a>
+            <a class="btn btn-accent" href="/crypto-momentum">去实盘运行横截面动量 →</a>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="card">
         <div class="alert alert-warn" style="margin-bottom:0">
             <b>风险提示：</b><br>
