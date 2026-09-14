@@ -314,174 +314,126 @@
 
     <!-- 历年收益矩阵 / 研究结论时间线：数据迁移至 year_matrix.py / research_log.py 单独维护，界面暂不展示 -->
 
-    {% if recommended %}
+    {% if xsec_research %}
+    {% set xr = xsec_research %}
     <div class="card card-foldable">
-        <h2>{{ recommended.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ recommended.meta.updated }}</span></h2>
-        <div class="info-note">{{ recommended.meta.desc }}</div>
-        {% for mkt, mname in [('crypto', '🪙 虚拟币（市值前30合约币 · macd+背离+量能）'), ('us', '📈 美股代币（Yahoo 1h）')] %}
-        {% set rows = recommended[mkt] %}
-        {% if rows %}
-        <div style="margin:14px 0 6px;font-weight:600;font-size:1.02rem">{{ mname }}</div>
+        <h2>{{ xr.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ xr.meta.updated }}</span></h2>
+        <div class="info-note">{{ xr.meta.desc }}</div>
+
+        <div style="margin:12px 0 4px;font-weight:600;font-size:1.02rem">冻结版本（30bps，初始 {{ '%.0f'|format(xr.baseline.initial) }} USDT）</div>
         <div class="table-wrap">
         <table class="table bordered">
             <tr>
-                <th>风险</th><th>定位</th><th>周期</th><th>方向</th><th>止盈止损</th>
-                <th>2024收益</th><th>2025收益</th><th>2026YTD收益</th>
-                <th>三年合计盈亏</th><th>三年下单数</th><th>三年均回撤</th><th>三年最深回撤</th><th>三年总夏普</th>
-                <th style="min-width:260px">说明</th>
+                <th>版本</th><th>规则</th><th>总收益</th><th>夏普30</th><th>夏普40</th><th>回撤</th>
+                <th>最差3周</th><th>屏蔽信号</th><th>换手</th>
+                <th>2024</th><th>2025</th><th>2026</th><th>OOS收益/夏普</th><th>Q4占比</th>
             </tr>
-            {% for r in rows %}
-            <tr>
-                <td><b>{{ r.risk }}</b></td>
-                <td>{{ r.label }}</td>
-                <td>{{ r.tf }}</td>
-                <td>{{ r.mode }}</td>
-                <td>{{ r.tpsl }}</td>
-                {% for y in ['2024', '2025', '2026YTD'] %}
-                {% set d = r.years[y] %}
-                {% if d and d.ret is not none %}
-                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}">{{ '%+.1f'|format(d.ret) }}%<br>
-                    <small style="color:#8a94a6">{{ d.pos }}/{{ d.cnt }}正</small></td>
-                {% else %}
-                <td>—</td>
-                {% endif %}
-                {% endfor %}
-                <td class="{{ 'pos' if r.tot > 0 else 'neg' }}">{{ '%+.1f'|format(r.tot) }}%</td>
-                <td>{{ r.n_all }}</td>
-                <td>{{ '%.1f'|format(r.mdd_all_avg) }}%</td>
-                <td class="{{ 'neg' if r.mdd_all_max < -50 else '' }}">{{ '%.1f'|format(r.mdd_all_max) }}%</td>
-                <td class="{{ 'pos' if r.sh_all > 0 else 'neg' }}">{{ '%+.2f'|format(r.sh_all) }}</td>
-                <td style="font-size:.8rem;color:#aab4c4">{{ r.note }}<br>
-                    <small style="color:#8a94a6">BH基准：2024 {{ '%+.1f'|format(r.bh['2024']) }}% / 2025 {{ '%+.1f'|format(r.bh['2025']) }}% / 2026YTD {{ '%+.1f'|format(r.bh['2026YTD']) }}%</small></td>
-            </tr>
-            {% endfor %}
-        </table>
-        </div>
-        {% endif %}
-        {% endfor %}
-        <div class="alert alert-warn" style="margin-bottom:0"><b>提示：</b>虚拟币三档均为 macd+背离+量能 变体（回测中唯一跨年度稳健的变体）；美股任何配置均跑输买入持有，定位是「降波动的持有替代」，不建议做空美股。回测≠未来收益，实盘请以 1x 起步验证。</div>
-    </div>
-    {% endif %}
-
-    {% if macd_matrix %}
-    <div class="card card-foldable">
-        <h2>{{ macd_matrix.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ macd_matrix.meta.updated }}</span></h2>
-        <div class="info-note">{{ macd_matrix.meta.desc }}</div>
-        <div class="info-note">买入持有BH基准（跨标的均值）：
-            1h — 2024 {{ '%+.1f'|format(macd_matrix.meta.bh['1h']['2024']) }}% / 2025 {{ '%+.1f'|format(macd_matrix.meta.bh['1h']['2025']) }}% / 2026YTD {{ '%+.1f'|format(macd_matrix.meta.bh['1h']['2026YTD']) }}%；
-            15m — 2024 {{ '%+.1f'|format(macd_matrix.meta.bh['15m']['2024']) }}% / 2025 {{ '%+.1f'|format(macd_matrix.meta.bh['15m']['2025']) }}% / 2026YTD {{ '%+.1f'|format(macd_matrix.meta.bh['15m']['2026YTD']) }}%。
-        </div>
-        {% for s in macd_matrix.strategies %}
-        <div style="margin:16px 0 6px;font-weight:600;font-size:1.02rem">策略：{{ s.name }}</div>
-        <div class="table-wrap">
-        <table class="table bordered">
-            <tr>
-                <th>周期</th><th>方向</th><th>止盈止损</th>
-                <th>2024收益</th><th>2024回撤</th><th>2024最大回撤</th><th>2024下单数</th><th>2024夏普</th>
-                <th>2025收益</th><th>2025回撤</th><th>2025最大回撤</th><th>2025下单数</th><th>2025夏普</th>
-                <th>2026YTD收益</th><th>2026YTD回撤</th><th>2026YTD最大回撤</th><th>2026YTD下单数</th><th>2026YTD夏普</th>
-                <th>三年合计盈亏</th><th>三年下单数</th><th>三年均回撤</th><th>三年最深回撤</th><th>三年总夏普</th><th>爆仓数</th>
-            </tr>
-            {% for c in s.configs %}
-            <tr>
-                <td>{{ c.tf }}</td>
-                <td>{{ c.mode }}</td>
-                <td>{{ c.tpsl }}</td>
-                {% for y in ['2024', '2025', '2026YTD'] %}
-                {% set d = c[y] %}
-                {% if d and d.ret is not none %}
-                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}">{{ '%+.1f'|format(d.ret) }}%<br>
-                    <small style="color:#8a94a6">{{ d.pos }}/{{ d.cnt }}正·跑赢BH{{ d.beat }}</small></td>
-                <td>{{ '%.1f'|format(d.mdd) }}%</td>
-                <td class="{{ 'neg' if d.mdd_max is not none and d.mdd_max < -50 else '' }}">{{ '%.1f'|format(d.mdd_max) }}%</td>
-                <td>{{ d.n if d.n is not none else '—' }}</td>
-                <td>{{ '%+.2f'|format(d.sh) if d.sh is not none else '—' }}</td>
-                {% else %}
-                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
-                {% endif %}
-                {% endfor %}
-                <td class="{{ 'pos' if c.tot is not none and c.tot > 0 else 'neg' if c.tot is not none else '' }}">{% if c.tot is not none %}{{ '%+.1f'|format(c.tot) }}%{% else %}—{% endif %}</td>
-                <td>{{ c.n_all if c.n_all is not none else '—' }}</td>
-                <td>{{ '%.1f'|format(c.mdd_all_avg) }}%</td>
-                <td class="{{ 'neg' if c.mdd_all_max < -50 else '' }}">{{ '%.1f'|format(c.mdd_all_max) }}%</td>
-                <td class="{{ 'pos' if c.sh_all is not none and c.sh_all > 0 else 'neg' if c.sh_all is not none else '' }}">{% if c.sh_all is not none %}{{ '%+.2f'|format(c.sh_all) }}{% else %}—{% endif %}</td>
-                <td class="{{ 'neg' if c.wiped > 0 else '' }}">{{ c.wiped }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-        </div>
-        {% endfor %}
-        <div class="alert alert-warn" style="margin-bottom:0"><b>结论：</b>{{ macd_matrix.meta.conclusion }}</div>
-    </div>
-    {% endif %}
-
-    {% if xsec_momentum %}
-    {% set xm = xsec_momentum %}
-    {% set xs = xm.stat %}
-    <div class="card card-foldable">
-        <h2>{{ xm.meta.title }}<span style="font-size:.75rem;color:#8a94a6;margin-left:8px">{{ xm.meta.updated }}</span></h2>
-        <div class="info-note">{{ xm.meta.desc }}</div>
-
-        <div style="margin:12px 0 4px;font-weight:600;font-size:1.02rem">最优口径核心指标（初始 {{ '%.0f'|format(xm.initial) }} USDT）</div>
-        <div class="table-wrap">
-        <table class="table bordered">
-            <tr><th>总收益</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>下单数</th><th>年均换手</th><th>平均持仓</th><th>候选均值</th><th>保证金缓冲下限</th></tr>
-            <tr>
-                <td class="pos"><b>{{ '%+.1f'|format(xs.ret) }}%</b></td>
-                <td class="pos">{{ '%+.1f'|format(xs.cagr) }}%</td>
-                <td class="neg">{{ '%.1f'|format(xs.mdd) }}%</td>
-                <td class="pos">{{ '%+.2f'|format(xs.sharpe) }}</td>
-                <td>{{ xs.trades }}</td>
-                <td>{{ xs.annual_turnover }}x</td>
-                <td>{{ xs.avg_hold_days }}天</td>
-                <td>{{ xs.avg_elig }}币</td>
-                <td>{{ '%.0f'|format(xs.buffer * 100) if xs.buffer else '—' }}%</td>
-            </tr>
-        </table>
-        </div>
-
-        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">年度表现</div>
-        <div class="table-wrap">
-        <table class="table bordered">
-            <tr><th>年度</th><th>收益</th><th>最大回撤</th><th>夏普</th></tr>
-            {% for y, d in xm.yearly.items() %}
-            {% if d %}
-            <tr>
-                <td>{{ y }}{% if y == '2026' %} YTD{% endif %}</td>
-                <td class="{{ 'pos' if d.ret > 0 else 'neg' }}"><b>{{ '%+.1f'|format(d.ret) }}%</b></td>
-                <td class="neg">{{ '%.1f'|format(d.mdd) }}%</td>
-                <td class="{{ 'pos' if d.sharpe > 0 else 'neg' }}">{{ '%+.2f'|format(d.sharpe) }}</td>
-            </tr>
-            {% endif %}
-            {% endfor %}
-        </table>
-        </div>
-
-        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">参数变体对比（其余同最优口径，滑点30bps）</div>
-        <div class="table-wrap">
-        <table class="table bordered">
-            <tr><th>变体</th><th>说明</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>夏普</th><th>下单数</th></tr>
-            {% for v in xm.variants %}
-            <tr{% if loop.first %} style="background:rgba(63,185,80,.07)"{% endif %}>
-                <td><b>{{ v.name }}</b>{% if loop.first %} <span style="font-size:.72rem;color:#3fb950">✔ 推荐</span>{% endif %}</td>
-                <td style="color:#8a94a6">{{ v.tag }}</td>
-                <td class="{{ 'pos' if v.ret > 0 else 'neg' }}">{{ '%+.1f'|format(v.ret) }}%</td>
-                <td class="{{ 'pos' if v.cagr > 0 else 'neg' }}">{{ '%+.1f'|format(v.cagr) }}%</td>
+            {% for v in xr.versions %}
+            <tr{% if v.key == 'V2' %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                <td><b>{{ v.key }}</b>{% if v.key == 'V2' %} <span style="font-size:.72rem;color:#3fb950">✔ 主策略</span>{% elif v.key == 'V2D' %} <span style="font-size:.72rem;color:#8a94a6">防守</span>{% else %} <span style="font-size:.72rem;color:#8a94a6">对照</span>{% endif %}<br>
+                    <small style="color:#8a94a6">{{ v.name }}</small></td>
+                <td style="font-size:.82rem;color:#aab4c4;white-space:normal">{{ v.rule }}</td>
+                <td class="{{ 'pos' if v.ret > 0 else 'neg' }}"><b>{{ '%+.1f'|format(v.ret) }}%</b></td>
+                <td class="pos">{{ '%+.2f'|format(v.sharpe) }}</td>
+                <td class="pos">{{ '%+.2f'|format(v.sh40) }}</td>
                 <td class="neg">{{ '%.1f'|format(v.mdd) }}%</td>
-                <td class="{{ 'pos' if v.sharpe > 0 else 'neg' }}">{{ '%+.2f'|format(v.sharpe) }}</td>
-                <td>{{ v.trades }}</td>
+                <td class="neg">{{ '%.1f'|format(v.worst3) }}%</td>
+                <td>{{ '%.0f'|format(v.blocked) }}%</td>
+                <td>{{ v.turnover }}x</td>
+                <td class="{{ 'pos' if v.yearly['2024'] > 0 else 'neg' }}">{{ '%+.0f'|format(v.yearly['2024']) }}%</td>
+                <td class="{{ 'pos' if v.yearly['2025'] > 0 else 'neg' }}">{{ '%+.0f'|format(v.yearly['2025']) }}%</td>
+                <td class="{{ 'pos' if v.yearly['2026'] > 0 else 'neg' }}">{{ '%+.0f'|format(v.yearly['2026']) }}%</td>
+                <td class="{{ 'pos' if v.oos.ret > 0 else 'neg' }}">{{ '%+.0f'|format(v.oos.ret) }}% / {{ '%+.2f'|format(v.oos.sharpe) }}</td>
+                <td>{{ '%.0f'|format(v.q4) }}%</td>
             </tr>
             {% endfor %}
         </table>
         </div>
+
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">多空腿归因（30bps，净盈亏含费与Funding）</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr><th>版本</th><th>多头PnL</th><th>多头夏普</th><th>多头日胜率</th><th>空头PnL</th><th>空头夏普</th><th>空头日胜率</th><th>Funding净额</th></tr>
+            {% for v in xr.versions %}
+            <tr>
+                <td><b>{{ v.key }}</b></td>
+                <td class="{{ 'pos' if v.long.pnl > 0 else 'neg' }}">{{ '%+.0f'|format(v.long.pnl) }}U</td>
+                <td class="{{ 'pos' if v.long.sh > 0 else 'neg' }}">{{ '%+.2f'|format(v.long.sh) }}</td>
+                <td>{{ '%.1f'|format(v.long.win) }}%</td>
+                <td class="{{ 'pos' if v.short.pnl > 0 else 'neg' }}">{{ '%+.0f'|format(v.short.pnl) }}U</td>
+                <td class="{{ 'pos' if v.short.sh > 0 else 'neg' }}">{{ '%+.2f'|format(v.short.sh) }}</td>
+                <td>{{ '%.1f'|format(v.short.win) }}%</td>
+                <td>{{ '%+.0f'|format(v.fund) }}U</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        <div class="info-note" style="font-size:.8rem">关键发现：V1 空头腿全期<b class="neg">净亏损</b>（夏普 -0.19，Alpha 全靠多头）；V2 将空头腿修复至 +0.36——指数>MA60 的强势环境里 Bottom20% 才是真·滞涨狗，弱势环境里只是高贝塔币、熊市反弹轧空。V2 本质是<b>牛市环境横截面动量</b>。</div>
+
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">第五轮：MA 参数平台验证（指数>MA_N 才交易，30bps）</div>
+        <div class="table-wrap">
+        <table class="table bordered">
+            <tr>
+                <th>MA</th><th>总收益</th><th>年化</th><th>夏普30</th><th>夏普40</th><th>回撤</th>
+                <th>最差3周</th><th>屏蔽</th><th>H1(24.1-25.3)</th><th>H2(25.3-)</th><th>OOS(25.7-)</th><th>Q4占比</th>
+            </tr>
+            {% for m in xr.ma %}
+            <tr{% if m.name == 'MA60' %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                <td><b>{{ m.name }}</b>{% if m.name == 'MA60' %} <span style="font-size:.72rem;color:#3fb950">✔ 预注册</span>{% endif %}</td>
+                <td class="pos">{{ '%+.1f'|format(m.ret) }}%</td>
+                <td class="pos">{{ '%+.1f'|format(m.cagr) }}%</td>
+                <td class="pos">{{ '%+.2f'|format(m.sh30) }}</td>
+                <td class="pos">{{ '%+.2f'|format(m.sh40) }}</td>
+                <td class="neg">{{ '%.1f'|format(m.mdd) }}%</td>
+                <td class="neg">{{ '%.1f'|format(m.worst3) }}%</td>
+                <td>{{ '%.0f'|format(m.blocked) }}%</td>
+                {% if m.halves %}
+                <td class="pos">{{ '%+.0f'|format(m.halves.h1.ret) }} / {{ '%.2f'|format(m.halves.h1.sh) }}</td>
+                <td class="pos">{{ '%+.0f'|format(m.halves.h2.ret) }} / {{ '%.2f'|format(m.halves.h2.sh) }}</td>
+                <td class="pos">{{ '%+.0f'|format(m.oos.ret) }} / {{ '%.2f'|format(m.oos.sharpe) }}</td>
+                {% else %}
+                <td>—</td><td>—</td>
+                <td class="pos">{{ '%+.0f'|format(m.oos.ret) }} / {{ '%.2f'|format(m.oos.sharpe) }}</td>
+                {% endif %}
+                <td>{{ '%.0f'|format(m.q4) }}%</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        <div class="info-note" style="font-size:.8rem">MA30–120 夏普 <b>1.72–1.84</b>，平坦无尖峰——有效的是「中期趋势过滤」机制而非 MA60 这个数字；维持预注册 MA60，不做事后改参。V1 后半程夏普衰减 1.93→0.71，V2 全程稳定 1.98→1.65。</div>
+
+        <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">第四轮：交易环境过滤全景（30bps，按夏普降序）</div>
+        <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+        <table class="table bordered">
+            <tr>
+                <th>#</th><th>变体</th><th>规则</th><th>总收益</th><th>夏普30</th><th>夏普40</th>
+                <th>回撤</th><th>屏蔽</th><th>OOS收益</th><th>Q4占比</th>
+            </tr>
+            {% for r in xr.v4 %}
+            <tr{% if r.name == 'E3' %} style="background:rgba(63,185,80,.07)"{% endif %}>
+                <td>{{ loop.index }}</td>
+                <td><b>{{ r.name }}</b></td>
+                <td style="color:#8a94a6">{{ r.rule }}</td>
+                <td class="{{ 'pos' if r.ret > 0 else 'neg' }}">{{ '%+.1f'|format(r.ret) }}%</td>
+                <td class="pos">{{ '%+.2f'|format(r.sh30) }}</td>
+                <td class="pos">{{ '%+.2f'|format(r.sh40) }}</td>
+                <td class="neg">{{ '%.1f'|format(r.mdd) }}%</td>
+                <td>{{ '%.0f'|format(r.blocked) }}%</td>
+                <td class="{{ 'pos' if r.oos > 0 else 'neg' }}">{{ '%+.0f'|format(r.oos) }}%</td>
+                <td>{{ '%.0f'|format(r.q4) }}%</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        <div class="info-note" style="font-size:.8rem">{{ xr.v4_note }}离散度分位数/市场状态均用 T 日及之前的 expanding 统计，无未来数据；信号 T 收盘确认、T+1 开盘执行。</div>
 
         <div style="display:flex;gap:14px;flex-wrap:wrap">
             <div style="flex:1;min-width:280px">
-                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">滑点敏感性（0→40bps）</div>
+                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">V1 基线：滑点敏感性（0→40bps）</div>
                 <div class="table-wrap">
                 <table class="table bordered">
                     <tr><th>滑点</th><th>总收益</th><th>夏普</th><th>回撤</th></tr>
-                    {% for g in xm.slip_gradient %}
+                    {% for g in xr.baseline.slip_gradient %}
                     <tr{% if g.tag == '30' %} style="background:rgba(63,185,80,.07)"{% endif %}>
                         <td>{{ g.tag }}bps{% if g.tag == '30' %} <span style="font-size:.72rem;color:#3fb950">默认</span>{% endif %}</td>
                         <td class="pos">{{ '%+.1f'|format(g.ret) }}%</td>
@@ -493,30 +445,32 @@
                 </div>
             </div>
             <div style="flex:1;min-width:280px">
-                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">逐月概览</div>
+                <div style="margin:14px 0 4px;font-weight:600;font-size:1.02rem">V1 基线：逐月概览与逐币贡献</div>
                 <div class="table-wrap">
                 <table class="table bordered">
-                    <tr><th>胜率</th><th>最好月</th><th>最差月</th><th>月度波动</th><th>最差3月合计</th></tr>
+                    <tr><th>月胜率</th><th>最好月</th><th>最差月</th><th>月度波动</th><th>最差3月</th></tr>
                     <tr>
-                        <td class="pos">{{ '%.0f'|format(xm.month_stats.win_rate) }}%</td>
-                        <td class="pos">+{{ '%.1f'|format(xm.month_stats.best) }}%</td>
-                        <td class="neg">{{ '%.1f'|format(xm.month_stats.worst) }}%</td>
-                        <td>±{{ '%.1f'|format(xm.month_stats.std) }}%</td>
-                        <td class="neg">{{ '%.1f'|format(xm.month_stats.worst3) }}%</td>
+                        <td class="pos">{{ '%.0f'|format(xr.baseline.month_stats.win_rate) }}%</td>
+                        <td class="pos">+{{ '%.1f'|format(xr.baseline.month_stats.best) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(xr.baseline.month_stats.worst) }}%</td>
+                        <td>±{{ '%.1f'|format(xr.baseline.month_stats.std) }}%</td>
+                        <td class="neg">{{ '%.1f'|format(xr.baseline.month_stats.worst3) }}%</td>
                     </tr>
                 </table>
                 </div>
-                <div style="margin-top:6px;font-size:.82rem;color:#8a94a6">贡献最大：{% for c in xm.coins_top[:5] %}<span class="pos">{{ c.base }} +{{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}<br>拖累最大：{% for c in xm.coins_bottom[:3] %}<span class="neg">{{ c.base }} {{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}（占总净盈亏比例；去ZEC后总收益 <b class="pos">{{ '%+.0f'|format(xs.drop_zec) }}%</b>）</div>
+                <div style="margin-top:6px;font-size:.82rem;color:#8a94a6">贡献最大：{% for c in xr.baseline.coins_top[:5] %}<span class="pos">{{ c.base }} +{{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}<br>拖累最大：{% for c in xr.baseline.coins_bottom[:3] %}<span class="neg">{{ c.base }} {{ '%.0f'|format(c.share) }}%</span>{% if not loop.last %} · {% endif %}{% endfor %}（占净盈亏比例）</div>
+                <div style="margin-top:6px;font-size:.82rem">稳健性（30bps）：去ZEC <b class="pos">{{ '%+.0f'|format(xr.robust['drop_zec:A0'].ret) }}%</b> / 去Top5贡献币 <b class="{{ 'pos' if xr.robust['drop_top5:A0'].ret > 0 else 'neg' }}">{{ '%+.0f'|format(xr.robust['drop_top5:A0'].ret) }}%</b>（V2 同测：<b class="pos">{{ '%+.0f'|format(xr.robust['drop_zec:E3'].ret) }}%</b> / <b class="pos">{{ '%+.0f'|format(xr.robust['drop_top5:E3'].ret) }}%</b>）——去Top5后 V1 归零而 V2 仍为正，但 Alpha 集中于少数爆发币是策略级特性，需预期厚尾收益分布。</div>
             </div>
         </div>
 
-        <div class="alert alert-warn" style="margin:10px 0 0"><b>结论：</b>{{ xm.meta.conclusion }}</div>
+        <div class="alert alert-warn" style="margin:10px 0 0"><b>结论：</b>{{ xr.meta.conclusion }}</div>
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
             <a class="btn" href="/momentum">查看动量回测详情 →</a>
             <a class="btn btn-accent" href="/crypto-momentum">去实盘运行横截面动量 →</a>
         </div>
     </div>
     {% endif %}
+
 
     <div class="card">
         <div class="alert alert-warn" style="margin-bottom:0">

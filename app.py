@@ -2212,33 +2212,11 @@ _seed_strategy_records()
 _migrate_strategy_records()
 
 
-def _load_macd_matrix():
-    """市值前20合约币 × 三种MACD组合策略 全配置回测矩阵（最优策略页表格展示）"""
+def _load_xsec_research():
+    """横截面动量研究汇总（V1基线/V2趋势闸门/V2-D + 第四轮过滤 + 第五轮MA平台验证；
+    快照 JSON 随仓库分发，由 scripts/tmp_xsec_research_merge.py 在研究机生成）"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'top20_macd_div_summary_2024_2026.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_recommended():
-    """实盘推荐配置（虚拟币/美股 各三档，风险低→高）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'recommended_configs.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_xsec_momentum():
-    """横截面动量最优结果汇总（最优策略页展示；快照 JSON 随仓库分发，
-    由 scripts/tmp_xsec_summary_gen.py 在研究机生成）"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'scripts', 'results', 'xsec_momentum_summary.json')
+                        'scripts', 'results', 'xsec_research_summary.json')
     try:
         with open(path, encoding='utf-8') as f:
             return json.load(f)
@@ -2362,10 +2340,8 @@ def strategies_summary():
                            history=history, total=total, pages=pages, page=page, q=q,
                            sort=sort, order=order, cat=cat, sector=sector,
                            sectors=_store.US_SECTOR_LIST,
-                           macd_matrix=_load_macd_matrix(),
-                           xsec_momentum=_load_xsec_momentum(),
+                           xsec_research=_load_xsec_research(),
                            strategy_notes=_load_strategy_notes(),
-                           recommended=_load_recommended(),
                            error=request.args.get('_error') or None,
                            message=request.args.get('_message') or None)
 

@@ -37,9 +37,7 @@ data/*_state_*.json
 scripts/cache/
 scripts/cache_1s/
 scripts/results/*
-!scripts/results/*_summary_2024_2026.json
-!scripts/results/recommended_configs.json
-!scripts/results/xsec_momentum_summary.json
+!scripts/results/xsec_research_summary.json
 
 # 临时回测/验证脚本与中间产物（一次性分析，不入库）
 scripts/tmp_*.py
