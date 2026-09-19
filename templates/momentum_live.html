@@ -243,6 +243,8 @@ td.short, td.neg { color: var(--sell); }
                             {% if t.is_running %}
                             <button type="submit" name="action" value="stop_task" class="btn btn-danger" style="padding:3px 10px"
                                     onclick="return confirm('确定停止该动量任务？')">停止</button>
+                            {% else %}
+                            <button type="submit" name="action" value="resume_task" class="btn btn-primary" style="padding:3px 10px">恢复</button>
                             {% endif %}
                             <button type="submit" name="action" value="delete_task" class="btn btn-cancel" style="padding:3px 10px"
                                     {% if t.is_running %}disabled{% endif %}

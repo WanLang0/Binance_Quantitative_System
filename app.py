@@ -901,6 +901,31 @@ def crypto_momentum():
                                               universe_mode=universe_mode)
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
+    elif request.method == "POST" and form.get("action") == "resume_task":
+        # 恢复历史动量任务（复用旧 task_id + 读磁盘状态，不创建新记录）
+        tid = form.get("task_id")
+        task = next((t for t in momentum_live_trader.MomentumTrader.list_tasks() if t.get('id') == tid), None)
+        if not task:
+            return redirect(url_for('crypto_momentum', _error=f"任务不存在或已丢失: {tid}"))
+        if task.get('status') == 'running' and tid in _crypto_momentum_engines:
+            return redirect(url_for('crypto_momentum', _error="该任务已在运行中"))
+        task_testnet = task.get('testnet')
+        if task_testnet is not None and bool(task_testnet) != testnet:
+            want = '测试网' if task_testnet else '主网'
+            return redirect(url_for('crypto_momentum', _error=f"该任务是{want}任务，请先把页面网络切换到{want}并绑定对应密钥"))
+        ok, msg = _crypto_momentum_start_task(
+            task.get('name', '横截面动量量化任务'),
+            float(task.get('total_fund', 10000)),
+            int(task.get('rebal_days', 5)),
+            float(task.get('top_frac', 0.20)),
+            float(task.get('liq_min', 100_000_000)),
+            int(task.get('ma_gate', 60)),
+            int(task.get('interval', 30)),
+            float(task.get('buy_pct', 0.95)),
+            api_key, api_secret, shared_trader, leverage, testnet,
+            task_id=tid, universe_mode=task.get('universe_mode') or 'u8')
+        return redirect(url_for('crypto_momentum', _error='' if ok else msg))
+
     elif request.method == "POST" and form.get("action") == "stop_task":
         ok, msg = _crypto_momentum_stop_task(form.get("task_id"))
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
@@ -3940,6 +3965,12 @@ def _report_positions_snapshot():
 
 
 if __name__ == "__main__":
+    # 启动时清理所有任务注册表中的僵尸 running 状态（服务断线后 tasks.json 可能残留 status=running）
+    for _fn in [_crypto_momentum_fix_stale_running]:
+        try:
+            _fn()
+        except Exception:
+            pass
     # 注入邮件模块与持仓快照数据源，启动「定时持仓报告」后台调度线程。
     # 即使当前未登录也会以守护线程方式后台运行；发送前会校验邮箱是否已绑定。
     try:
