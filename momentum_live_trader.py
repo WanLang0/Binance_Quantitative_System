@@ -22,6 +22,10 @@ import numpy as np
 import pandas as pd
 
 from futures_trader import FuturesTrader
+try:
+    from email_notifier import EmailNotifier
+except ImportError:
+    EmailNotifier = None
 
 # ---- 文件路径（与综合量化独立命名，避免互相污染） ----
 LOG_DIR = os.path.join('data', 'logs')
@@ -105,6 +109,11 @@ class MomentumTrader:
         self._task_id = None
         self.log_file = None
         self._last_rebalance_ts = 0.0
+        self._last_gate_state = None  # 用于检测 gate 切换
+        # 邮件通知（可选）
+        self.notifier = EmailNotifier() if EmailNotifier is not None else None
+        if self.notifier and not self.notifier.enabled:
+            self.notifier = None
         self.reset_status()
 
     # ---------- 状态 ----------
@@ -713,6 +722,34 @@ class MomentumTrader:
             self.status['last_rebalance_time'] = datetime.utcfromtimestamp(now_ts).isoformat()
             self.status['next_rebalance_time'] = (
                 datetime.utcfromtimestamp(now_ts + self.status['rebal_days'] * 86400)).isoformat()
+
+            # --- 邮件通知（可选，失败不影响交易） ---
+            try:
+                notif = self.notifier
+                if notif is not None:
+                    equity = self._task_equity()
+                    # Gate 切换告警（仅当状态真正变化时发一封）
+                    if self._last_gate_state is not None and self._last_gate_state != gate_on:
+                        notif.notify_gate_change(
+                            self.status['name'], gate_on,
+                            gate_index=self.status.get('gate_index'),
+                            gate_ma=self.status.get('gate_ma'))
+                    self._last_gate_state = gate_on
+                    # 调仓汇总
+                    notif.notify_rebalance(
+                        task_name=self.status['name'],
+                        gate_on=gate_on,
+                        longs=longs,
+                        shorts=shorts,
+                        symbols=self.status['symbols'],
+                        equity=equity,
+                        total_fund=self.status['total_fund'],
+                        realized_pnl=self.status.get('realized_pnl', 0.0) or 0.0,
+                        n_elig=n_elig,
+                        dispersion=disp)
+            except Exception as _e:
+                self._log(f"邮件通知异常（不影响交易）: {_e}")
+
             return True
         return False
 
@@ -801,6 +838,17 @@ class MomentumTrader:
             self._thread.start()
             self._save_task()
             self.save_state()
+            # 启动邮件通知
+            try:
+                if self.notifier is not None:
+                    self.notifier.notify_start(
+                        task_name=self.status['name'],
+                        total_fund=self.status['total_fund'],
+                        universe_mode=self.status['universe_mode'],
+                        ma_gate=self.status['ma_gate'],
+                        testnet=self.testnet)
+            except Exception as _e:
+                pass  # 启动邮件失败不阻塞启动
             return True, '已启动'
 
     def stop(self):
