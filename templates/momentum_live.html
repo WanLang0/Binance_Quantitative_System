@@ -56,7 +56,7 @@ td.short, td.neg { color: var(--sell); }
                     <input type="number" name="leverage" step="1" min="1" max="50" value="{{ leverage or 1 }}">
                 </div>
                 <button type="submit" name="save_keys" value="1" class="btn btn-primary btn-block">保存密钥</button>
-                <p class="info-note">通过币安 <b>USDT 永续合约</b>运行横截面动量策略：定期对候选池按 14 日动量排名，<b>做多 Top N、做空 Bottom N</b>（dollar-neutral），其余空仓。可选<b>主网真实资金</b>或<b>测试网模拟</b>，请确保已开通合约权限、API Key 已加入 IP 白名单。</p>
+                <p class="info-note">通过币安 <b>USDT 永续合约</b>运行横截面动量策略（Muon：R14 排名，做多 Top、做空 Bottom 按 ExpRank 倾斜，dollar-neutral），其余空仓。可选<b>主网真实资金</b>或<b>测试网模拟</b>，请确保已开通合约权限、API Key 已加入 IP 白名单。</p>
             </form>
         </div>
 
@@ -76,7 +76,7 @@ td.short, td.neg { color: var(--sell); }
                     {% endif %}
                 </div>
                 <div class="field">
-                    <label>调仓周期（自然日）</label>
+                    <label>调仓周期（交易日，UTC 00:00 开盘执行）</label>
                     <input type="number" name="rebal_days" step="1" min="1" max="365" value="5">
                 </div>
                 <div class="field">
@@ -99,12 +99,19 @@ td.short, td.neg { color: var(--sell); }
                     </select>
                 </div>
                 <div class="field">
+                    <label>空头权重（短腿总名义不变，内部倾斜）</label>
+                    <select name="short_weight">
+                        <option value="exp" selected>ExpRank α=0.3（Muon 冻结口径，推荐）</option>
+                        <option value="ew">等权（旧 V2 口径）</option>
+                    </select>
+                </div>
+                <div class="field">
                     <label>轮询间隔（秒）</label>
                     <input type="number" name="interval" step="1" min="5" value="30">
                 </div>
                 <div class="field">
-                    <label>买入安全系数 %（名义留保证金缓冲）</label>
-                    <input type="number" name="buy_pct" step="1" min="1" max="100" value="95">
+                    <label>买入名义占比 %（100=对齐回测全额名义）</label>
+                    <input type="number" name="buy_pct" step="1" min="1" max="100" value="100">
                 </div>
 
                 <div class="side-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
@@ -115,7 +122,7 @@ td.short, td.neg { color: var(--sell); }
                 <span id="run-tag" class="run-tag {% if running_count %}on{% endif %}">
                     {% if running_count %}● {{ running_count }} 个任务运行中{% else %}○ 未运行{% endif %}
                 </span>
-                <p class="info-note" style="font-size:.8rem">V2 冻结口径：候选池固定为市值靠前的 {{ bases | length }} 个主流币；每个调仓日按 R14（14 日动量）排名，做多前 N、做空后 N（N = 通过流动性过滤的候选数 × Top/Bottom 比例）；<b>趋势闸门</b>：候选池等权指数 &gt; MA_N（默认 60）才开仓，否则全部空仓；每仓名义 = 权益 × 杠杆 × 安全系数 ÷ 总仓位数，天然多空对冲。</p>
+                <p class="info-note" style="font-size:.8rem">V2@U8-ER「Muon」冻结口径：U8 PIT 动态宇宙（ADV30≥$1亿 / 上市≥365天 / 日成交额>$1000万 / Top50）；每个调仓日按 R14（14 日动量）排名，做多前 N 等权、做空后 N 按 <b>ExpRank α=0.3</b> 倾斜（短腿总名义不变）；<b>趋势闸门</b>：池等权指数 &gt; MA_N（默认 60）才开仓，否则全部空仓；每仓名义 = 权益 × 杠杆 ÷ 总仓位数，天然多空对冲；调仓在 <b>UTC 00:00 后首个轮询窗口</b>执行（对齐回测 open 成交）。</p>
             </form>
         </div>
 
@@ -147,7 +154,7 @@ td.short, td.neg { color: var(--sell); }
                 <div class="stat-box"><div class="lbl">趋势闸门</div><div class="val" id="st-gate" style="font-size:.9rem">{% if status.gate_on is true %}<span class="pos">开放（指数&gt;MA{{ status.ma_gate }}）</span>{% elif status.gate_on is false %}<span class="neg">空仓（指数≤MA{{ status.ma_gate }}）</span>{% elif status.ma_gate %}MA{{ status.ma_gate }}{% else %}关闭{% endif %}</div></div>
                 <div class="stat-box"><div class="lbl">杠杆</div><div class="val" id="st-lev">{{ status.leverage }}x</div></div>
                 <div class="stat-box"><div class="lbl">调仓周期</div><div class="val" id="st-rebal">{{ status.rebal_days }} 日</div></div>
-                <div class="stat-box"><div class="lbl">安全系数</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '95' }}%</div></div>
+                <div class="stat-box"><div class="lbl">名义占比</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '100' }}%</div></div>
                 <div class="stat-box"><div class="lbl">任务信号</div><div class="val" id="st-signal">{{ status.signal }}</div></div>
                 <div class="stat-box"><div class="lbl">账户余额</div><div class="val" id="st-balance">{{ '%.2f' | format(status.account_balance) if status.account_balance else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
                 <div class="stat-box"><div class="lbl">累计买入</div><div class="val" id="st-buyc">{{ status.buy_count }}</div></div>
@@ -188,6 +195,41 @@ td.short, td.neg { color: var(--sell); }
                 <div id="eq-tip" style="display:none;position:absolute;background:rgba(30,30,30,.92);color:#fff;padding:3px 8px;border-radius:4px;font-size:.75rem;pointer-events:none;white-space:nowrap"></div>
             </div>
             <div class="empty" id="eq-empty" style="display:none">该时间段暂无资金记录（任务启动后每分钟记录一个权益点）</div>
+            </div>
+        </div>
+
+        <!-- Muon 回测基准（可折叠隐藏） -->
+        <div class="card card-foldable folded" id="bt-card">
+            <h2>🧪 Muon 回测基准 <span style="font-size:.8rem;color:var(--muted);font-weight:400" id="bt-summary"></span>
+                <button type="button" class="btn" style="padding:3px 10px;font-size:.8rem;margin-left:8px"
+                        onclick="event.stopPropagation(); momBtReload()">↻ 重算</button></h2>
+            <div class="card-body">
+            <div id="bt-loading" class="empty">首次展开自动计算（U8 PIT 宇宙 + ExpRank + 25bps，全程约 1~3 分钟）…</div>
+            <div id="bt-error" class="alert alert-error" style="display:none"></div>
+            <div id="bt-content" style="display:none">
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="lbl">总收益</div><div class="val" id="bt-ret">—</div></div>
+                    <div class="stat-box"><div class="lbl">年化</div><div class="val" id="bt-cagr">—</div></div>
+                    <div class="stat-box"><div class="lbl">Sharpe</div><div class="val" id="bt-sharpe">—</div></div>
+                    <div class="stat-box"><div class="lbl">最大回撤</div><div class="val" id="bt-mdd">—</div></div>
+                    <div class="stat-box"><div class="lbl">去 ZEC</div><div class="val" id="bt-nozec">—</div></div>
+                    <div class="stat-box"><div class="lbl">年换手</div><div class="val" id="bt-turn">—</div></div>
+                    <div class="stat-box"><div class="lbl">平均持仓天数</div><div class="val" id="bt-hold">—</div></div>
+                    <div class="stat-box"><div class="lbl">调仓次数</div><div class="val" id="bt-trades">—</div></div>
+                    <div class="stat-box"><div class="lbl">Top1 贡献</div><div class="val" id="bt-top1">—</div></div>
+                    <div class="stat-box"><div class="lbl">Top5 集中度</div><div class="val" id="bt-top5">—</div></div>
+                </div>
+                <div style="position:relative;margin-top:10px">
+                    <canvas id="bt-chart" style="width:100%;height:240px"></canvas>
+                    <div id="bt-tip" style="display:none;position:absolute;background:rgba(30,30,30,.92);color:#fff;padding:3px 8px;border-radius:4px;font-size:.75rem;pointer-events:none;white-space:nowrap"></div>
+                </div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:.78rem;color:var(--muted)">
+                    <span>年度：</span><span id="bt-yearly"></span>
+                </div>
+                <p class="info-note" style="font-size:.75rem;margin-top:6px" id="bt-note">
+                    口径：V2@U8-ER「Muon」冻结规格（U8 PIT 宇宙 · R14 Top20%/Bot20% · 空头 ExpRank α=0.3 · MA60 gate · T+5 open · 25bps/边 · 真实 8h funding · 1x · 初始 10000 U）。与实盘任务参数无关，为策略口径基准。点「重算」强制刷新（数据缓存更新后建议重算）。
+                </p>
+            </div>
             </div>
         </div>
 
@@ -347,7 +389,7 @@ function updateStatus(data) {
         'st-disp': (data.dispersion != null) ? Number(data.dispersion).toFixed(4) : '—',
         'st-lev': (data.leverage != null) ? data.leverage + 'x' : '—',
         'st-rebal': (data.rebal_days != null) ? data.rebal_days + ' 日' : '—',
-        'st-pct': (data.buy_pct != null) ? Number(data.buy_pct * 100).toFixed(0) + '%' : '95%',
+        'st-pct': (data.buy_pct != null) ? Number(data.buy_pct * 100).toFixed(0) + '%' : '100%',
         'st-signal': data.signal || '等待',
         'st-buyc': data.buy_count != null ? data.buy_count : 0,
         'st-sellc': data.sell_count != null ? data.sell_count : 0
@@ -630,6 +672,172 @@ function drawEquity() {
     if (btn7) btn7.classList.add('btn-primary');
     eqFetch();
     setInterval(function () { if (CUR_TASK) eqFetch(); }, 60000);
+})();
+
+// ---------- Muon 回测基准 ----------
+var BT = { points: [], init: 0, hover: -1, polling: null, done: false };
+
+function btFmtTs(day) { return String(day).substring(5, 10); }
+
+function momBtReload() {
+    BT.done = false;
+    showBtLoading(true);
+    document.getElementById('bt-error').style.display = 'none';
+    document.getElementById('bt-content').style.display = 'none';
+    fetch(API_BASE + '/api/backtest?refresh=1').then(function () { momBtPoll(); });
+}
+
+function showBtLoading(on) {
+    var l = document.getElementById('bt-loading');
+    if (!l) return;
+    l.style.display = on ? '' : 'none';
+    if (on) l.textContent = '回测计算中（U8 PIT 宇宙 + ExpRank + 25bps，全程约 1~3 分钟），请稍候…';
+}
+
+function momBtPoll() {
+    if (BT.polling) { clearTimeout(BT.polling); BT.polling = null; }
+    fetch(API_BASE + '/api/backtest').then(function (r) { return r.json(); }).then(function (d) {
+        if (d.state === 'running') {
+            showBtLoading(true);
+            BT.polling = setTimeout(momBtPoll, 5000);
+        } else if (d.state === 'done' && d.payload) {
+            BT.done = true;
+            showBtLoading(false);
+            renderBt(d.payload);
+        } else {
+            showBtLoading(false);
+            var e = document.getElementById('bt-error');
+            e.textContent = '回测失败：' + (d.error || '未知错误');
+            e.style.display = '';
+        }
+    }).catch(function () { BT.polling = setTimeout(momBtPoll, 8000); });
+}
+
+function renderBt(p) {
+    var s = p.stat || {};
+    var m = {
+        'bt-ret': (s.ret >= 0 ? '+' : '') + Number(s.ret).toFixed(1) + '%',
+        'bt-cagr': (s.cagr >= 0 ? '+' : '') + Number(s.cagr).toFixed(1) + '%',
+        'bt-sharpe': Number(s.sharpe).toFixed(2),
+        'bt-mdd': Number(s.mdd).toFixed(1) + '%',
+        'bt-nozec': (s.drop_zec >= 0 ? '+' : '') + Number(s.drop_zec).toFixed(1) + '%',
+        'bt-turn': Number(s.annual_turnover).toFixed(0) + 'x',
+        'bt-hold': Number(s.avg_hold_days).toFixed(1) + ' 天',
+        'bt-trades': s.trades,
+        'bt-top1': s.top1_coin ? (s.top1_coin + ' ' + (s.top1_share >= 0 ? '+' : '') + s.top1_share + '%') : '—',
+        'bt-top5': (s.top5_share >= 0 ? '' : '') + s.top5_share + '%'
+    };
+    for (var k in m) { var el = document.getElementById(k); if (el) el.textContent = m[k]; }
+    var cl = { 'bt-ret': s.ret >= 0 ? 'pos' : 'neg', 'bt-cagr': s.cagr >= 0 ? 'pos' : 'neg',
+               'bt-nozec': s.drop_zec >= 0 ? 'pos' : 'neg', 'bt-mdd': 'neg' };
+    for (var k2 in cl) { var el2 = document.getElementById(k2); if (el2) el2.className = 'val ' + cl[k2]; }
+    var ys = document.getElementById('bt-yearly');
+    if (ys) {
+        ys.textContent = Object.keys(p.yearly || {}).sort().map(function (y) {
+            var v = p.yearly[y];
+            return y + ': ' + (v.ret >= 0 ? '+' : '') + v.ret + '% (回撤 ' + v.mdd + '%)';
+        }).join('　|　');
+    }
+    var sumEl = document.getElementById('bt-summary');
+    if (sumEl) {
+        sumEl.textContent = (s.ret >= 0 ? '+' : '') + Number(s.ret).toFixed(1) + '% · Sh ' + Number(s.sharpe).toFixed(2) + ' · MDD ' + Number(s.mdd).toFixed(1) + '%';
+        sumEl.style.color = s.ret >= 0 ? '#4caf50' : '#f44336';
+    }
+    BT.points = p.curve || [];
+    BT.init = Number(p.initial || 10000);
+    drawBtChart();
+}
+
+function drawBtChart() {
+    var cv = document.getElementById('bt-chart');
+    if (!cv || cv.offsetParent === null) return;
+    var pts = BT.points;
+    if (!pts.length) return;
+    var wrap = cv.parentElement, W = wrap.clientWidth || 800, H = 240;
+    var dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    var ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var PL = 56, PR = 56, PT = 14, PB = 22, iw = W - PL - PR, ih = H - PT - PB;
+    var t0 = pts[0][0], t1 = pts[pts.length - 1][0] || (t0 + 1);
+    var vmin = Infinity, vmax = -Infinity;
+    pts.forEach(function (p) { if (p[1] < vmin) vmin = p[1]; if (p[1] > vmax) vmax = p[1]; });
+    if (BT.init > 0) { vmin = Math.min(vmin, BT.init); vmax = Math.max(vmax, BT.init); }
+    if (vmax - vmin < 1e-9) vmax = vmin + 1;
+    var padV = (vmax - vmin) * 0.08; vmin -= padV; vmax += padV;
+    function X(t) { return PL + (t - t0) / (t1 - t0) * iw; }
+    function Y(v) { return PT + (1 - (v - vmin) / (vmax - vmin)) * ih; }
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#999';
+    for (var g = 0; g <= 4; g++) {
+        var gv = vmin + (vmax - vmin) * g / 4, gy = Y(gv);
+        ctx.strokeStyle = 'rgba(128,128,128,.18)';
+        ctx.beginPath(); ctx.moveTo(PL, gy); ctx.lineTo(W - PR, gy); ctx.stroke();
+        var rp = BT.init > 0 ? (gv / BT.init - 1) * 100 : 0;
+        ctx.textAlign = 'right'; ctx.fillText(gv.toFixed(0), PL - 6, gy + 3);
+        ctx.textAlign = 'left'; ctx.fillText((rp >= 0 ? '+' : '') + rp.toFixed(1) + '%', W - PR + 6, gy + 3);
+    }
+    ctx.textAlign = 'center';
+    for (var k = 0; k <= 5; k++) {
+        var gt = t0 + (t1 - t0) * k / 5;
+        ctx.fillText(btFmtTs(new Date(gt * 1000).toISOString().substring(0, 10)), X(gt), H - 8);
+    }
+    if (BT.init > vmin && BT.init < vmax) {
+        ctx.save(); ctx.strokeStyle = 'rgba(240,185,11,.55)'; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(PL, Y(BT.init)); ctx.lineTo(W - PR, Y(BT.init)); ctx.stroke(); ctx.restore();
+    }
+    var grad = ctx.createLinearGradient(0, PT, 0, H - PB);
+    grad.addColorStop(0, 'rgba(156,39,176,.25)'); grad.addColorStop(1, 'rgba(156,39,176,0)');
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.lineTo(X(t1), H - PB); ctx.lineTo(X(t0), H - PB); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath();
+    pts.forEach(function (p, i) { var x = X(p[0]), y = Y(p[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 1.6; ctx.stroke();
+    var tip = document.getElementById('bt-tip');
+    if (BT.hover >= 0 && BT.hover < pts.length) {
+        var hp = pts[BT.hover], hx = X(hp[0]), hy = Y(hp[1]);
+        ctx.save(); ctx.strokeStyle = 'rgba(128,128,128,.5)'; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(hx, PT); ctx.lineTo(hx, H - PB); ctx.stroke(); ctx.restore();
+        ctx.fillStyle = '#9c27b0'; ctx.beginPath(); ctx.arc(hx, hy, 3.2, 0, 7); ctx.fill();
+        if (tip) {
+            var rp2 = BT.init > 0 ? (hp[1] / BT.init - 1) * 100 : 0;
+            tip.style.display = '';
+            tip.textContent = new Date(hp[0] * 1000).toISOString().substring(0, 10) + ' · ' + hp[1].toFixed(0) + 'U (' + (rp2 >= 0 ? '+' : '') + rp2.toFixed(1) + '%)';
+            var tw = tip.offsetWidth;
+            tip.style.left = Math.min(Math.max(hx - tw / 2, 4), W - tw - 4) + 'px';
+            tip.style.top = (PT + 2) + 'px';
+        }
+    } else if (tip) { tip.style.display = 'none'; }
+}
+
+(function () {
+    var cv = document.getElementById('bt-chart');
+    if (cv) {
+        cv.addEventListener('mousemove', function (ev) {
+            if (!BT.points.length) return;
+            var rect = cv.getBoundingClientRect();
+            var x = ev.clientX - rect.left, PL = 56, PR = 56, iw = cv.clientWidth - PL - PR;
+            var t0 = BT.points[0][0], t1 = BT.points[BT.points.length - 1][0];
+            var t = t0 + Math.max(0, Math.min(1, (x - PL) / iw)) * (t1 - t0);
+            var best = 0, bd = Infinity;
+            BT.points.forEach(function (p, i) { var dd = Math.abs(p[0] - t); if (dd < bd) { bd = dd; best = i; } });
+            BT.hover = best; drawBtChart();
+        });
+        cv.addEventListener('mouseleave', function () { BT.hover = -1; drawBtChart(); });
+    }
+    window.addEventListener('resize', drawBtChart);
+    // 首次展开卡片时自动拉取（已 done 则仅重绘）
+    var card = document.getElementById('bt-card');
+    if (card) {
+        var mo = new MutationObserver(function () {
+            if (!card.classList.contains('folded')) {
+                if (!BT.done) momBtPoll();
+                else setTimeout(drawBtChart, 0);
+            }
+        });
+        mo.observe(card, { attributes: true, attributeFilter: ['class'] });
+    }
 })();
 
 document.querySelectorAll('.card-foldable > h2').forEach(function (h2) {

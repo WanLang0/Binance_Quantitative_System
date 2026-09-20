@@ -686,7 +686,8 @@ def momentum():
     ms = _get_momentum_backtest()
     params = dict(ms.DEFAULTS) if ms else dict(
         rebal_n=5, top_frac=0.20, liq_min=100_000_000.0, leverage=1.0,
-        slippage=0.003, mode='r14', vol_max=None, abs_mom=False, long_only=False,
+        slippage=0.002, mode='r14', vol_max=None, abs_mom=False, long_only=False,
+        universe='U8', short_weight='exp',
     )
 
     if request.method == "POST":
@@ -694,7 +695,7 @@ def momentum():
         params['top_frac'] = _to_float(form.get("top_frac"), params['top_frac'])
         params['liq_min'] = _to_float(form.get("liq_min"), params['liq_min'])
         params['leverage'] = _to_float(form.get("leverage"), params['leverage'])
-        slippage_bps = _to_float(form.get("slippage"), 30)
+        slippage_bps = _to_float(form.get("slippage"), 20)
         params['slippage'] = slippage_bps / 10000.0
         params['mode'] = form.get("mode") or params['mode']
         vol_pct = form.get("vol_max") or ""
@@ -702,6 +703,8 @@ def momentum():
         params['vol_max'] = (vol_val / 100.0) if (vol_val and vol_val > 0) else None
         params['abs_mom'] = form.get("abs_mom") == "1"
         params['long_only'] = form.get("long_only") == "1"
+        params['universe'] = form.get("universe") or params.get('universe', 'U8')
+        params['short_weight'] = form.get("short_weight") or params.get('short_weight', 'exp')
 
     result = None
     error = None if ms else _MOMENTUM_BACKTEST_MISSING
@@ -725,6 +728,8 @@ def momentum():
         vol_max_pct=int(round(params['vol_max'] * 100)) if params['vol_max'] else 0,
         abs_mom=params['abs_mom'],
         long_only=params['long_only'],
+        universe=params.get('universe', 'U8'),
+        short_weight=params.get('short_weight', 'exp'),
     )
 
     return render_template("momentum.html",
@@ -787,7 +792,7 @@ def _crypto_momentum_fix_stale_running():
 def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
                                 ma_gate, interval, buy_pct, api_key, api_secret,
                                 shared_trader, leverage, testnet, task_id=None,
-                                universe_mode='u8'):
+                                universe_mode='u8', short_weight='exp'):
     if task_id and _crypto_momentum_engines.get(task_id) and _crypto_momentum_engines[task_id].status.get('running'):
         return False, "该任务已在运行中，请先停止后再启动"
     if shared_trader:
@@ -799,7 +804,7 @@ def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
     ok, msg = eng.start(name, total_fund, rebal_days=rebal_days, top_frac=top_frac,
                         liq_min=liq_min, ma_gate=ma_gate,
                         interval=interval, buy_pct=buy_pct, task_id=task_id,
-                        universe_mode=universe_mode)
+                        universe_mode=universe_mode, short_weight=short_weight)
     if ok:
         _crypto_momentum_engines[eng._task_id] = eng
     return ok, msg
@@ -893,12 +898,13 @@ def crypto_momentum():
         liq_min = _to_float(form.get("liq_min"), 100_000_000)
         ma_gate = _to_int(form.get("ma_gate"), 60)
         interval = _to_int(form.get("interval"), 30)
-        buy_pct = _to_float(form.get("buy_pct"), 95) / 100
+        buy_pct = _to_float(form.get("buy_pct"), 100) / 100
         universe_mode = form.get("universe_mode") or 'u8'   # V2@U8 生产口径为默认
+        short_weight = form.get("short_weight") or 'exp'    # Muon：ExpRank α=0.3 为默认
         ok, msg = _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
                                               ma_gate, interval, buy_pct,
                                               api_key, api_secret, shared_trader, leverage, testnet,
-                                              universe_mode=universe_mode)
+                                              universe_mode=universe_mode, short_weight=short_weight)
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "resume_task":
@@ -921,9 +927,10 @@ def crypto_momentum():
             float(task.get('liq_min', 100_000_000)),
             int(task.get('ma_gate', 60)),
             int(task.get('interval', 30)),
-            float(task.get('buy_pct', 0.95)),
+            float(task.get('buy_pct', 1.0)),
             api_key, api_secret, shared_trader, leverage, testnet,
-            task_id=tid, universe_mode=task.get('universe_mode') or 'u8')
+            task_id=tid, universe_mode=task.get('universe_mode') or 'u8',
+            short_weight=task.get('short_weight') or 'exp')
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop_task":
@@ -1046,6 +1053,59 @@ def crypto_momentum_equity():
         pts = [pts[i] for i in idxs]
     return jsonify({'task_id': tid, 'initial_fund': round(init_fund, 2), 'count': len(pts),
                     'points': [[round(t, 3), round(v, 4)] for t, v in pts]})
+
+
+# ==================== Muon 回测基准（实盘页内嵌展示） ====================
+# 进程级缓存 + 后台线程执行：回测全程约 1-3 分钟（数据加载 + U8 池/gate + 引擎回测），
+# 不阻塞请求线程；结果全局复用（口径固定 DEFAULTS，与任务参数无关）。
+_MOM_BT_CACHE = {'state': 'idle', 'stat': None, 'curve': None, 'error': None, 'ts': 0}
+_MOM_BT_LOCK = __import__('threading').Lock()
+
+
+def _mom_backtest_worker():
+    try:
+        ms = _get_momentum_backtest()
+        if ms is None:
+            raise RuntimeError(_MOMENTUM_BACKTEST_MISSING)
+        out = ms.run(dict(ms.DEFAULTS))
+        # stat 全 JSON 安全（str/int/float）；equity_points → 直接透传给前端曲线
+        payload = dict(stat=out['stat'], curve=out.get('equity_points') or [],
+                       monthly=out.get('monthly') or [],
+                       month_stats=out.get('month_stats') or {},
+                       yearly=out.get('yearly') or {},
+                       slip_gradient=out.get('slip_gradient') or [],
+                       initial=float(out.get('initial') or 10000))
+        with _MOM_BT_LOCK:
+            _MOM_BT_CACHE.update(state='done', payload=payload,
+                                 error=None, ts=time.time())
+    except Exception as e:
+        with _MOM_BT_LOCK:
+            _MOM_BT_CACHE.update(state='error', payload=None,
+                                 error=str(e), ts=time.time())
+
+
+@app.route("/crypto-momentum/api/backtest")
+def crypto_momentum_backtest():
+    from flask import jsonify
+    if request.args.get('refresh') == '1':
+        with _MOM_BT_LOCK:
+            if _MOM_BT_CACHE['state'] != 'running':
+                _MOM_BT_CACHE.update(state='running', payload=None, error=None)
+                __import__('threading').Thread(target=_mom_backtest_worker, daemon=True).start()
+        return jsonify({'state': 'running', 'payload': None, 'error': None})
+    state = _MOM_BT_CACHE['state']
+    if state == 'idle':
+        with _MOM_BT_LOCK:
+            if _MOM_BT_CACHE['state'] == 'idle':
+                _MOM_BT_CACHE['state'] = 'running'
+                __import__('threading').Thread(target=_mom_backtest_worker, daemon=True).start()
+        state = 'running'
+    elif state == 'error':
+        with _MOM_BT_LOCK:
+            # 错误后允许重试：重置为 idle（下次请求重新拉起）
+            _MOM_BT_CACHE['state'] = 'idle'
+    return jsonify({'state': state, 'payload': _MOM_BT_CACHE.get('payload'),
+                    'error': _MOM_BT_CACHE.get('error')})
 
 
 @app.route("/crypto-momentum/api/export")

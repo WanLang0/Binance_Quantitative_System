@@ -28,6 +28,8 @@ data/*.db-shm
 # 运行时状态快照（带时间戳，与 crypto_composite_state.json 同类产物）
 data/crypto_composite_state_*.json
 data/*_state_*.json
+# 邮件配置（未来填入真实 SMTP 授权码后严禁入库；占位模板另行提交）
+data/email_config.json
 
 # 环境配置（代理等，按机器不同）
 .env

@@ -56,6 +56,13 @@
                         <input type="number" name="leverage" step="0.1" min="1" max="5" value="{{ form_state.leverage }}">
                     </div>
                     <div class="field field-full">
+                        <label>宇宙口径</label>
+                        <select name="universe">
+                            <option value="U8" {% if form_state.universe == 'U8' %}selected{% endif %}>U8 PIT 动态宇宙（Muon 生产口径）</option>
+                            <option value="fixed" {% if form_state.universe == 'fixed' %}selected{% endif %}>固定 30 币（旧 V2，有幸存者偏差）</option>
+                        </select>
+                    </div>
+                    <div class="field field-full">
                         <label>滑点（bps / 边，叠加 5bps 手续费）</label>
                         <select name="slippage">
                             {% for v in [0, 5, 10, 20, 30, 40] %}
@@ -74,6 +81,13 @@
                         <select name="mode">
                             <option value="r14" {% if form_state.mode == 'r14' %}selected{% endif %}>R14 动量</option>
                             <option value="composite" {% if form_state.mode == 'composite' %}selected{% endif %}>复合 R7/R14/R30</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>空头权重</label>
+                        <select name="short_weight">
+                            <option value="exp" {% if form_state.short_weight == 'exp' %}selected{% endif %}>ExpRank α=0.3（Muon）</option>
+                            <option value="ew" {% if form_state.short_weight == 'ew' %}selected{% endif %}>等权</option>
                         </select>
                     </div>
                     <div class="field">
@@ -96,8 +110,8 @@
         </form>
 
         <p class="info-note">
-            <b>口径</b>：PIT 30币（动态宇宙，各币上市满30天自然进入）· R14 排名 Top/Bottom 对称做多做空 · dollar-neutral · 1x · 收盘信号次日开盘成交（无前视）· 真实逐8h资金费 · 手续费 5bps/边。<br><br>
-            <b>默认即当前最优</b>：Top20% · 5日调仓 · 100M 流动性 · 1x · 30bps 滑点。回测区间 2024-01 ~ 2026-08（币安历史缓存）。收益率与本金无关（dollar-neutral，初始资金固定 10000 USDT）。
+            <b>口径（V2@U8-ER「Muon」冻结规格）</b>：U8 PIT 动态宇宙（ADV30≥$1亿 / 上市≥365天 / 日成交额>$1000万 / ADV30 Top50）· R14 排名 Top20% 等权做多、Bottom20% 做空 · 空头 ExpRank α=0.3 倾斜（总名义守恒）· dollar-neutral 50/50 · 趋势闸门池等权指数>MA60（OFF 全平）· 收盘信号次日开盘成交（T+5 open，无前视）· 真实逐 8h 资金费 · 成本 25bps/边（5 fee + 20 slip）。<br><br>
+            <b>默认即当前最优（R26 晋级 + R31 资本预算冠军口径）</b>：U8 宇宙 · Top20% · 5日调仓 · ExpRank 空头 · 1x · 25bps。回测区间 2024-01 ~ 2026-08（币安历史缓存）。收益率与本金无关（dollar-neutral，初始资金固定 10000 USDT）。
         </p>
     </aside>
 
@@ -214,7 +228,7 @@
 
         {% else %}
         <div class="card">
-            <p class="empty">请在左侧设置策略参数，点击「▶ 运行回测」查看结果。默认即当前最优口径（Top20% · 5日调仓 · 100M · 1x · 30bps）。</p>
+            <p class="empty">请在左侧设置策略参数，点击「▶ 运行回测」查看结果。默认即 Muon 冻结口径（U8 宇宙 · Top20% · 5日调仓 · ExpRank 空头 · 1x · 25bps）。</p>
         </div>
         {% endif %}
     </div>

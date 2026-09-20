@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """横截面动量实盘量化引擎（币安 USDT 永续合约，测试网 / 主网可切换）。
 
-与「横截面动量回测」共用同一策略口径（R14 排名，Top/Bottom 对称，dollar-neutral）：
-  - R14 = close / close.shift(14) - 1
-  - 流动性过滤：24h 成交额 = volume × close > liq_min（默认 100M USDT）
-  - 排名：按 R14 降序，Top n 做多、Bottom n 做空（n = 候选数 × top_frac）
-  - 市场趋势闸门（V2 冻结口径）：Top30 等权指数 > MA60 才交易，否则全部空仓
-  - 资金分配：dollar-neutral，每个仓位名义 = 权益 × 杠杆 / (多头数 + 空头数)
+与「横截面动量回测」共用同一策略口径（V2@U8-ER「Muon」冻结规格）：
+  - 宇宙：U8 PIT 动态宇宙（ADV30≥1亿 / 上市≥365天 / 日成交额>1000万 / ADV30 Top50）
+  - 排名：R14 = close/close.shift(14)-1 降序，Top20% 等权做多、Bottom20% 做空
+  - 空腿权重：ExpRank α=0.3（w∝exp(0.3·rank)，短腿总名义守恒、内部倾斜）
+  - 资金分配：dollar-neutral，每仓名义 = 权益 × 杠杆 / (多头数 + 空头数)
+  - 市场趋势闸门：池等权指数 > MA60 才交易，否则全部空仓
+  - 执行：每 rebal_days 个交易日一次，UTC 00:00 后首个轮询执行（T+5 open 口径）
 
 与「虚拟币综合量化」同为量化任务：独立后台线程、启停、状态快照、日志、
 资金曲线、任务历史（崩溃后可恢复）。本模块复用 futures_trader.FuturesTrader
@@ -59,7 +60,22 @@ NAMES = {
     'DOT': '波卡', 'ICP': '互联网计算机',
 }
 
-DEFAULT_BUY_PCT = 0.95   # 名义安全系数（保留部分现金做保证金缓冲）
+DEFAULT_BUY_PCT = 1.0    # 名义占比（Muon 对齐回测：equity × leverage / n_total 全额名义）
+
+
+def exprank_weights(shorts, alpha=0.3):
+    """短腿 ExpRank 权重（Muon 冻结口径，与回测 _exprank_weights 同约定）：
+    shorts 列表按 R14 降序尾部（shorts[0]=短腿中 R14 最高者），权重 w∝exp(alpha·rank)，
+    rank 从列表头部起递增（n, n-1, ..., 1），归一化 sum=1。名义守恒：短腿总额不变。"""
+    n = len(shorts)
+    if n == 0:
+        return {}
+    ranks = np.arange(n, 0, -1).astype(float)
+    w = np.exp(alpha * ranks)
+    s = w.sum()
+    if s <= 0:
+        return {b: 1.0 / n for b in shorts}
+    return {shorts[i]: float(w[i] / s) for i in range(n)}
 
 
 def tasks_file():
@@ -132,6 +148,7 @@ class MomentumTrader:
             'liq_min': 100_000_000.0,    # 流动性阈值（USDT 24h 成交额）
             'ma_gate': 60,               # 市场趋势闸门（V2：等权指数>MA_N 才交易，0=关闭）
             'universe_mode': 'fixed',    # 'fixed'=BASES 名单 | 'u8'=PIT 动态宇宙（生产推荐）
+            'short_weight': 'exp',       # 空腿权重：'ew'=等权 | 'exp'=ExpRank α=0.3（Muon）
             'interval': 30,              # 轮询间隔（秒）
             'buy_pct': DEFAULT_BUY_PCT,
             'symbols': [],               # 候选币状态
@@ -253,6 +270,7 @@ class MomentumTrader:
                 'liq_min': self.status['liq_min'],
                 'ma_gate': self.status['ma_gate'],
                 'universe_mode': self.status['universe_mode'],
+                'short_weight': self.status.get('short_weight', 'exp'),
                 'interval': self.status['interval'],
                 'buy_pct': self.status['buy_pct'],
                 'longs': self.status['longs'],
@@ -279,7 +297,8 @@ class MomentumTrader:
             with open(self.state_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             for k in ('name', 'total_fund', 'leverage', 'rebal_days', 'top_frac',
-                      'liq_min', 'ma_gate', 'universe_mode', 'interval', 'buy_pct'):
+                      'liq_min', 'ma_gate', 'universe_mode', 'short_weight',
+                      'interval', 'buy_pct'):
                 if k in data:
                     self.status[k] = data[k]
             self.status['longs'] = data.get('longs') or []
@@ -678,6 +697,11 @@ class MomentumTrader:
         n_total = len(longs) + len(shorts)
         equity = self._task_equity()
         per = (equity * self.leverage * self.status['buy_pct'] / n_total) if n_total > 0 and equity > 0 else 0.0
+        # 空腿 ExpRank 权重（Muon）：短腿总名义 = n_short × per 守恒，内部按权重倾斜
+        n_short = len(shorts)
+        s_w = {}
+        if self.status.get('short_weight') == 'exp' and n_short > 0:
+            s_w = exprank_weights(shorts)
         # 4) 开新仓
         if per > 0:
             for s in self.status['symbols']:
@@ -686,7 +710,8 @@ class MomentumTrader:
                     if base in longs:
                         self._open_symbol(s, 'long', per)
                     elif base in shorts:
-                        self._open_symbol(s, 'short', per)
+                        notional = per * n_short * s_w.get(base, 1.0 / n_short) if s_w else per
+                        self._open_symbol(s, 'short', notional)
         # 5) 重新同步真实持仓与未实现盈亏
         self._refresh_positions_and_balance()
         self.save_state()
@@ -699,8 +724,15 @@ class MomentumTrader:
         self.trader.wait_ip_ban()
         self._refresh_positions_and_balance()
         self._refresh_prices()
+        # T+5 open 执行时序（Muon）：以 UTC 日期计交易日网格（币安 7×24，交易日=UTC 自然日），
+        # 调仓在 UTC 00:00 后首个轮询窗口内执行（对齐回测 open 价成交）；错过开盘窗口则顺延到下一网格日
+        day = int(now_ts // 86400)   # UTC 交易日序号
         due = (not self._last_rebalance_ts) or \
-              (now_ts - self._last_rebalance_ts) >= self.status['rebal_days'] * 86400
+              (day - int(self._last_rebalance_ts // 86400)) >= self.status['rebal_days']
+        if due and self._last_rebalance_ts:
+            # 非首次调仓：仅当日 UTC 00:00 后的轮询窗口内执行（首次启动立即建仓）
+            day_start = day * 86400
+            due = (now_ts - day_start) <= max(int(self.status['interval']) * 3, 120)
         if force_rebalance or due:
             self._log("到达调仓日，计算横截面动量排名...")
             longs, shorts, n_elig, disp, gate_on = self._compute_target(now_ts=now_ts)
@@ -721,7 +753,7 @@ class MomentumTrader:
             self._last_rebalance_ts = now_ts
             self.status['last_rebalance_time'] = datetime.utcfromtimestamp(now_ts).isoformat()
             self.status['next_rebalance_time'] = (
-                datetime.utcfromtimestamp(now_ts + self.status['rebal_days'] * 86400)).isoformat()
+                datetime.utcfromtimestamp((day + self.status['rebal_days']) * 86400)).isoformat()
 
             # --- 邮件通知（可选，失败不影响交易） ---
             try:
@@ -810,7 +842,7 @@ class MomentumTrader:
     # ---------- 启停 ----------
     def start(self, name, total_fund, rebal_days=5, top_frac=0.20, liq_min=100_000_000.0,
               ma_gate=60, interval=30, buy_pct=DEFAULT_BUY_PCT,
-              task_id=None, universe_mode='fixed'):
+              task_id=None, universe_mode='fixed', short_weight='exp'):
         with self._lock:
             if self._running:
                 return False, '已在运行中'
@@ -822,6 +854,7 @@ class MomentumTrader:
             self.status['liq_min'] = float(liq_min or 100_000_000.0)
             self.status['ma_gate'] = max(0, int(ma_gate or 0))
             self.status['universe_mode'] = 'u8' if universe_mode == 'u8' else 'fixed'
+            self.status['short_weight'] = 'ew' if short_weight == 'ew' else 'exp'
             self.status['interval'] = max(5, int(interval or 30))
             self.status['buy_pct'] = float(buy_pct or DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT
             self.status['symbols'] = self._build_symbols()
