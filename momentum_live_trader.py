@@ -27,6 +27,59 @@ try:
     from email_notifier import EmailNotifier
 except ImportError:
     EmailNotifier = None
+try:
+    from scripts.qqq_observer import observe as _xasset_observe  # 跨资产观察器（R32-D 观察期，软依赖）
+except Exception:
+    _xasset_observe = None
+
+# ---- Muon-X 实盘 overlay（R32-D 冻结口径：gate OFF ∧ QQQ MA50>MA200 → 持有美股永续） ----
+# 信号源：Yahoo QQQ 原价日线（与回测/观察器冻结口径一致）；执行标的：币安 QQQ/TQQQ USDT 永续
+X_OVERLAY_MODES = ('off', 'qqq', 'tqqq')
+X_SYMBOL = {'qqq': 'QQQ', 'tqqq': 'TQQQ'}
+X_FAST, X_SLOW = 50, 200
+X_CACHE_FP = os.path.join('data', 'qqq_daily_cache.csv')   # 与观察器共用缓存
+
+
+def _x_overlay_signal():
+    """QQQ 金叉信号（冻结口径：Yahoo QQQ 收盘 MA50>MA200）。
+    返回 True=金叉 / False=死叉 / None=数据不可用（保守不动作）。
+    T 日收盘判定：本地缓存最新一根为 T-1（Yahoo 隔夜更新），语义与回测 shift(1) 等价。"""
+    try:
+        import urllib.request
+        cached = None
+        if os.path.exists(X_CACHE_FP):
+            cached = pd.read_csv(X_CACHE_FP, parse_dates=['date']).set_index('date')['close']
+        url = ('https://query1.finance.yahoo.com/v8/finance/chart/QQQ'
+               '?range=5y&interval=1d')
+        fresh = None
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode())
+            ts = data['chart']['result'][0]['timestamp']
+            closes = data['chart']['result'][0]['indicators']['quote'][0]['close']
+            fresh = pd.Series(closes,
+                              index=pd.to_datetime(ts, unit='s', utc=True).tz_convert(None).normalize(),
+                              name='close').dropna()
+        except Exception:
+            fresh = None
+        if fresh is not None and cached is not None:
+            merged = pd.concat([cached[~cached.index.isin(fresh.index)], fresh]).sort_index()
+        else:
+            merged = fresh if fresh is not None else cached
+        if merged is None or len(merged) < X_SLOW + 10:
+            return None
+        try:
+            merged.to_frame().to_csv(X_CACHE_FP, index_label='date', date_format='%Y-%m-%d')
+        except Exception:
+            pass
+        f = float(merged.rolling(X_FAST, min_periods=X_FAST).mean().iloc[-1])
+        s = float(merged.rolling(X_SLOW, min_periods=X_SLOW).mean().iloc[-1])
+        if not (np.isfinite(f) and np.isfinite(s)):
+            return None
+        return bool(f > s)
+    except Exception:
+        return None
 
 # ---- 文件路径（与综合量化独立命名，避免互相污染） ----
 LOG_DIR = os.path.join('data', 'logs')
@@ -126,6 +179,7 @@ class MomentumTrader:
         self.log_file = None
         self._last_rebalance_ts = 0.0
         self._last_gate_state = None  # 用于检测 gate 切换
+        self._x_last_check_day = -1   # Muon-X 空仓腿日巡检（UTC 日序号）
         # 邮件通知（可选）
         self.notifier = EmailNotifier() if EmailNotifier is not None else None
         if self.notifier and not self.notifier.enabled:
@@ -149,6 +203,8 @@ class MomentumTrader:
             'ma_gate': 60,               # 市场趋势闸门（V2：等权指数>MA_N 才交易，0=关闭）
             'universe_mode': 'fixed',    # 'fixed'=BASES 名单 | 'u8'=PIT 动态宇宙（生产推荐）
             'short_weight': 'exp',       # 空腿权重：'ew'=等权 | 'exp'=ExpRank α=0.3（Muon）
+            'x_overlay': 'off',          # Muon-X overlay：'off'=纯现金 | 'qqq'/'tqqq'=gate OFF 金叉时持有美股永续
+            'x_signal': None,            # QQQ 金叉状态（True/False/None=未知）
             'interval': 30,              # 轮询间隔（秒）
             'buy_pct': DEFAULT_BUY_PCT,
             'symbols': [],               # 候选币状态
@@ -218,6 +274,9 @@ class MomentumTrader:
             'ma_gate': self.status['ma_gate'],
             'interval': self.status['interval'],
             'buy_pct': self.status['buy_pct'],
+            'universe_mode': self.status.get('universe_mode', 'u8'),
+            'short_weight': self.status.get('short_weight', 'exp'),
+            'x_overlay': self.status.get('x_overlay', 'off'),
             'testnet': bool(self.testnet),
             'status': 'running',
             'last_active': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -271,6 +330,7 @@ class MomentumTrader:
                 'ma_gate': self.status['ma_gate'],
                 'universe_mode': self.status['universe_mode'],
                 'short_weight': self.status.get('short_weight', 'exp'),
+                'x_overlay': self.status.get('x_overlay', 'off'),
                 'interval': self.status['interval'],
                 'buy_pct': self.status['buy_pct'],
                 'longs': self.status['longs'],
@@ -298,7 +358,7 @@ class MomentumTrader:
                 data = json.load(f)
             for k in ('name', 'total_fund', 'leverage', 'rebal_days', 'top_frac',
                       'liq_min', 'ma_gate', 'universe_mode', 'short_weight',
-                      'interval', 'buy_pct'):
+                      'x_overlay', 'interval', 'buy_pct'):
                 if k in data:
                     self.status[k] = data[k]
             self.status['longs'] = data.get('longs') or []
@@ -323,7 +383,7 @@ class MomentumTrader:
     # ---------- 候选池构建 ----------
     def _build_symbols(self, bases=None):
         bases = bases if bases is not None else BASES
-        return [{
+        syms = [{
             'symbol': f'{b}/USDT',
             'name': NAMES.get(b, b),
             'r14': 0.0,
@@ -335,6 +395,26 @@ class MomentumTrader:
             'unrealized_pnl': 0.0,
             'pnl_pct': 0.0,
         } for b in bases]
+        return syms
+
+    def _x_symbol_entry(self, base):
+        """Muon-X overlay 标的条目（x_leg 标记：不参与加密排名/调仓，由 tick 的 X 腿逻辑管理）。"""
+        return {
+            'symbol': f'{base}/USDT',
+            'name': f'{base}(Muon-X空仓腿)',
+            'r14': 0.0,
+            'liq': 0.0,
+            'side': 'none',
+            'position': 0,
+            'entry_price': 0.0,
+            'last_price': 0.0,
+            'unrealized_pnl': 0.0,
+            'pnl_pct': 0.0,
+            'x_leg': True,
+        }
+
+    def _x_overlay_entries(self):
+        return [s for s in self.status['symbols'] if s.get('x_leg')]
 
     # ---------- U8 动态宇宙（V2@U8 生产口径） ----------
     def _load_onboard_cache(self):
@@ -461,6 +541,17 @@ class MomentumTrader:
         return round(self.status['total_fund'] + self.status.get('realized_pnl', 0.0) + unreal, 4)
 
     # ---------- 资金曲线 ----------
+    def _muon_equity_series(self):
+        """任务权益的日频序列（每日取最后一点），供观察器算 30 日收益/回撤；无数据返回 None。"""
+        try:
+            pts = load_equity_points(self._task_id)
+            if not pts:
+                return None
+            s = pd.Series({pd.to_datetime(t, unit='s', utc=True).normalize(): v for t, v in pts})
+            return s.groupby(level=0).last().sort_index()
+        except Exception:
+            return None
+
     def _record_equity(self, force=False):
         f = equity_file(self._task_id)
         if not f:
@@ -563,6 +654,8 @@ class MomentumTrader:
         rets = {}   # base -> 当日收益（池等权指数成分）
         last_ts = 0
         for s in self.status['symbols']:
+            if s.get('x_leg'):
+                continue   # Muon-X overlay 标的不参与加密排名/闸门
             base = s['symbol'].split('/')[0]
             if pool is not None and base not in pool:
                 continue   # 幽灵持仓：仅保留待平仓，不参与排名/闸门
@@ -687,6 +780,8 @@ class MomentumTrader:
             target[b] = 'short'
         # 1) 平掉方向改变/移出名单的持仓
         for s in self.status['symbols']:
+            if s.get('x_leg'):
+                continue   # Muon-X overlay 标的由 X 腿逻辑管理
             base = s['symbol'].split('/')[0]
             if s['position'] > 0 and target.get(base) != s['side']:
                 self._close_symbol(s, '调仓移出')
@@ -705,6 +800,8 @@ class MomentumTrader:
         # 4) 开新仓
         if per > 0:
             for s in self.status['symbols']:
+                if s.get('x_leg'):
+                    continue
                 base = s['symbol'].split('/')[0]
                 if s['position'] <= 0:
                     if base in longs:
@@ -715,6 +812,67 @@ class MomentumTrader:
         # 5) 重新同步真实持仓与未实现盈亏
         self._refresh_positions_and_balance()
         self.save_state()
+
+    # ---------- Muon-X 空仓腿（R32-D 冻结口径实盘执行） ----------
+    def _manage_x_overlay(self, gate_on):
+        """Muon-X 空仓腿：gate OFF ∧ QQQ 金叉 → 持有 X 标的多头；
+        gate ON ∨ 死叉 → 平仓。信号不可用（None）时维持现状。
+        目标名义 = 任务权益 × 杠杆 × buy_pct（与加密腿同资金口径）；
+        与目标名义偏差 <25% 不调（避免每日微调产生手续费）。
+        信号时序：Yahoo T-1 收盘判定 → T 日执行（与回测 shift(1) 等价）。"""
+        mode = self.status.get('x_overlay') or 'off'
+        if mode not in ('qqq', 'tqqq'):
+            return
+        want_base = X_SYMBOL[mode]
+        entries = self._x_overlay_entries()
+
+        if gate_on is True:
+            # gate 翻 ON：MuON 主策略恢复交易，清空空仓腿
+            for s in entries:
+                if s['position'] > 0:
+                    self._close_symbol(s, 'Muon gate ON，清空仓腿')
+            if entries:
+                self._alert("Muon-X 空仓腿已平仓（gate 翻 ON）")
+            return
+        if gate_on is not False:
+            return   # gate 未知（信号未就绪）：不动作
+
+        sig = _x_overlay_signal()
+        self.status['x_signal'] = sig
+        if sig is None:
+            self._log("X空仓腿: QQQ 信号不可用（网络/数据不足），维持现状")
+            return
+        # 清理：死叉平掉全部空仓腿 / 标的不符时平掉旧标的
+        for s in entries:
+            if s['position'] > 0:
+                base = s['symbol'].split('/')[0]
+                if not sig or base != want_base:
+                    self._close_symbol(s, 'QQQ死叉' if not sig else '空仓腿切换标的')
+                    self._alert(f"Muon-X 空仓腿平仓: {base}（{'QQQ 死叉' if not sig else '标的切换'}）")
+        if not sig:
+            return
+        # 金叉：确保持有目标标的（含权益变化后的名义再平衡）
+        want_entry = next((s for s in self._x_overlay_entries()
+                           if s['symbol'].split('/')[0] == want_base), None)
+        if want_entry is None:
+            want_entry = self._x_symbol_entry(want_base)
+            self.status['symbols'].append(want_entry)
+        self._refresh_prices()
+        price = want_entry.get('last_price') or 0.0
+        if price <= 0:
+            self._log(f"X空仓腿: 无法获取 {want_base}/USDT 价格，跳过")
+            return
+        equity = self._task_equity()
+        want_notional = equity * self.leverage * self.status['buy_pct']
+        cur_notional = float(want_entry.get('position') or 0.0) * price
+        if cur_notional > 0 and abs(cur_notional - want_notional) / max(want_notional, 1e-9) < 0.25:
+            return   # 已持仓且偏差小：不动
+        if want_notional / price <= 0:
+            return
+        if cur_notional > 0:
+            self._close_symbol(want_entry, 'X空仓腿名义再平衡')
+        self._open_symbol(want_entry, 'long', want_notional)
+        self._alert(f"Muon-X 空仓腿开仓: {want_base} 多头 名义≈{want_notional:.0f}U（gate OFF ∧ 金叉）")
 
     # ---------- 单次调仓判断（主循环与历史 Replay 共用） ----------
     def tick(self, now_ts=None, force_rebalance=False):
@@ -750,6 +908,11 @@ class MomentumTrader:
                 self._log(f"信号: 做多{len(longs)} {longs} / 做空{len(shorts)} {shorts} / 候选{n_elig} / 离散度{disp:.4f}")
                 self.status['signal'] = f"多头{len(longs)} · 空头{len(shorts)}"
             self._rebalance(longs, shorts)
+            # --- Muon-X 空仓腿：调仓日随 gate 状态执行（开仓/平仓/死叉切换） ---
+            try:
+                self._manage_x_overlay(gate_on)
+            except Exception as _xe:
+                self._log(f"X空仓腿异常（不影响主策略）: {_xe}")
             self._last_rebalance_ts = now_ts
             self.status['last_rebalance_time'] = datetime.utcfromtimestamp(now_ts).isoformat()
             self.status['next_rebalance_time'] = (
@@ -782,7 +945,41 @@ class MomentumTrader:
             except Exception as _e:
                 self._log(f"邮件通知异常（不影响交易）: {_e}")
 
+            # --- 跨资产观察器（R32-D/Muon-X 观察期）：记录 Muon gate × QQQ regime 快照 ---
+            # 仅追加 JSONL 记录，不参与任何资金决策；网络失败静默
+            if _xasset_observe is not None:
+                def _obs():
+                    try:
+                        eq = self._task_equity()
+                        eqs = self._muon_equity_series()
+                        ret30 = (eqs.iloc[-1] / eqs.iloc[-31] - 1) if eqs is not None and len(eqs) >= 31 else None
+                        dd = (eqs.iloc[-1] / eqs.cummax().iloc[-1] - 1) if eqs is not None and len(eqs) > 1 else None
+                        _xasset_observe(muon_state=gate_on, muon_dd=dd, muon_ret_30d=ret30,
+                                        muon_equity=eq, now_ts=now_ts)
+                    except Exception:
+                        pass
+                threading.Thread(target=_obs, daemon=True).start()
+
+            self._x_last_check_day = day
             return True
+        # --- Muon-X 空仓腿日巡检（非调仓日）：每日 UTC 首个轮询做死叉/gate 翻转退出检测 ---
+        # 调仓日已由上方 _manage_x_overlay 处理；此处只补调仓间隔内的状态变化（快退出路径）
+        if self._x_last_check_day != day:
+            try:
+                if (self.status.get('x_overlay') in ('qqq', 'tqqq')) and \
+                        self.status.get('gate_on') is not False:
+                    # gate ON/未知：只做保守退出（gate ON 平仓）；未知时若已死叉持仓也平
+                    if self.status.get('gate_on') is True:
+                        self._manage_x_overlay(True)
+                        self._x_last_check_day = day
+                elif (self.status.get('x_overlay') in ('qqq', 'tqqq')) and \
+                        self.status.get('gate_on') is False and \
+                        any(s['position'] > 0 for s in self._x_overlay_entries()):
+                    # gate OFF 且持有空仓腿：日度死叉检测（signal None 则维持）
+                    self._manage_x_overlay(False)
+                    self._x_last_check_day = day
+            except Exception as _xe:
+                self._log(f"X空仓腿巡检异常（不影响主策略）: {_xe}")
         return False
 
     # ---------- 主循环 ----------
@@ -842,7 +1039,7 @@ class MomentumTrader:
     # ---------- 启停 ----------
     def start(self, name, total_fund, rebal_days=5, top_frac=0.20, liq_min=100_000_000.0,
               ma_gate=60, interval=30, buy_pct=DEFAULT_BUY_PCT,
-              task_id=None, universe_mode='fixed', short_weight='exp'):
+              task_id=None, universe_mode='fixed', short_weight='exp', x_overlay='off'):
         with self._lock:
             if self._running:
                 return False, '已在运行中'
@@ -855,6 +1052,7 @@ class MomentumTrader:
             self.status['ma_gate'] = max(0, int(ma_gate or 0))
             self.status['universe_mode'] = 'u8' if universe_mode == 'u8' else 'fixed'
             self.status['short_weight'] = 'ew' if short_weight == 'ew' else 'exp'
+            self.status['x_overlay'] = x_overlay if x_overlay in X_OVERLAY_MODES else 'off'
             self.status['interval'] = max(5, int(interval or 30))
             self.status['buy_pct'] = float(buy_pct or DEFAULT_BUY_PCT) or DEFAULT_BUY_PCT
             self.status['symbols'] = self._build_symbols()

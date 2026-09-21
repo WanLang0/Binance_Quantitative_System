@@ -705,6 +705,8 @@ def momentum():
         params['long_only'] = form.get("long_only") == "1"
         params['universe'] = form.get("universe") or params.get('universe', 'U8')
         params['short_weight'] = form.get("short_weight") or params.get('short_weight', 'exp')
+        params['muon_x'] = form.get("muon_x") == "1"
+        params['x_lev'] = form.get("x_lev") if form.get("x_lev") in ('1x', '3x') else '1x'
 
     result = None
     error = None if ms else _MOMENTUM_BACKTEST_MISSING
@@ -730,6 +732,8 @@ def momentum():
         long_only=params['long_only'],
         universe=params.get('universe', 'U8'),
         short_weight=params.get('short_weight', 'exp'),
+        muon_x=bool(params.get('muon_x')),
+        x_lev=params.get('x_lev', '1x'),
     )
 
     return render_template("momentum.html",
@@ -792,7 +796,7 @@ def _crypto_momentum_fix_stale_running():
 def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
                                 ma_gate, interval, buy_pct, api_key, api_secret,
                                 shared_trader, leverage, testnet, task_id=None,
-                                universe_mode='u8', short_weight='exp'):
+                                universe_mode='u8', short_weight='exp', x_overlay='off'):
     if task_id and _crypto_momentum_engines.get(task_id) and _crypto_momentum_engines[task_id].status.get('running'):
         return False, "该任务已在运行中，请先停止后再启动"
     if shared_trader:
@@ -804,7 +808,8 @@ def _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
     ok, msg = eng.start(name, total_fund, rebal_days=rebal_days, top_frac=top_frac,
                         liq_min=liq_min, ma_gate=ma_gate,
                         interval=interval, buy_pct=buy_pct, task_id=task_id,
-                        universe_mode=universe_mode, short_weight=short_weight)
+                        universe_mode=universe_mode, short_weight=short_weight,
+                        x_overlay=x_overlay)
     if ok:
         _crypto_momentum_engines[eng._task_id] = eng
     return ok, msg
@@ -901,10 +906,12 @@ def crypto_momentum():
         buy_pct = _to_float(form.get("buy_pct"), 100) / 100
         universe_mode = form.get("universe_mode") or 'u8'   # V2@U8 生产口径为默认
         short_weight = form.get("short_weight") or 'exp'    # Muon：ExpRank α=0.3 为默认
+        x_overlay = form.get("x_overlay") or 'off'          # Muon-X 空仓腿：off=纯现金 | qqq/tqqq=gate OFF 金叉持有美股永续
         ok, msg = _crypto_momentum_start_task(name, total_fund, rebal_days, top_frac, liq_min,
                                               ma_gate, interval, buy_pct,
                                               api_key, api_secret, shared_trader, leverage, testnet,
-                                              universe_mode=universe_mode, short_weight=short_weight)
+                                              universe_mode=universe_mode, short_weight=short_weight,
+                                              x_overlay=x_overlay)
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "resume_task":
@@ -930,7 +937,8 @@ def crypto_momentum():
             float(task.get('buy_pct', 1.0)),
             api_key, api_secret, shared_trader, leverage, testnet,
             task_id=tid, universe_mode=task.get('universe_mode') or 'u8',
-            short_weight=task.get('short_weight') or 'exp')
+            short_weight=task.get('short_weight') or 'exp',
+            x_overlay=task.get('x_overlay') or 'off')
         return redirect(url_for('crypto_momentum', _error='' if ok else msg))
 
     elif request.method == "POST" and form.get("action") == "stop_task":

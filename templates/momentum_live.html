@@ -113,6 +113,15 @@ td.short, td.neg { color: var(--sell); }
                     <label>买入名义占比 %（100=对齐回测全额名义）</label>
                     <input type="number" name="buy_pct" step="1" min="1" max="100" value="100">
                 </div>
+                <div class="field">
+                    <label>空仓期叠加（Muon-X：gate OFF 且 QQQ 金叉时持有美股永续）</label>
+                    <select name="x_overlay">
+                        <option value="off" selected>纯现金（冻结口径，不叠加）</option>
+                        <option value="qqq">持有 QQQ（1 倍纳指ETF）</option>
+                        <option value="tqqq">持有 TQQQ（3 倍纳指ETF，高风险）</option>
+                    </select>
+                </div>
+                <p class="info-note" style="font-size:.75rem;color:#c7762a">⚠ Muon-X 空仓叠加为研究升级（已批准实盘执行）：仅在「趋势闸门 OFF 且 QQQ MA50&gt;MA200 金叉」时以<b>币安美股永续</b>（QQQUSDT/TQQQUSDT）开多，名义 = 任务权益 × 杠杆 × 名义占比；gate 翻 ON 或 QQQ 死叉时自动平仓。信号 T 日收盘判定 T+1 生效（Yahoo QQQ 日线）；2022 压力情景下 3 倍腿组合 MDD 曾达 -37%，请确认风险承受能力后再启用。</p>
 
                 <div class="side-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
                     <button type="submit" name="action" value="start" class="btn btn-primary" style="flex:1" onclick="return checkFund()">▶ 启动动量任务</button>
@@ -155,6 +164,7 @@ td.short, td.neg { color: var(--sell); }
                 <div class="stat-box"><div class="lbl">杠杆</div><div class="val" id="st-lev">{{ status.leverage }}x</div></div>
                 <div class="stat-box"><div class="lbl">调仓周期</div><div class="val" id="st-rebal">{{ status.rebal_days }} 日</div></div>
                 <div class="stat-box"><div class="lbl">名义占比</div><div class="val" id="st-pct">{{ '%.0f' | format(status.buy_pct * 100) if status.buy_pct else '100' }}%</div></div>
+                <div class="stat-box"><div class="lbl">空仓叠加</div><div class="val" id="st-xoverlay" style="font-size:.85rem">{% if status.x_overlay == 'qqq' %}<span class="pos">QQQ</span>{% elif status.x_overlay == 'tqqq' %}<span class="neg">TQQQ(3x)</span>{% else %}纯现金{% endif %}{% if status.x_overlay in ('qqq', 'tqqq') %} · 金叉:{{ '是' if status.x_signal is true else ('否' if status.x_signal is false else '—') }} · 腿仓:{{ '有' if status.symbols and status.symbols | selectattr('x_leg', 'defined') and status.symbols | selectattr('position', 'gt', 0) | list else '无' }}{% endif %}</div></div>
                 <div class="stat-box"><div class="lbl">任务信号</div><div class="val" id="st-signal">{{ status.signal }}</div></div>
                 <div class="stat-box"><div class="lbl">账户余额</div><div class="val" id="st-balance">{{ '%.2f' | format(status.account_balance) if status.account_balance else '—' }} <span style="font-size:.7rem">USDT</span></div></div>
                 <div class="stat-box"><div class="lbl">累计买入</div><div class="val" id="st-buyc">{{ status.buy_count }}</div></div>
@@ -402,6 +412,23 @@ function updateStatus(data) {
         else if (data.gate_on === true) { gateEl.innerHTML = '<span class="pos">开放（指数&gt;MA' + gn + '）</span>'; }
         else if (data.gate_on === false) { gateEl.innerHTML = '<span class="neg">空仓（指数≤MA' + gn + '）</span>'; }
         else { gateEl.textContent = 'MA' + gn; gateEl.className = 'val'; }
+    }
+    // Muon-X 空仓腿状态
+    var xoEl = document.getElementById('st-xoverlay');
+    if (xoEl) {
+        var xo = data.x_overlay || 'off';
+        if (xo === 'off') { xoEl.textContent = '纯现金'; }
+        else {
+            var xs = data.x_signal;
+            var legHold = false;
+            if (data.symbols) {
+                for (var i = 0; i < data.symbols.length; i++) {
+                    if (data.symbols[i].x_leg && Number(data.symbols[i].position || 0) > 0) { legHold = true; break; }
+                }
+            }
+            xoEl.innerHTML = '<span class="' + (xo === 'qqq' ? 'pos' : 'neg') + '">' + (xo === 'qqq' ? 'QQQ' : 'TQQQ(3x)') + '</span>'
+                + ' · 金叉:' + (xs === true ? '是' : (xs === false ? '否' : '—')) + ' · 腿仓:' + (legHold ? '有' : '无');
+        }
     }
 
     // 当前资金 / 初始资金 / 累计收益 / 今日盈亏

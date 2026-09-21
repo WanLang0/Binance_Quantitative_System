@@ -69,7 +69,29 @@ DEFAULTS = dict(
 
 SLIP_GRID = [('0', 0.0), ('10', 0.001), ('20', 0.002), ('30', 0.003), ('40', 0.004)]
 
+# ---- Muon-X（R32-D）QQQ overlay：研究冻结口径，回测页专用开关（默认关闭）----
+# 口径与 tmp_r32_qqq_overlay.py 完全一致：QQQ MA50>MA200（T 收盘 → T+1 生效），
+# 仅 Muon gate OFF 期持仓；数据源 cache/yahoo_QQQ.csv（缺失时开关自动降级提示）。
+# x_lev='3x' 时改用 TQQQ 真实日线（3x 杠杆 ETF，波动损耗已内嵌；压力年 -41.5% 腿，见 R32d-TQQQ 分析）。
+MUON_X_DEFAULTS = dict(over_fast=50, over_slow=200)
+MUON_X_LEV = {'1x': 'yahoo_QQQ.csv', '3x': 'yahoo_TQQQ.csv'}
+
 _data_cache = {}
+_qqq_cache = {}
+
+
+def _load_qqq(lev='1x'):
+    """Yahoo QQQ/TQQQ 日线缓存（收盘价），缺失返回 None（Muon-X 开关降级）。"""
+    fp_name = MUON_X_LEV.get(lev, MUON_X_LEV['1x'])
+    if lev not in _qqq_cache:
+        fp = os.path.join(_SCRIPTS, 'cache', fp_name)
+        if os.path.exists(fp):
+            qq = pd.read_csv(fp, parse_dates=['date'])
+            qq['date'] = qq['date'].dt.tz_localize('UTC')
+            _qqq_cache[lev] = qq.set_index('date')['close'].sort_index()
+        else:
+            _qqq_cache[lev] = False  # False = 已探测且缺失
+    return None if _qqq_cache[lev] is False else _qqq_cache[lev]
 
 
 def _load_universe_meta():
@@ -168,10 +190,12 @@ def _yearly(eqn):
 
 
 def run(params):
-    """执行回测并返回展示数据。params 为与 DEFAULTS 同结构的字典。"""
+    """执行回测并返回展示数据。params 为与 DEFAULTS 同结构的字典。
+    params['muon_x'] = True 时叠加 R32-D QQQ overlay（需 QQQ 缓存，否则降级）。"""
     use_u8 = (params.get('universe') == 'U8') and _pool_at is not None
     dfs, funds, ob, w1 = load_data()
     extra = None
+    gate = None
     if use_u8:
         if not ob:
             # 无 onboard.json → 上市天数不可判 → 回退 fixed 口径
@@ -189,6 +213,40 @@ def run(params):
     eqn = eq / INIT
     ret, ann, mdd, sharpe = _stat_core(eqn)
     net = float(eq.iloc[-1] - INIT)
+
+    # ---- Muon-X（R32-D）overlay 腿：默认关闭，开启时叠加 QQQ/TQQQ Beta ----
+    muon_x = bool(params.get('muon_x'))
+    x_lev = params.get('x_lev') if params.get('x_lev') in MUON_X_LEV else '1x'
+    qq_avail = _load_qqq(x_lev) is not None
+    x_info = None
+    if muon_x and qq_avail and gate is not None:
+        qq = _load_qqq(x_lev)
+        sig_src = _load_qqq('1x')  # 信号恒用 QQQ 原价（冻结口径），x_lev 只换收益腿
+        fx, sx = MUON_X_DEFAULTS['over_fast'], MUON_X_DEFAULTS['over_slow']
+        golden = (sig_src.rolling(fx, min_periods=fx).mean()
+                  > sig_src.rolling(sx, min_periods=sx).mean())
+        # gate 是调仓网格点索引 → 展开到日频（状态在网格点间持续）
+        gate_daily = gate.reindex(eq.index).ffill()
+        # T 收盘判定 → T+1 生效；gate OFF 持仓（off_pos = gate.shift(1)）
+        sigD = golden.astype(float).reindex(eq.index, method='ffill').shift(1).fillna(0.0)
+        off_pos = (~gate_daily.astype(bool)).shift(1).fillna(False).astype(float)
+        qq_ret = qq.pct_change().reindex(eq.index).fillna(0.0)
+        x_leg = off_pos * sigD * qq_ret
+        muon_ret = eq.pct_change().fillna(0.0)
+        eq = (1 + (muon_ret + x_leg)).cumprod() * INIT
+        eqn = eq / INIT
+        ret, ann, mdd, sharpe = _stat_core(eqn)
+        net = float(eq.iloc[-1] - INIT)
+        # overlay 腿子统计（OFF 期独立；用值数组避免 tz-aware 索引对齐问题）
+        x_eq = (1 + x_leg).cumprod()
+        off_v = (~gate_daily.values.astype(bool))
+        x_ret = float((1 + pd.Series(x_leg.values[off_v])).prod() - 1) * 100
+        x_mdd = float(((x_eq - x_eq.cummax()) / x_eq.cummax()).min()) * 100
+        held = (off_pos * sigD) > 0
+        switches = int((held.astype(int).diff().abs() > 0).sum())
+        x_info = dict(ret=round(x_ret, 1), mdd=round(x_mdd, 1),
+                      switches=switches, expo=round(float(held.mean() * 100), 1),
+                      lev=x_lev)
 
     # —— 逐币贡献（最终快照，含浮动盈亏；排序取贡献最大的币） ——
     snap = dict(audit['asset_daily'][-1][1])
@@ -256,4 +314,6 @@ def run(params):
         coins=coins,
         slip_gradient=slip_gradient,
         yearly=_yearly(eqn),
+        muon_x=dict(active=bool(x_info), available=bool(qq_avail),
+                    **(x_info or {})),
     )

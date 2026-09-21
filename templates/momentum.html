@@ -104,6 +104,13 @@
                     <label><input type="checkbox" name="abs_mom" value="1" {% if form_state.abs_mom %}checked{% endif %}> 绝对动量闸门</label>
                     <label><input type="checkbox" name="long_only" value="1" {% if form_state.long_only %}checked{% endif %}> 只做多</label>
                 </div>
+                <div class="chk-row" style="margin-top:6px">
+                    <label><input type="checkbox" name="muon_x" value="1" {% if form_state.muon_x %}checked{% endif %}> 🧪 Muon-X：空窗期叠加纳指 Beta（R32-D，实验性）</label>
+                    <select name="x_lev" style="margin-left:8px">
+                        <option value="1x" {% if form_state.x_lev != '3x' %}selected{% endif %}>QQQ 1x</option>
+                        <option value="3x" {% if form_state.x_lev == '3x' %}selected{% endif %}>TQQQ 3x</option>
+                    </select>
+                </div>
             </div>
 
             <button type="submit" name="run" value="1" class="btn btn-primary btn-block">▶ 运行回测</button>
@@ -111,7 +118,11 @@
 
         <p class="info-note">
             <b>口径（V2@U8-ER「Muon」冻结规格）</b>：U8 PIT 动态宇宙（ADV30≥$1亿 / 上市≥365天 / 日成交额>$1000万 / ADV30 Top50）· R14 排名 Top20% 等权做多、Bottom20% 做空 · 空头 ExpRank α=0.3 倾斜（总名义守恒）· dollar-neutral 50/50 · 趋势闸门池等权指数>MA60（OFF 全平）· 收盘信号次日开盘成交（T+5 open，无前视）· 真实逐 8h 资金费 · 成本 25bps/边（5 fee + 20 slip）。<br><br>
-            <b>默认即当前最优（R26 晋级 + R31 资本预算冠军口径）</b>：U8 宇宙 · Top20% · 5日调仓 · ExpRank 空头 · 1x · 25bps。回测区间 2024-01 ~ 2026-08（币安历史缓存）。收益率与本金无关（dollar-neutral，初始资金固定 10000 USDT）。
+            <b>默认即当前最优（R26 晋级 + R31 资本预算冠军口径）</b>：U8 宇宙 · Top20% · 5日调仓 · ExpRank 空头 · 1x · 25bps。回测区间 2024-01 ~ 2026-08（币安历史缓存）。收益率与本金无关（dollar-neutral，初始资金固定 10000 USDT）。<br><br>
+            <b>🧪 Muon-X（R32-D，Research / 实验性）</b>：勾选后，Muon gate OFF 空窗期改为持有纳指 ETF（条件：QQQ MA50 &gt; MA200，否则现金）。T 日美股收盘判定、T+1 生效、ON 期零污染。<br>
+            · <b>QQQ 1x</b>：样本内 +190.7%/Sharpe 1.31/MDD -30.3%（不恶化）；长期跑不赢纳指买入持有，定位是风险折减 Beta。<br>
+            · <b>TQQQ 3x</b>：样本内 +312.9%/Sharpe 1.27/<b>MDD -37.4%（击穿 -30% 目标）</b>；2022 式压力年腿 MDD -47.2%、组合最坏 -81%，已裁决不采纳——仅作对照展示。<br>
+            详见 docs/R32D_muon_x_freeze.md。
         </p>
     </aside>
 
